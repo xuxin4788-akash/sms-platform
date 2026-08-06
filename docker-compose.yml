@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  sms-platform:
+    build: .
+    container_name: sms-marketing-platform
+    ports:
+      - "5000:5000"
+    volumes:
+      - sms-data:/app/instance
+    environment:
+      - DEPLOY_RUN_PORT=5000
+      - FLASK_ENV=production
+    restart: unless-stopped
+
+volumes:
+  sms-data:

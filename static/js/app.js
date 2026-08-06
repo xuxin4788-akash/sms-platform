@@ -1,0 +1,711 @@
+/* ============================================================
+   SMS Marketing Platform - Frontend Application
+   ============================================================ */
+
+// ============================================================
+// State Management
+// ============================================================
+const state = {
+    user: null,
+    currentPage: 'dashboard',
+    contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '' },
+    records: { page: 1, perPage: 20, total: 0, totalPages: 0, status: '', dateFrom: '', dateTo: '', search: '' },
+    sendPhones: [],
+    sendMode: 'manual',
+};
+
+// ============================================================
+// API Helper
+// ============================================================
+async function api(url, options = {}) {
+    const defaults = { headers: { 'Content-Type': 'application/json' }, credentials: 'include' };
+    const config = { ...defaults, ...options };
+    if (config.body && typeof config.body === 'object' && !(config.body instanceof FormData)) {
+        config.body = JSON.stringify(config.body);
+    }
+    if (config.body instanceof FormData) { delete config.headers['Content-Type']; }
+    try {
+        const res = await fetch(url, config);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error en la solicitud');
+        return data;
+    } catch (err) { throw err; }
+}
+
+// ============================================================
+// Utilities
+// ============================================================
+function escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+function formatDate(dateStr) {
+    if (!dateStr) return '-';
+    try {
+        const d = new Date(dateStr.replace(' ', 'T'));
+        return d.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch { return dateStr; }
+}
+
+function getStatusBadge(status) {
+    const map = {
+        sent: '<span class="badge badge-green">Enviado</span>',
+        failed: '<span class="badge badge-red">Fallido</span>',
+        pending: '<span class="badge badge-yellow">Pendiente</span>',
+        scheduled: '<span class="badge badge-blue">Programado</span>'
+    };
+    return map[status] || '<span class="badge badge-gray">' + escapeHtml(status) + '</span>';
+}
+
+function renderPagination(data, type) {
+    if (data.total_pages <= 1) return '';
+    const info = `Mostrando ${((data.page - 1) * data.per_page) + 1}-${Math.min(data.page * data.per_page, data.total)} de ${data.total}`;
+    let buttons = '';
+    buttons += `<button ${data.page <= 1 ? 'disabled' : ''} onclick="changePage('${type}', ${data.page - 1})">Anterior</button>`;
+    const start = Math.max(1, data.page - 2);
+    const end = Math.min(data.total_pages, data.page + 2);
+    for (let i = start; i <= end; i++) {
+        buttons += `<button class="${i === data.page ? 'active' : ''}" onclick="changePage('${type}', ${i})">${i}</button>`;
+    }
+    buttons += `<button ${data.page >= data.total_pages ? 'disabled' : ''} onclick="changePage('${type}', ${data.page + 1})">Siguiente</button>`;
+    return `<div class="pagination"><span class="pagination-info">${info}</span><div class="pagination-buttons">${buttons}</div></div>`;
+}
+
+function changePage(type, page) {
+    if (type === 'contacts') { state.contacts.page = page; renderContacts(document.getElementById('page-content')); }
+    else if (type === 'records') { state.records.page = page; renderRecords(document.getElementById('page-content')); }
+}
+
+// ============================================================
+// Toast Notifications
+// ============================================================
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(function() {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(20px)';
+        toast.style.transition = '200ms ease';
+        setTimeout(function() { toast.remove(); }, 200);
+    }, 3000);
+}
+
+// ============================================================
+// Modal
+// ============================================================
+function showModal(title, bodyHtml) {
+    document.getElementById('modal-title').textContent = title;
+    document.getElementById('modal-body').innerHTML = bodyHtml;
+    document.getElementById('modal-overlay').style.display = 'flex';
+}
+
+function hideModal() {
+    document.getElementById('modal-overlay').style.display = 'none';
+}
+
+function closeModal(event) {
+    if (event.target === document.getElementById('modal-overlay')) hideModal();
+}
+
+// ============================================================
+// Auth
+// ============================================================
+document.getElementById('login-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    var username = document.getElementById('login-username').value.trim();
+    var password = document.getElementById('login-password').value;
+    var errorEl = document.getElementById('login-error');
+    errorEl.style.display = 'none';
+    try {
+        var data = await api('/api/auth/login', { method: 'POST', body: { username: username, password: password } });
+        state.user = data.user;
+        showMainApp();
+    } catch (err) {
+        errorEl.textContent = err.message;
+        errorEl.style.display = 'block';
+    }
+});
+
+async function checkAuth() {
+    try {
+        var data = await api('/api/auth/me');
+        state.user = data.user;
+        showMainApp();
+    } catch (e) { showLogin(); }
+}
+
+function showLogin() {
+    document.getElementById('login-screen').style.display = 'flex';
+    document.getElementById('main-layout').style.display = 'none';
+}
+
+function showMainApp() {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('main-layout').style.display = 'flex';
+    document.getElementById('user-name').textContent = state.user.full_name || state.user.username;
+    var roleEl = document.getElementById('user-role');
+    roleEl.textContent = state.user.role === 'admin' ? 'Administrador' : 'Empleado';
+    roleEl.className = state.user.role === 'admin' ? 'badge badge-blue' : 'badge badge-gray';
+    document.querySelectorAll('.admin-only').forEach(function(el) {
+        el.style.display = state.user.role === 'admin' ? 'flex' : 'none';
+    });
+    navigateTo(state.currentPage || 'dashboard');
+}
+
+async function logout() {
+    await api('/api/auth/logout', { method: 'POST' });
+    state.user = null;
+    showLogin();
+}
+
+function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('open');
+}
+
+// ============================================================
+// Router
+// ============================================================
+function navigateTo(page) {
+    state.currentPage = page;
+    document.querySelectorAll('.nav-item').forEach(function(el) {
+        el.classList.toggle('active', el.dataset.page === page);
+    });
+    document.getElementById('sidebar').classList.remove('open');
+    var content = document.getElementById('page-content');
+    switch (page) {
+        case 'dashboard': renderDashboard(content); break;
+        case 'contacts': renderContacts(content); break;
+        case 'groups': renderGroups(content); break;
+        case 'templates': renderTemplates(content); break;
+        case 'send': renderSendSMS(content); break;
+        case 'records': renderRecords(content); break;
+        case 'users': renderUsers(content); break;
+        case 'config': renderConfig(content); break;
+        default: renderDashboard(content);
+    }
+}
+
+window.addEventListener('hashchange', function() {
+    var hash = window.location.hash.replace('#/', '') || 'dashboard';
+    navigateTo(hash);
+});
+
+// ============================================================
+// Dashboard
+// ============================================================
+async function renderDashboard(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var stats = await api('/api/sms/statistics');
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Panel Principal</h1>' +
+            '<div class="stats-grid">' +
+                '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg></div><div class="stat-label">Enviados Hoy</div><div class="stat-value">' + stats.today_sent + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg></div><div class="stat-label">Tasa de Exito</div><div class="stat-value">' + stats.success_rate + '%</div></div>' +
+                '<div class="stat-card"><div class="stat-icon yellow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></div><div class="stat-label">Pendientes</div><div class="stat-value">' + stats.total_pending + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg></div><div class="stat-label">Fallidos</div><div class="stat-value">' + stats.total_failed + '</div></div>' +
+            '</div>' +
+            '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">' +
+                '<div class="stat-card"><div class="stat-label">Total Contactos</div><div class="stat-value" style="font-size:22px;">' + stats.total_contacts + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">Total Plantillas</div><div class="stat-value" style="font-size:22px;">' + stats.total_templates + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">Total Enviados</div><div class="stat-value" style="font-size:22px;">' + stats.total_sent + '</div></div>' +
+            '</div>' +
+            '<div class="card mt-4"><div class="card-header"><h2>Envios de los Ultimos 7 Dias</h2></div><div class="chart-container"><div class="bar-chart" id="weekly-chart"></div></div></div>';
+        var chartEl = document.getElementById('weekly-chart');
+        var maxCount = Math.max.apply(null, stats.last_7_days.map(function(d) { return d.count; }).concat([1]));
+        chartEl.innerHTML = stats.last_7_days.map(function(d) {
+            var height = (d.count / maxCount) * 120;
+            var dateLabel = d.date.substring(5);
+            return '<div class="bar-wrapper"><div class="bar-value">' + d.count + '</div><div class="bar" style="height:' + Math.max(height, 4) + 'px;"></div><div class="bar-label">' + dateLabel + '</div></div>';
+        }).join('');
+    } catch (err) {
+        container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
+    }
+}
+
+// ============================================================
+// Contacts
+// ============================================================
+async function renderContacts(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var groups = await api('/api/groups');
+        var params = new URLSearchParams({ page: state.contacts.page, per_page: state.contacts.perPage });
+        if (state.contacts.search) params.set('search', state.contacts.search);
+        if (state.contacts.groupId) params.set('group_id', state.contacts.groupId);
+        var data = await api('/api/contacts?' + params.toString());
+        state.contacts.total = data.total;
+        state.contacts.totalPages = data.total_pages;
+
+        var groupOptions = groups.groups.map(function(g) { return '<option value="' + g.id + '"' + (state.contacts.groupId == g.id ? ' selected' : '') + '>' + escapeHtml(g.name) + '</option>'; }).join('');
+        var rows = data.contacts.length === 0
+            ? '<tr><td colspan="5" class="text-center text-secondary" style="padding:32px;">No hay contactos</td></tr>'
+            : data.contacts.map(function(c) {
+                return '<tr><td><strong>' + escapeHtml(c.name) + '</strong></td><td>' + escapeHtml(c.phone) + '</td><td>' + (c.group_name ? '<span class="badge badge-blue">' + escapeHtml(c.group_name) + '</span>' : '<span class="text-secondary text-sm">Sin grupo</span>') + '</td><td class="text-secondary text-sm">' + escapeHtml(c.notes || '-') + '</td><td><button class="btn btn-ghost btn-sm btn-icon" onclick="showEditContactModal(' + c.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button><button class="btn btn-ghost btn-sm btn-icon" onclick="deleteContact(' + c.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></td></tr>';
+            }).join('');
+
+        container.innerHTML =
+            '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Contactos</h1><div class="flex gap-2"><button class="btn btn-secondary btn-sm" onclick="showImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Importar CSV</button><button class="btn btn-primary btn-sm" onclick="showAddContactModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo Contacto</button></div></div>' +
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por nombre, telefono..." value="' + escapeHtml(state.contacts.search) + '" onkeyup="handleContactSearch(event)"><select onchange="handleContactGroupFilter(this.value)"><option value="">Todos los grupos</option>' + groupOptions + '</select></div></div><div class="table-container"><table><thead><tr><th>Nombre</th><th>Telefono</th><th>Grupo</th><th>Notas</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contacts') + '</div>';
+    } catch (err) {
+        container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
+    }
+}
+
+function handleContactSearch(event) {
+    if (event.key === 'Enter') { state.contacts.search = event.target.value; state.contacts.page = 1; renderContacts(document.getElementById('page-content')); }
+}
+
+function handleContactGroupFilter(groupId) {
+    state.contacts.groupId = groupId; state.contacts.page = 1; renderContacts(document.getElementById('page-content'));
+}
+
+function showAddContactModal() {
+    api('/api/groups').then(function(data) {
+        var opts = data.groups.map(function(g) { return '<option value="' + g.id + '">' + escapeHtml(g.name) + '</option>'; }).join('');
+        showModal('Nuevo Contacto', '<form id="add-contact-form" onsubmit="handleAddContact(event)"><div class="form-group"><label>Nombre *</label><input type="text" name="name" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" required placeholder="+34 600 000 000"></div><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Notas</label><textarea name="notes" rows="3"></textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Guardar</button></div></form>');
+    });
+}
+
+async function handleAddContact(event) {
+    event.preventDefault();
+    var form = event.target;
+    try {
+        await api('/api/contacts', { method: 'POST', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), group_id: form.group_id.value || null, notes: form.notes.value.trim() } });
+        hideModal(); showToast('Contacto creado exitosamente', 'success'); renderContacts(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function showEditContactModal(id) {
+    try {
+        var contactData = await api('/api/contacts?per_page=1000');
+        var groupsData = await api('/api/groups');
+        var contact = contactData.contacts.find(function(c) { return c.id === id; });
+        if (!contact) return showToast('Contacto no encontrado', 'error');
+        var groupOpts = groupsData.groups.map(function(g) { return '<option value="' + g.id + '"' + (contact.group_id == g.id ? ' selected' : '') + '>' + escapeHtml(g.name) + '</option>'; }).join('');
+        showModal('Editar Contacto', '<form onsubmit="handleEditContact(event, ' + id + ')"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(contact.name) + '" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" value="' + escapeHtml(contact.phone) + '" required></div><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + groupOpts + '</select></div><div class="form-group"><label>Notas</label><textarea name="notes" rows="3">' + escapeHtml(contact.notes || '') + '</textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function handleEditContact(event, id) {
+    event.preventDefault();
+    var form = event.target;
+    try {
+        await api('/api/contacts/' + id, { method: 'PUT', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), group_id: form.group_id.value || null, notes: form.notes.value.trim() } });
+        hideModal(); showToast('Contacto actualizado', 'success'); renderContacts(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function deleteContact(id) {
+    if (!confirm('Esta seguro de eliminar este contacto?')) return;
+    try { await api('/api/contacts/' + id, { method: 'DELETE' }); showToast('Contacto eliminado', 'success'); renderContacts(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+function showImportModal() {
+    api('/api/groups').then(function(data) {
+        var opts = data.groups.map(function(g) { return '<option value="' + g.id + '">' + escapeHtml(g.name) + '</option>'; }).join('');
+        showModal('Importar Contactos (CSV)', '<p class="text-secondary mb-4" style="font-size:13px;">El archivo CSV debe tener las columnas: <strong>name, phone, notes</strong> (o <strong>nombre, telefono, notas</strong>).</p><form id="import-form" onsubmit="handleImport(event)"><div class="form-group"><label>Grupo destino (opcional)</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Archivo CSV</label><input type="file" name="file" accept=".csv" required style="padding:8px;"></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Importar</button></div></form>');
+    });
+}
+
+async function handleImport(event) {
+    event.preventDefault();
+    var form = event.target;
+    var formData = new FormData();
+    formData.append('file', form.file.files[0]);
+    formData.append('group_id', form.group_id.value || '');
+    try {
+        var data = await api('/api/contacts/import', { method: 'POST', body: formData });
+        hideModal();
+        var msg = data.imported + ' contacto(s) importado(s)';
+        if (data.errors && data.errors.length) msg += '. ' + data.errors.length + ' error(es)';
+        showToast(msg, 'success'); renderContacts(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+// ============================================================
+// Groups
+// ============================================================
+async function renderGroups(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var data = await api('/api/groups');
+        var rows = data.groups.length === 0
+            ? '<tr><td colspan="4" class="text-center text-secondary" style="padding:32px;">No hay grupos</td></tr>'
+            : data.groups.map(function(g) {
+                return '<tr><td><strong>' + escapeHtml(g.name) + '</strong></td><td class="text-secondary">' + escapeHtml(g.description || '-') + '</td><td><span class="badge badge-blue">' + g.contact_count + '</span></td><td><button class="btn btn-ghost btn-sm btn-icon" onclick="showEditGroupModal(' + g.id + ', \'' + escapeHtml(g.name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(g.description || '').replace(/'/g, "\\'") + '\')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button><button class="btn btn-ghost btn-sm btn-icon" onclick="deleteGroup(' + g.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></td></tr>';
+            }).join('');
+        container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Grupos de Contactos</h1><button class="btn btn-primary btn-sm" onclick="showAddGroupModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo Grupo</button></div><div class="card"><div class="table-container"><table><thead><tr><th>Nombre</th><th>Descripcion</th><th>Contactos</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function showAddGroupModal() {
+    showModal('Nuevo Grupo', '<form onsubmit="handleAddGroup(event)"><div class="form-group"><label>Nombre *</label><input type="text" name="name" required></div><div class="form-group"><label>Descripcion</label><textarea name="description" rows="3"></textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+}
+
+async function handleAddGroup(event) {
+    event.preventDefault(); var form = event.target;
+    try { await api('/api/groups', { method: 'POST', body: { name: form.name.value.trim(), description: form.description.value.trim() } }); hideModal(); showToast('Grupo creado', 'success'); renderGroups(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+function showEditGroupModal(id, name, description) {
+    showModal('Editar Grupo', '<form onsubmit="handleEditGroup(event, ' + id + ')"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(name) + '" required></div><div class="form-group"><label>Descripcion</label><textarea name="description" rows="3">' + escapeHtml(description) + '</textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+}
+
+async function handleEditGroup(event, id) {
+    event.preventDefault(); var form = event.target;
+    try { await api('/api/groups/' + id, { method: 'PUT', body: { name: form.name.value.trim(), description: form.description.value.trim() } }); hideModal(); showToast('Grupo actualizado', 'success'); renderGroups(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+async function deleteGroup(id) {
+    if (!confirm('Esta seguro de eliminar este grupo? Los contactos no se eliminaran.')) return;
+    try { await api('/api/groups/' + id, { method: 'DELETE' }); showToast('Grupo eliminado', 'success'); renderGroups(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+// ============================================================
+// Templates
+// ============================================================
+async function renderTemplates(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var data = await api('/api/templates');
+        var rows = data.templates.length === 0
+            ? '<tr><td colspan="5" class="text-center text-secondary" style="padding:32px;">No hay plantillas</td></tr>'
+            : data.templates.map(function(t) {
+                var safeContent = escapeHtml(t.content).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+                return '<tr><td><strong>' + escapeHtml(t.name) + '</strong></td><td><span class="badge badge-gray">' + escapeHtml(t.category) + '</span></td><td class="text-secondary text-sm" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(t.content) + '</td><td class="text-secondary text-sm">' + formatDate(t.updated_at) + '</td><td><button class="btn btn-ghost btn-sm btn-icon" onclick="showEditTemplateModal(' + t.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button><button class="btn btn-ghost btn-sm btn-icon" onclick="deleteTemplate(' + t.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></td></tr>';
+            }).join('');
+        container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Plantillas de SMS</h1><button class="btn btn-primary btn-sm" onclick="showAddTemplateModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nueva Plantilla</button></div><div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar plantillas..." id="template-search" onkeyup="handleTemplateSearch(event)"></div></div><div class="table-container"><table><thead><tr><th>Nombre</th><th>Categoria</th><th>Contenido</th><th>Actualizado</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div></div><div class="mt-4 text-secondary text-sm"><strong>Variables disponibles:</strong> <code>{nombre}</code> - Nombre del contacto, <code>{telefono}</code> - Numero de telefono</div>';
+        // Store templates for edit
+        window._templates = data.templates;
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function handleTemplateSearch(event) {
+    if (event.key === 'Enter') {
+        var search = event.target.value;
+        api('/api/templates?search=' + encodeURIComponent(search)).then(function(data) {
+            window._templates = data.templates;
+            // Re-render templates page
+            renderTemplates(document.getElementById('page-content'));
+        });
+    }
+}
+
+function showAddTemplateModal() {
+    showModal('Nueva Plantilla', '<form onsubmit="handleAddTemplate(event)"><div class="form-group"><label>Nombre *</label><input type="text" name="name" required placeholder="Ej: Promocion de verano"></div><div class="form-group"><label>Categoria</label><select name="category"><option value="general">General</option><option value="promocion">Promocion</option><option value="recordatorio">Recordatorio</option><option value="bienvenida">Bienvenida</option><option value="otro">Otro</option></select></div><div class="form-group"><label>Contenido *</label><textarea name="content" rows="4" required placeholder="Hola {nombre}, te informamos que..."></textarea><small class="text-secondary">Use {nombre} y {telefono} como variables</small></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+}
+
+async function handleAddTemplate(event) {
+    event.preventDefault(); var form = event.target;
+    try { await api('/api/templates', { method: 'POST', body: { name: form.name.value.trim(), content: form.content.value.trim(), category: form.category.value } }); hideModal(); showToast('Plantilla creada', 'success'); renderTemplates(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+function showEditTemplateModal(id) {
+    var t = (window._templates || []).find(function(tpl) { return tpl.id === id; });
+    if (!t) return;
+    showModal('Editar Plantilla', '<form onsubmit="handleEditTemplate(event, ' + id + ')"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(t.name) + '" required></div><div class="form-group"><label>Categoria</label><select name="category"><option value="general"' + (t.category==='general'?' selected':'') + '>General</option><option value="promocion"' + (t.category==='promocion'?' selected':'') + '>Promocion</option><option value="recordatorio"' + (t.category==='recordatorio'?' selected':'') + '>Recordatorio</option><option value="bienvenida"' + (t.category==='bienvenida'?' selected':'') + '>Bienvenida</option><option value="otro"' + (t.category==='otro'?' selected':'') + '>Otro</option></select></div><div class="form-group"><label>Contenido *</label><textarea name="content" rows="4" required>' + escapeHtml(t.content) + '</textarea><small class="text-secondary">Use {nombre} y {telefono} como variables</small></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+}
+
+async function handleEditTemplate(event, id) {
+    event.preventDefault(); var form = event.target;
+    try { await api('/api/templates/' + id, { method: 'PUT', body: { name: form.name.value.trim(), content: form.content.value.trim(), category: form.category.value } }); hideModal(); showToast('Plantilla actualizada', 'success'); renderTemplates(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+async function deleteTemplate(id) {
+    if (!confirm('Esta seguro de eliminar esta plantilla?')) return;
+    try { await api('/api/templates/' + id, { method: 'DELETE' }); showToast('Plantilla eliminada', 'success'); renderTemplates(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+// ============================================================
+// Send SMS
+// ============================================================
+async function renderSendSMS(container) {
+    state.sendPhones = [];
+    state.sendMode = 'manual';
+    try {
+        var results = await Promise.all([api('/api/groups'), api('/api/templates')]);
+        var groupsData = results[0];
+        var templatesData = results[1];
+        var groupOpts = groupsData.groups.map(function(g) { return '<option value="' + g.id + '">' + escapeHtml(g.name) + ' (' + g.contact_count + ' contactos)</option>'; }).join('');
+        var templateOpts = templatesData.templates.map(function(t) { return '<option value="' + t.id + '">' + escapeHtml(t.name) + '</option>'; }).join('');
+        window._sendTemplates = templatesData.templates;
+
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Enviar SMS</h1>' +
+            '<div class="card"><div class="card-body">' +
+                '<div class="send-options"><button class="tab active" onclick="switchSendMode(\'manual\', this)">Manual</button><button class="tab" onclick="switchSendMode(\'contacts\', this)">Seleccionar Contactos</button><button class="tab" onclick="switchSendMode(\'group\', this)">Por Grupo</button></div>' +
+                '<div id="send-manual" class="form-group"><label>Numeros de telefono</label><div class="phone-tags" id="phone-tags" onclick="document.getElementById(\'phone-input\').focus()"><input type="text" id="phone-input" placeholder="Escriba un numero y presione Enter" style="border:none;outline:none;flex:1;min-width:200px;padding:4px;" onkeydown="handlePhoneInput(event)"></div><small class="text-secondary">Presione Enter o coma para agregar numeros</small></div>' +
+                '<div id="send-contacts" class="form-group" style="display:none;"><label>Seleccionar contactos</label><div id="contacts-select-list" class="contact-select-list"></div></div>' +
+                '<div id="send-group" class="form-group" style="display:none;"><label>Seleccionar grupo</label><select id="send-group-select" onchange="loadGroupContacts(this.value)"><option value="">-- Seleccione un grupo --</option>' + groupOpts + '</select><div id="group-contacts-preview" class="mt-2"></div></div>' +
+                '<div class="form-group mt-4"><label>Plantilla (opcional)</label><select id="send-template" onchange="loadTemplateContent(this.value)"><option value="">-- Escribir mensaje personalizado --</option>' + templateOpts + '</select></div>' +
+                '<div class="form-group"><label>Mensaje *</label><textarea id="send-content" rows="4" placeholder="Escriba su mensaje aqui..." oninput="updatePreview()"></textarea><small class="text-secondary">Variables: {nombre}, {telefono}</small></div>' +
+                '<div class="preview-box" id="send-preview" style="display:none;"><div class="preview-label">Vista previa</div><div class="preview-content" id="preview-text"></div></div>' +
+                '<div class="form-group"><label><input type="checkbox" id="send-schedule-check" onchange="toggleSchedule()"> Programar envio</label><div id="schedule-datetime" style="display:none;margin-top:8px;"><input type="datetime-local" id="send-scheduled-at"></div></div>' +
+                '<div class="flex gap-2 mt-4"><button class="btn btn-primary" onclick="handleSendSMS()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg> Enviar SMS</button><button class="btn btn-secondary" onclick="showSendPreviewModal()">Vista Previa</button></div>' +
+            '</div></div>';
+        loadContactsForSelection();
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function switchSendMode(mode, btn) {
+    state.sendMode = mode;
+    document.querySelectorAll('.send-options .tab').forEach(function(t) { t.classList.remove('active'); });
+    btn.classList.add('active');
+    document.getElementById('send-manual').style.display = mode === 'manual' ? 'block' : 'none';
+    document.getElementById('send-contacts').style.display = mode === 'contacts' ? 'block' : 'none';
+    document.getElementById('send-group').style.display = mode === 'group' ? 'block' : 'none';
+}
+
+function handlePhoneInput(event) {
+    if (event.key === 'Enter' || event.key === ',') {
+        event.preventDefault();
+        var input = document.getElementById('phone-input');
+        var phone = input.value.replace(',', '').trim();
+        if (phone && state.sendPhones.indexOf(phone) === -1) { state.sendPhones.push(phone); renderPhoneTags(); }
+        input.value = '';
+    }
+}
+
+function renderPhoneTags() {
+    var container = document.getElementById('phone-tags');
+    var input = document.getElementById('phone-input');
+    container.querySelectorAll('.phone-tag').forEach(function(t) { t.remove(); });
+    state.sendPhones.forEach(function(phone, i) {
+        var tag = document.createElement('span');
+        tag.className = 'phone-tag';
+        tag.innerHTML = escapeHtml(phone) + ' <button onclick="removePhone(' + i + ')">&times;</button>';
+        container.insertBefore(tag, input);
+    });
+}
+
+function removePhone(index) { state.sendPhones.splice(index, 1); renderPhoneTags(); }
+
+async function loadContactsForSelection() {
+    try {
+        var data = await api('/api/contacts?per_page=1000');
+        var list = document.getElementById('contacts-select-list');
+        if (list) {
+            list.innerHTML = data.contacts.length === 0
+                ? '<div class="text-center text-secondary" style="padding:20px;">No hay contactos</div>'
+                : data.contacts.map(function(c) { return '<label class="contact-select-item"><input type="checkbox" value="' + escapeHtml(c.phone) + '" data-name="' + escapeHtml(c.name) + '" onchange="updateSelectedContacts()"><span><strong>' + escapeHtml(c.name) + '</strong> - ' + escapeHtml(c.phone) + '</span></label>'; }).join('');
+        }
+    } catch (e) {}
+}
+
+function updateSelectedContacts() {
+    var checkboxes = document.querySelectorAll('#contacts-select-list input[type="checkbox"]:checked');
+    state.sendPhones = Array.from(checkboxes).map(function(cb) { return cb.value; });
+}
+
+async function loadGroupContacts(groupId) {
+    var preview = document.getElementById('group-contacts-preview');
+    if (!groupId) { preview.innerHTML = ''; state.sendPhones = []; return; }
+    try {
+        var data = await api('/api/contacts?group_id=' + groupId + '&per_page=1000');
+        state.sendPhones = data.contacts.map(function(c) { return c.phone; });
+        preview.innerHTML = '<span class="badge badge-blue">' + data.contacts.length + ' contactos seleccionados</span>';
+    } catch (err) { preview.innerHTML = '<span class="text-secondary">' + err.message + '</span>'; }
+}
+
+function loadTemplateContent(templateId) {
+    var select = document.getElementById('send-template');
+    var t = (window._sendTemplates || []).find(function(tpl) { return tpl.id == templateId; });
+    if (t) { document.getElementById('send-content').value = t.content; updatePreview(); }
+}
+
+function updatePreview() {
+    var content = document.getElementById('send-content').value;
+    var preview = document.getElementById('send-preview');
+    var previewText = document.getElementById('preview-text');
+    if (content) {
+        preview.style.display = 'block';
+        previewText.textContent = content.replace(/{nombre}/g, 'Juan').replace(/{telefono}/g, '+34 600 000 000');
+    } else { preview.style.display = 'none'; }
+}
+
+function toggleSchedule() {
+    document.getElementById('schedule-datetime').style.display = document.getElementById('send-schedule-check').checked ? 'block' : 'none';
+}
+
+function showSendPreviewModal() {
+    var content = document.getElementById('send-content').value;
+    var phones = getSendPhones();
+    if (!content) return showToast('Escriba un mensaje', 'error');
+    if (phones.length === 0) return showToast('Seleccione al menos un destinatario', 'error');
+    var scheduled = document.getElementById('send-schedule-check').checked;
+    var scheduledAt = document.getElementById('send-scheduled-at').value;
+    var sample = content.replace(/{nombre}/g, 'Juan').replace(/{telefono}/g, phones[0] || '');
+    showModal('Vista Previa del Envio', '<div class="preview-box"><div class="preview-label">Mensaje (' + phones.length + ' destinatario(s))</div><div class="preview-content">' + escapeHtml(sample) + '</div></div>' + (scheduled ? '<p class="mt-2 text-secondary"><strong>Programado para:</strong> ' + new Date(scheduledAt).toLocaleString('es-ES') + '</p>' : '<p class="mt-2 text-secondary"><strong>Envio:</strong> Inmediato</p>') + '<div class="modal-footer" style="padding:16px 0 0;"><button class="btn btn-secondary" onclick="hideModal()">Cerrar</button></div>');
+}
+
+function getSendPhones() {
+    if (state.sendMode === 'manual') return state.sendPhones;
+    if (state.sendMode === 'contacts') {
+        return Array.from(document.querySelectorAll('#contacts-select-list input[type="checkbox"]:checked')).map(function(cb) { return cb.value; });
+    }
+    return state.sendPhones;
+}
+
+async function handleSendSMS() {
+    var content = document.getElementById('send-content').value.trim();
+    var phones = getSendPhones();
+    if (!content) return showToast('Escriba un mensaje', 'error');
+    if (phones.length === 0) return showToast('Seleccione al menos un destinatario', 'error');
+    var contactNames = {};
+    document.querySelectorAll('#contacts-select-list input[type="checkbox"]:checked').forEach(function(cb) { contactNames[cb.value] = cb.dataset.name || ''; });
+    var scheduled = document.getElementById('send-schedule-check').checked;
+    var scheduledAt = document.getElementById('send-scheduled-at').value;
+    if (scheduled && !scheduledAt) return showToast('Seleccione fecha y hora de envio', 'error');
+    try {
+        if (scheduled) {
+            var data = await api('/api/sms/schedule', { method: 'POST', body: { phones: phones, content: content, scheduled_at: scheduledAt, contact_names: contactNames } });
+            showToast(data.message, 'success');
+        } else {
+            var data = await api('/api/sms/send', { method: 'POST', body: { phones: phones, content: content, contact_names: contactNames } });
+            showToast(data.message, 'success');
+        }
+        state.sendPhones = [];
+        document.getElementById('send-content').value = '';
+        document.getElementById('send-template').value = '';
+        document.getElementById('send-preview').style.display = 'none';
+        renderPhoneTags();
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+// ============================================================
+// Records
+// ============================================================
+async function renderRecords(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var params = new URLSearchParams({ page: state.records.page, per_page: state.records.perPage });
+        if (state.records.status) params.set('status', state.records.status);
+        if (state.records.dateFrom) params.set('date_from', state.records.dateFrom);
+        if (state.records.dateTo) params.set('date_to', state.records.dateTo);
+        if (state.records.search) params.set('search', state.records.search);
+        var data = await api('/api/sms/records?' + params.toString());
+        state.records.total = data.total;
+        state.records.totalPages = data.total_pages;
+
+        var rows = data.records.length === 0
+            ? '<tr><td colspan="5" class="text-center text-secondary" style="padding:32px;">No hay registros</td></tr>'
+            : data.records.map(function(r) { return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(r.content) + '</td><td>' + getStatusBadge(r.status) + '</td></tr>'; }).join('');
+
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Envio</h1>' +
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por numero, nombre..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)"><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Enviado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Desde"><input type="date" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Hasta"></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function handleRecordSearch(event) { if (event.key === 'Enter') { state.records.search = event.target.value; state.records.page = 1; renderRecords(document.getElementById('page-content')); } }
+function handleRecordStatusFilter(status) { state.records.status = status; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
+function handleRecordDateFrom(date) { state.records.dateFrom = date; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
+function handleRecordDateTo(date) { state.records.dateTo = date; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
+
+// ============================================================
+// Users (Admin)
+// ============================================================
+async function renderUsers(container) {
+    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3><p>Solo administradores pueden ver esta seccion.</p></div>'; return; }
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var data = await api('/api/users');
+        var rows = data.users.map(function(u) {
+            var deleteBtn = u.id !== state.user.id ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="deleteUser(' + u.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>' : '';
+            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (u.role === 'admin' ? 'badge-blue' : 'badge-gray') + '">' + (u.role === 'admin' ? 'Administrador' : 'Empleado') + '</span></td><td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td><button class="btn btn-ghost btn-sm btn-icon" onclick="showEditUserModal(' + u.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>' + deleteBtn + '</td></tr>';
+        }).join('');
+        container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Gestion de Usuarios</h1><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo Usuario</button></div><div class="card"><div class="table-container"><table><thead><tr><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+        window._users = data.users;
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function showAddUserModal() {
+    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role"><option value="employee">Empleado</option><option value="admin">Administrador</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+}
+
+async function handleAddUser(event) {
+    event.preventDefault(); var form = event.target;
+    try { await api('/api/users', { method: 'POST', body: { username: form.username.value.trim(), full_name: form.full_name.value.trim(), password: form.password.value, role: form.role.value } }); hideModal(); showToast('Usuario creado', 'success'); renderUsers(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+function showEditUserModal(id) {
+    var u = (window._users || []).find(function(usr) { return usr.id === id; });
+    if (!u) return;
+    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div><div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Rol</label><select name="role"><option value="employee"' + (u.role==='employee'?' selected':'') + '>Empleado</option><option value="admin"' + (u.role==='admin'?' selected':'') + '>Administrador</option></select></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+}
+
+async function handleEditUser(event, id) {
+    event.preventDefault(); var form = event.target;
+    try {
+        var body = { full_name: form.full_name.value.trim(), role: form.role.value, is_active: parseInt(form.is_active.value) };
+        if (form.password.value) body.password = form.password.value;
+        await api('/api/users/' + id, { method: 'PUT', body: body });
+        hideModal(); showToast('Usuario actualizado', 'success'); renderUsers(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function deleteUser(id) {
+    if (!confirm('Esta seguro de eliminar este usuario?')) return;
+    try { await api('/api/users/' + id, { method: 'DELETE' }); showToast('Usuario eliminado', 'success'); renderUsers(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+// ============================================================
+// Config (Admin)
+// ============================================================
+async function renderConfig(container) {
+    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var results = await Promise.all([api('/api/config/sms'), api('/api/config/logs')]);
+        var configData = results[0].config || {};
+        var logsData = results[1];
+        var isConfigured = configData.api_url && configData.api_key;
+        var logRows = logsData.logs.length === 0
+            ? '<tr><td colspan="4" class="text-center text-secondary" style="padding:24px;">No hay registros</td></tr>'
+            : logsData.logs.map(function(l) { return '<tr><td class="text-sm text-secondary">' + formatDate(l.created_at) + '</td><td>' + escapeHtml(l.action) + '</td><td class="text-sm">' + escapeHtml(l.details || '-') + '</td><td><span class="badge ' + (l.status === 'success' ? 'badge-green' : l.status === 'error' ? 'badge-red' : 'badge-gray') + '">' + escapeHtml(l.status) + '</span></td></tr>'; }).join('');
+
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Configuracion API SMS</h1>' +
+            '<div class="card mb-4"><div class="card-header"><h2>Proveedor SMS</h2><span class="badge ' + (isConfigured ? 'badge-green' : 'badge-yellow') + '">' + (isConfigured ? 'Configurado' : 'Sin configurar') + '</span></div><div class="card-body">' +
+                '<form onsubmit="handleSaveConfig(event)">' +
+                    '<div class="form-group"><label>API URL</label><input type="url" name="api_url" value="' + escapeHtml(configData.api_url || '') + '" placeholder="https://api.smsprovider.com/v1/send"></div>' +
+                    '<div class="form-group"><label>API Key</label><input type="text" name="api_key" value="' + escapeHtml(configData.api_key || '') + '" placeholder="Su clave de API"></div>' +
+                    '<div class="form-group"><label>Nombre del Remitente</label><input type="text" name="sender_name" value="' + escapeHtml(configData.sender_name || '') + '" placeholder="MiEmpresa"></div>' +
+                    '<div class="flex gap-2"><button type="submit" class="btn btn-primary">Guardar Configuracion</button><button type="button" class="btn btn-secondary" onclick="testApiConnection()">Probar Conexion</button></div>' +
+                '</form>' +
+            '</div></div>' +
+            '<div class="card"><div class="card-header"><h2>Registros de Actividad</h2></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Accion</th><th>Detalles</th><th>Estado</th></tr></thead><tbody>' + logRows + '</tbody></table></div></div>';
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+async function handleSaveConfig(event) {
+    event.preventDefault(); var form = event.target;
+    try { await api('/api/config/sms', { method: 'PUT', body: { api_url: form.api_url.value.trim(), api_key: form.api_key.value.trim(), sender_name: form.sender_name.value.trim() } }); showToast('Configuracion guardada', 'success'); renderConfig(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+async function testApiConnection() {
+    try { var data = await api('/api/config/sms/test', { method: 'POST' }); showToast(data.message, 'success'); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+// ============================================================
+// Initialize
+// ============================================================
+checkAuth();
