@@ -49,19 +49,29 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | PUT/DELETE | /api/groups/<id> | User | Update/Delete group |
 | GET/POST | /api/templates | User | List/Create templates |
 | PUT/DELETE | /api/templates/<id> | User | Update/Delete template |
-| POST | /api/sms/send | User | Send SMS |
+| POST | /api/sms/send | User | Send SMS (real API or simulation) |
 | POST | /api/sms/schedule | User | Schedule SMS |
 | GET | /api/sms/records | User | List send records |
 | GET | /api/sms/statistics | User | Dashboard stats |
-| GET/PUT | /api/config/sms | Admin | SMS API config |
-| POST | /api/config/sms/test | Admin | Test API connection |
+| POST | /api/sms/query-status | User | Query delivery status via API |
+| POST | /api/sms/check-charset | User | Check charset/billing for content |
+| POST | /api/sms/process-scheduled | User | Process scheduled messages |
+| GET/PUT | /api/config/sms | Admin | SMS API config (domain, spid, api_pwd, sender_name) |
+| POST | /api/config/sms/test | Admin | Test API connection (charset check) |
 | GET | /api/config/logs | Admin | Activity logs |
+
+## SMS API Integration (infin8linx)
+- Provider: infin8linx SMS API
+- Endpoints: /sms/send (single), /sms/rsend (batch), /sms/state (status), /sms/charset (encoding check)
+- Auth: spid + MD5(spid + pwd + timestamp) + timestamp
+- Content encoding: UCS2 hex for Spanish (70 chars/SMS, 67 for long SMS parts)
+- Fallback: Simulation mode when API not configured
 
 ## Default Credentials
 - Admin: `admin` / `admin123`
 
 ## Database
-SQLite with WAL mode. Tables: users, contacts, contact_groups, templates, sms_records, sms_config, send_logs.
+SQLite with WAL mode. Tables: users, contacts, contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), send_logs.
 
 ## Frontend Architecture
 - SPA with hash-based routing (#/dashboard, #/contacts, etc.)

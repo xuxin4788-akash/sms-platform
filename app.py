@@ -5,6 +5,8 @@ import secrets
 import csv
 import io
 import json
+import time
+import requests as http_requests
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Flask, request, jsonify, render_template, session, g, send_from_directory
@@ -84,6 +86,9 @@ def init_db():
             contact_name TEXT DEFAULT '',
             content TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'scheduled')),
+            msgid TEXT DEFAULT '',
+            api_code INTEGER DEFAULT 0,
+            api_msg TEXT DEFAULT '',
             scheduled_at TEXT,
             sent_at TEXT,
             created_by INTEGER,
@@ -93,8 +98,9 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS sms_config (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            api_url TEXT DEFAULT '',
-            api_key TEXT DEFAULT '',
+            domain TEXT DEFAULT '',
+            spid TEXT DEFAULT '',
+            api_pwd TEXT DEFAULT '',
             sender_name TEXT DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -118,7 +124,32 @@ def init_db():
     # Create default sms_config if not exists
     cursor = db.execute("SELECT id FROM sms_config LIMIT 1")
     if cursor.fetchone() is None:
-        db.execute("INSERT INTO sms_config (api_url, api_key, sender_name) VALUES ('', '', '')")
+        db.execute("INSERT INTO sms_config (domain, spid, api_pwd, sender_name) VALUES ('', '', '', '')")
+    # Migration: add new columns if they don't exist
+    try:
+        db.execute("ALTER TABLE sms_config ADD COLUMN domain TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE sms_config ADD COLUMN spid TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE sms_config ADD COLUMN api_pwd TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE sms_records ADD COLUMN msgid TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE sms_records ADD COLUMN api_code INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE sms_records ADD COLUMN api_msg TEXT DEFAULT ''")
+    except Exception:
+        pass
     db.commit()
     db.close()
 
@@ -156,6 +187,205 @@ def admin_required(f):
         g.user = dict(user)
         return f(*args, **kwargs)
     return decorated
+
+# ============================================================
+# SMS API Integration (infin8linx)
+# ============================================================
+
+# Status code mapping from API docs
+SMS_STATUS_CODES = {
+    0: 'Exito',
+    10: 'Parametros requeridos faltantes',
+    11: 'Parametros invalidos',
+    12: 'Cuenta/contrasena incorrectos',
+    13: 'Saldo insuficiente',
+    14: 'IP no en lista blanca',
+    15: 'Limite de frecuencia excedido',
+    16: 'Problema con el contenido',
+    17: 'Error de codificacion',
+    18: 'Problema con la firma',
+    19: 'Error de plantilla',
+    20: 'SMS no encontrado',
+    21: 'Error del sistema',
+    22: 'Numero invalido',
+    23: 'Contenido sensible',
+    24: 'Numero en lista negra',
+}
+
+def str_to_hex(s):
+    """Convert a string to hex encoding (UCS2 for Spanish)."""
+    return s.encode('utf-16-be').hex().upper()
+
+def generate_api_pwd(spid, api_pwd, timestamp):
+    """Generate encrypted password: MD5(spid + pwd + timestamp), lowercase."""
+    raw = f"{spid}{api_pwd}{timestamp}"
+    return hashlib.md5(raw.encode('utf-8')).hexdigest()
+
+def get_sms_api_config():
+    """Get SMS API configuration from database."""
+    db = get_db()
+    config = db.execute("SELECT * FROM sms_config LIMIT 1").fetchone()
+    if not config:
+        return None
+    return {
+        'domain': config['domain'] or '',
+        'spid': config['spid'] or '',
+        'api_pwd': config['api_pwd'] or '',
+        'sender_name': config['sender_name'] or '',
+    }
+
+def is_sms_api_configured():
+    """Check if SMS API is properly configured."""
+    config = get_sms_api_config()
+    if not config:
+        return False
+    return bool(config['domain'] and config['spid'] and config['api_pwd'])
+
+def sms_api_send_single(phone, content, config=None):
+    """Send a single SMS via the API.
+    POST /sms/send
+    Returns: dict with code, msg, data (msgid, parts, state)
+    """
+    if config is None:
+        config = get_sms_api_config()
+    if not config or not (config['domain'] and config['spid'] and config['api_pwd']):
+        return {'code': -1, 'msg': 'API SMS no configurada', 'data': None}
+
+    timestamp = str(int(time.time()))
+    pwd = generate_api_pwd(config['spid'], config['api_pwd'], timestamp)
+    sm_hex = str_to_hex(content)
+
+    url = f"https://{config['domain']}/sms/send"
+    payload = {
+        'spid': config['spid'],
+        'pwd': pwd,
+        'timestamp': timestamp,
+        'to': phone,
+        'sm': sm_hex,
+    }
+    if config['sender_name']:
+        payload['senderid'] = config['sender_name']
+
+    try:
+        resp = http_requests.post(url, data=payload, timeout=15)
+        result = resp.json()
+        return result
+    except http_requests.exceptions.Timeout:
+        return {'code': -2, 'msg': 'Tiempo de espera agotado', 'data': None}
+    except http_requests.exceptions.ConnectionError:
+        return {'code': -3, 'msg': 'Error de conexion con el proveedor', 'data': None}
+    except Exception as e:
+        return {'code': -4, 'msg': f'Error: {str(e)}', 'data': None}
+
+def sms_api_send_batch(phone_content_pairs, config=None):
+    """Send multiple SMS via the API (max 200 per request).
+    POST /sms/rsend
+    phone_content_pairs: list of (phone, content) tuples
+    Returns: dict with code, msg, data (list of {das, msgid, parts, state})
+    """
+    if config is None:
+        config = get_sms_api_config()
+    if not config or not (config['domain'] and config['spid'] and config['api_pwd']):
+        return {'code': -1, 'msg': 'API SMS no configurada', 'data': None}
+
+    timestamp = str(int(time.time()))
+    pwd = generate_api_pwd(config['spid'], config['api_pwd'], timestamp)
+
+    # Build dasm: phone,hex_content/phone,hex_content...
+    parts = []
+    for phone, content in phone_content_pairs:
+        hex_content = str_to_hex(content)
+        parts.append(f"{phone},{hex_content}")
+    dasm = '/'.join(parts)
+
+    url = f"https://{config['domain']}/sms/rsend"
+    payload = {
+        'spid': config['spid'],
+        'pwd': pwd,
+        'timestamp': timestamp,
+        'dasm': dasm,
+    }
+    if config['sender_name']:
+        payload['senderid'] = config['sender_name']
+
+    try:
+        resp = http_requests.post(url, data=payload, timeout=30)
+        result = resp.json()
+        return result
+    except http_requests.exceptions.Timeout:
+        return {'code': -2, 'msg': 'Tiempo de espera agotado', 'data': None}
+    except http_requests.exceptions.ConnectionError:
+        return {'code': -3, 'msg': 'Error de conexion con el proveedor', 'data': None}
+    except Exception as e:
+        return {'code': -4, 'msg': f'Error: {str(e)}', 'data': None}
+
+def sms_api_query_status(msgids, config=None):
+    """Query SMS delivery status.
+    GET /sms/state?spid=xx&pwd=xx&timestamp=xx&msgid=xx
+    msgids: list of msgid strings (max 100)
+    Returns: dict with code, msg, data (list of {msgid, state})
+    state: 0=no receipt, 1=success, 2=failed
+    """
+    if config is None:
+        config = get_sms_api_config()
+    if not config or not (config['domain'] and config['spid'] and config['api_pwd']):
+        return {'code': -1, 'msg': 'API SMS no configurada', 'data': None}
+
+    timestamp = str(int(time.time()))
+    pwd = generate_api_pwd(config['spid'], config['api_pwd'], timestamp)
+    msgid_str = ','.join(msgids[:100])
+
+    url = f"https://{config['domain']}/sms/state"
+    params = {
+        'spid': config['spid'],
+        'pwd': pwd,
+        'timestamp': timestamp,
+        'msgid': msgid_str,
+    }
+
+    try:
+        resp = http_requests.get(url, params=params, timeout=15)
+        result = resp.json()
+        return result
+    except http_requests.exceptions.Timeout:
+        return {'code': -2, 'msg': 'Tiempo de espera agotado', 'data': None}
+    except http_requests.exceptions.ConnectionError:
+        return {'code': -3, 'msg': 'Error de conexion con el proveedor', 'data': None}
+    except Exception as e:
+        return {'code': -4, 'msg': f'Error: {str(e)}', 'data': None}
+
+def sms_api_check_charset(content, config=None):
+    """Check SMS content charset and billing parts.
+    GET /sms/charset?spid=xx&pwd=xx&sm=xx&timestamp=xx
+    Returns: dict with code, msg, data (charset, parts, single, detail)
+    """
+    if config is None:
+        config = get_sms_api_config()
+    if not config or not (config['domain'] and config['spid'] and config['api_pwd']):
+        return {'code': -1, 'msg': 'API SMS no configurada', 'data': None}
+
+    timestamp = str(int(time.time()))
+    pwd = generate_api_pwd(config['spid'], config['api_pwd'], timestamp)
+    sm_hex = str_to_hex(content)
+
+    url = f"https://{config['domain']}/sms/charset"
+    params = {
+        'spid': config['spid'],
+        'pwd': pwd,
+        'timestamp': timestamp,
+        'sm': sm_hex,
+    }
+
+    try:
+        resp = http_requests.get(url, params=params, timeout=15)
+        result = resp.json()
+        return result
+    except http_requests.exceptions.Timeout:
+        return {'code': -2, 'msg': 'Tiempo de espera agotado', 'data': None}
+    except http_requests.exceptions.ConnectionError:
+        return {'code': -3, 'msg': 'Error de conexion con el proveedor', 'data': None}
+    except Exception as e:
+        return {'code': -4, 'msg': f'Error: {str(e)}', 'data': None}
 
 # ============================================================
 # Frontend route
@@ -559,36 +789,121 @@ def send_sms():
     if len(phones) > 500:
         return jsonify({'error': 'Maximo 500 numeros por envio'}), 400
     db = get_db()
-    # Get SMS config
-    config = db.execute("SELECT * FROM sms_config LIMIT 1").fetchone()
+    api_configured = is_sms_api_configured()
     records = []
-    for phone in phones:
-        phone = phone.strip()
-        if not phone:
-            continue
-        # Replace variables in content
+    errors = []
+
+    if api_configured and len(phones) == 1:
+        # Single SMS - use /sms/send endpoint
+        phone = phones[0].strip()
         name = contact_names.get(phone, '')
         msg = content.replace('{nombre}', name).replace('{telefono}', phone)
-        # Simulate sending (in production, this would call the SMS API)
-        status = 'sent'
-        if config and config['api_url'] and config['api_key']:
-            # If API is configured, mark as sent (simulated)
-            status = 'sent'
+        result = sms_api_send_single(phone, msg)
+        api_code = result.get('code', -1)
+        api_msg = result.get('msg', '')
+        if api_code == 0:
+            msgid = ''
+            if result.get('data'):
+                msgid = result['data'].get('msgid', '')
+            db.execute(
+                "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, ?, ?, datetime('now'), ?)",
+                (phone, name, msg, msgid, api_code, api_msg, g.user['id'])
+            )
+            records.append({'phone': phone, 'status': 'sent', 'msgid': msgid})
         else:
-            status = 'sent'
-        db.execute(
-            "INSERT INTO sms_records (phone, contact_name, content, status, sent_at, created_by) VALUES (?, ?, ?, ?, datetime('now'), ?)",
-            (phone, name, msg, status, g.user['id'])
-        )
-        records.append({'phone': phone, 'status': status})
+            status_text = SMS_STATUS_CODES.get(api_code, api_msg)
+            db.execute(
+                "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, datetime('now'), ?)",
+                (phone, name, msg, api_code, f"Code {api_code}: {status_text}", g.user['id'])
+            )
+            records.append({'phone': phone, 'status': 'failed', 'error': status_text})
+            errors.append(f"{phone}: {status_text}")
+
+    elif api_configured and len(phones) > 1:
+        # Multiple SMS - use /sms/rsend endpoint (max 200 per batch)
+        phone_content_pairs = []
+        phone_name_map = {}
+        for phone in phones:
+            phone = phone.strip()
+            if not phone:
+                continue
+            name = contact_names.get(phone, '')
+            msg = content.replace('{nombre}', name).replace('{telefono}', phone)
+            phone_content_pairs.append((phone, msg))
+            phone_name_map[phone] = (name, msg)
+
+        # Split into batches of 200
+        for batch_start in range(0, len(phone_content_pairs), 200):
+            batch = phone_content_pairs[batch_start:batch_start + 200]
+            result = sms_api_send_batch(batch)
+            api_code = result.get('code', -1)
+            api_msg = result.get('msg', '')
+
+            if api_code == 0 and result.get('data'):
+                # Map results back to phones
+                result_map = {}
+                for item in result['data']:
+                    result_map[item.get('das', '')] = item
+
+                for phone, msg in batch:
+                    name = phone_name_map[phone][0]
+                    item = result_map.get(phone, {})
+                    item_code = item.get('state', 0)
+                    msgid = item.get('msgid', '')
+                    if item_code == 0:
+                        status = 'sent'
+                    else:
+                        status = 'failed'
+                    db.execute(
+                        "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, sent_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)",
+                        (phone, name, msg, status, msgid, item_code, api_msg, g.user['id'])
+                    )
+                    records.append({'phone': phone, 'status': status, 'msgid': msgid})
+                    if status == 'failed':
+                        errors.append(f"{phone}: {SMS_STATUS_CODES.get(item_code, 'Error desconocido')}")
+            else:
+                # Entire batch failed
+                status_text = SMS_STATUS_CODES.get(api_code, api_msg)
+                for phone, msg in batch:
+                    name = phone_name_map[phone][0]
+                    db.execute(
+                        "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, datetime('now'), ?)",
+                        (phone, name, msg, api_code, f"Code {api_code}: {status_text}", g.user['id'])
+                    )
+                    records.append({'phone': phone, 'status': 'failed', 'error': status_text})
+                    errors.append(f"{phone}: {status_text}")
+    else:
+        # API not configured - simulate sending (for testing)
+        for phone in phones:
+            phone = phone.strip()
+            if not phone:
+                continue
+            name = contact_names.get(phone, '')
+            msg = content.replace('{nombre}', name).replace('{telefono}', phone)
+            db.execute(
+                "INSERT INTO sms_records (phone, contact_name, content, status, api_msg, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, datetime('now'), ?)",
+                (phone, name, msg, 'API no configurada - envio simulado', g.user['id'])
+            )
+            records.append({'phone': phone, 'status': 'sent', 'simulated': True})
+
     db.commit()
     # Log the action
+    log_status = 'success' if not errors else ('partial' if records else 'error')
     db.execute(
         "INSERT INTO send_logs (action, details, status) VALUES (?, ?, ?)",
-        ('send', json.dumps({'phones_count': len(records), 'user': g.user['username']}), 'success')
+        ('send', json.dumps({'phones_count': len(records), 'user': g.user['username'], 'api_configured': api_configured, 'errors': errors[:5]}), log_status)
     )
     db.commit()
-    return jsonify({'message': f'{len(records)} mensaje(s) enviado(s)', 'records': records})
+
+    sent_count = sum(1 for r in records if r['status'] == 'sent')
+    failed_count = sum(1 for r in records if r['status'] == 'failed')
+    result_msg = f'{sent_count} mensaje(s) enviado(s)'
+    if failed_count > 0:
+        result_msg += f', {failed_count} fallido(s)'
+    if not api_configured:
+        result_msg += ' (modo simulacion - API no configurada)'
+
+    return jsonify({'message': result_msg, 'records': records, 'errors': errors[:10]})
 
 @app.route('/api/sms/schedule', methods=['POST'])
 @login_required
@@ -710,9 +1025,10 @@ def get_sms_config():
     if config:
         return jsonify({'config': {
             'id': config['id'],
-            'api_url': config['api_url'],
-            'api_key': config['api_key'],
-            'sender_name': config['sender_name'],
+            'domain': config['domain'] or '',
+            'spid': config['spid'] or '',
+            'api_pwd': config['api_pwd'] or '',
+            'sender_name': config['sender_name'] or '',
             'updated_at': config['updated_at']
         }})
     return jsonify({'config': {}})
@@ -722,12 +1038,13 @@ def get_sms_config():
 def update_sms_config():
     data = request.get_json()
     db = get_db()
-    api_url = data.get('api_url', '').strip()
-    api_key = data.get('api_key', '').strip()
+    domain = data.get('domain', '').strip()
+    spid = data.get('spid', '').strip()
+    api_pwd = data.get('api_pwd', '').strip()
     sender_name = data.get('sender_name', '').strip()
     db.execute(
-        "UPDATE sms_config SET api_url=?, api_key=?, sender_name=?, updated_at=datetime('now') WHERE id=1",
-        (api_url, api_key, sender_name)
+        "UPDATE sms_config SET domain=?, spid=?, api_pwd=?, sender_name=?, updated_at=datetime('now') WHERE id=1",
+        (domain, spid, api_pwd, sender_name)
     )
     db.commit()
     return jsonify({'message': 'Configuracion actualizada'})
@@ -736,16 +1053,44 @@ def update_sms_config():
 @admin_required
 def test_sms_config():
     db = get_db()
-    config = db.execute("SELECT * FROM sms_config LIMIT 1").fetchone()
-    if not config or not config['api_url'] or not config['api_key']:
-        return jsonify({'error': 'Configure la URL y API Key primero'}), 400
-    # Simulate API test
-    db.execute(
-        "INSERT INTO send_logs (action, details, status) VALUES (?, ?, ?)",
-        ('test_connection', json.dumps({'api_url': config['api_url']}), 'success')
-    )
-    db.commit()
-    return jsonify({'message': 'Conexion exitosa. La API esta configurada correctamente.'})
+    config = get_sms_api_config()
+    if not config or not (config['domain'] and config['spid'] and config['api_pwd']):
+        return jsonify({'error': 'Configure el Dominio, SPID y Contrasena API primero'}), 400
+
+    # Test connection by calling charset check with a simple text
+    result = sms_api_check_charset("Test", config)
+    api_code = result.get('code', -1)
+
+    if api_code == 0:
+        charset_info = result.get('data', {})
+        db.execute(
+            "INSERT INTO send_logs (action, details, status) VALUES (?, ?, ?)",
+            ('test_connection', json.dumps({
+                'domain': config['domain'],
+                'spid': config['spid'],
+                'charset': charset_info.get('charset', 'N/A'),
+                'result': 'success'
+            }), 'success')
+        )
+        db.commit()
+        return jsonify({
+            'message': f'Conexion exitosa. Codificacion detectada: {charset_info.get("charset", "N/A")}. '
+                       f'Longitud por SMS: {charset_info.get("single", "N/A")} caracteres.'
+        })
+    else:
+        error_msg = SMS_STATUS_CODES.get(api_code, result.get('msg', 'Error desconocido'))
+        db.execute(
+            "INSERT INTO send_logs (action, details, status) VALUES (?, ?, ?)",
+            ('test_connection', json.dumps({
+                'domain': config['domain'],
+                'spid': config['spid'],
+                'error_code': api_code,
+                'error_msg': error_msg,
+                'result': 'failed'
+            }), 'error')
+        )
+        db.commit()
+        return jsonify({'error': f'Error de conexion (codigo {api_code}): {error_msg}'}), 400
 
 @app.route('/api/config/logs', methods=['GET'])
 @admin_required
@@ -768,27 +1113,161 @@ def get_send_logs():
 # ============================================================
 
 def process_scheduled_messages():
-    """Process pending scheduled messages."""
+    """Process pending scheduled messages using the real SMS API."""
     db = get_db()
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     scheduled = db.execute(
         "SELECT * FROM sms_records WHERE status='scheduled' AND scheduled_at <= ?",
         (now,)
     ).fetchall()
-    for record in scheduled:
-        db.execute(
-            "UPDATE sms_records SET status='sent', sent_at=datetime('now') WHERE id=?",
-            (record['id'],)
-        )
-    if scheduled:
+
+    if not scheduled:
+        return 0
+
+    api_configured = is_sms_api_configured()
+    processed = 0
+
+    if api_configured:
+        # Group into batches for efficient sending
+        phone_content_pairs = [(r['phone'], r['content']) for r in scheduled]
+
+        for batch_start in range(0, len(phone_content_pairs), 200):
+            batch = phone_content_pairs[batch_start:batch_start + 200]
+            batch_records = scheduled[batch_start:batch_start + 200]
+            result = sms_api_send_batch(batch)
+            api_code = result.get('code', -1)
+
+            if api_code == 0 and result.get('data'):
+                result_map = {}
+                for item in result['data']:
+                    result_map[item.get('das', '')] = item
+
+                for record in batch_records:
+                    item = result_map.get(record['phone'], {})
+                    item_state = item.get('state', 0)
+                    msgid = item.get('msgid', '')
+                    if item_state == 0:
+                        db.execute(
+                            "UPDATE sms_records SET status='sent', msgid=?, api_code=?, sent_at=datetime('now') WHERE id=?",
+                            (msgid, api_code, record['id'])
+                        )
+                    else:
+                        db.execute(
+                            "UPDATE sms_records SET status='failed', api_code=?, api_msg=? WHERE id=?",
+                            (item_state, SMS_STATUS_CODES.get(item_state, 'Error'), record['id'])
+                        )
+                    processed += 1
+            else:
+                # Entire batch failed
+                for record in batch_records:
+                    db.execute(
+                        "UPDATE sms_records SET status='failed', api_code=?, api_msg=? WHERE id=?",
+                        (api_code, SMS_STATUS_CODES.get(api_code, result.get('msg', 'Error')), record['id'])
+                    )
+                    processed += 1
+    else:
+        # API not configured - simulate
+        for record in scheduled:
+            db.execute(
+                "UPDATE sms_records SET status='sent', api_msg='API no configurada - envio simulado', sent_at=datetime('now') WHERE id=?",
+                (record['id'],)
+            )
+            processed += 1
+
+    if processed:
         db.commit()
-    return len(scheduled)
+    return processed
 
 @app.route('/api/sms/process-scheduled', methods=['POST'])
 @login_required
 def trigger_process_scheduled():
     count = process_scheduled_messages()
     return jsonify({'message': f'{count} mensaje(s) programado(s) procesado(s)'})
+
+@app.route('/api/sms/query-status', methods=['POST'])
+@login_required
+def query_sms_status_endpoint():
+    """Query delivery status for sent messages."""
+    data = request.get_json()
+    record_ids = data.get('record_ids', [])
+    if not record_ids:
+        return jsonify({'error': 'IDs de registros son requeridos'}), 400
+
+    db = get_db()
+    if not is_sms_api_configured():
+        return jsonify({'error': 'API SMS no configurada'}), 400
+
+    # Get msgids from records
+    placeholders = ','.join(['?'] * len(record_ids))
+    records = db.execute(
+        f"SELECT id, msgid, phone FROM sms_records WHERE id IN ({placeholders}) AND msgid != ''",
+        record_ids
+    ).fetchall()
+
+    if not records:
+        return jsonify({'error': 'No se encontraron mensajes con ID de API'}), 404
+
+    msgids = [r['msgid'] for r in records]
+    result = sms_api_query_status(msgids)
+    api_code = result.get('code', -1)
+
+    if api_code == 0 and result.get('data'):
+        # Update records with status
+        state_map = {0: 'pending', 1: 'sent', 2: 'failed'}
+        state_names = {0: 'Sin回执 (Enviado)', 1: 'Entregado', 2: 'Fallido'}
+        updates = []
+        for item in result['data']:
+            msgid = item.get('msgid', '')
+            state = item.get('state', 0)
+            status = state_map.get(state, 'pending')
+            db.execute(
+                "UPDATE sms_records SET status=? WHERE msgid=?",
+                (status, msgid)
+            )
+            updates.append({'msgid': msgid, 'state': state, 'state_name': state_names.get(state, 'Desconocido')})
+        db.commit()
+        return jsonify({'message': f'{len(updates)} estado(s) actualizado(s)', 'updates': updates})
+    else:
+        error_msg = SMS_STATUS_CODES.get(api_code, result.get('msg', 'Error'))
+        return jsonify({'error': f'Error al consultar estado (codigo {api_code}): {error_msg}'}), 400
+
+@app.route('/api/sms/check-charset', methods=['POST'])
+@login_required
+def check_sms_charset():
+    """Check charset and billing info for SMS content."""
+    data = request.get_json()
+    content = data.get('content', '').strip()
+    if not content:
+        return jsonify({'error': 'Contenido es requerido'}), 400
+
+    if not is_sms_api_configured():
+        # Return local estimation
+        # Spanish uses UCS2: 70 chars per SMS, 67 per long SMS part
+        char_count = len(content)
+        if char_count <= 70:
+            parts = 1
+            single = 70
+        else:
+            parts = (char_count + 66) // 67  # ceil division
+            single = 67
+        return jsonify({
+            'charset': 'UCS2',
+            'parts': parts,
+            'single': single,
+            'char_count': char_count,
+            'detail': f'Contenido con {char_count} caracteres. Codificacion UCS2 (Espanol). Se factura como {parts} SMS.',
+            'api_configured': False
+        })
+
+    result = sms_api_check_charset(content)
+    api_code = result.get('code', -1)
+    if api_code == 0:
+        data = result.get('data', {})
+        data['api_configured'] = True
+        return jsonify(data)
+    else:
+        error_msg = SMS_STATUS_CODES.get(api_code, result.get('msg', 'Error'))
+        return jsonify({'error': f'Error al verificar codificacion (codigo {api_code}): {error_msg}'}), 400
 
 # ============================================================
 # Initialize and run

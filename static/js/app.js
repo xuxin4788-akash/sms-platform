@@ -534,7 +534,30 @@ function updatePreview() {
     if (content) {
         preview.style.display = 'block';
         previewText.textContent = content.replace(/{nombre}/g, 'Juan').replace(/{telefono}/g, '+34 600 000 000');
+        // Check charset and billing info
+        checkCharsetInfo(content);
     } else { preview.style.display = 'none'; }
+}
+
+async function checkCharsetInfo(content) {
+    try {
+        var data = await api('/api/sms/check-charset', { method: 'POST', body: { content: content } });
+        var infoEl = document.getElementById('charset-info');
+        if (!infoEl) {
+            infoEl = document.createElement('div');
+            infoEl.id = 'charset-info';
+            infoEl.style.cssText = 'font-size:12px;color:#64748B;margin-top:4px;padding:6px 10px;background:#F8FAFC;border-radius:6px;';
+            var textarea = document.getElementById('send-content');
+            if (textarea && textarea.parentNode) {
+                textarea.parentNode.insertBefore(infoEl, textarea.nextSibling);
+            }
+        }
+        var charCount = data.char_count || content.length;
+        var parts = data.parts || 1;
+        var single = data.single || 70;
+        var charset = data.charset || 'UCS2';
+        infoEl.innerHTML = 'Codificacion: <strong>' + charset + '</strong> | Caracteres: ' + charCount + '/' + single + ' | Partes: <strong>' + parts + '</strong> SMS' + (data.api_configured ? '' : ' (estimacion local)');
+    } catch (e) {}
 }
 
 function toggleSchedule() {
@@ -576,12 +599,22 @@ async function handleSendSMS() {
             showToast(data.message, 'success');
         } else {
             var data = await api('/api/sms/send', { method: 'POST', body: { phones: phones, content: content, contact_names: contactNames } });
-            showToast(data.message, 'success');
+            var sentCount = (data.records || []).filter(function(r) { return r.status === 'sent'; }).length;
+            var failCount = (data.records || []).filter(function(r) { return r.status === 'failed'; }).length;
+            if (failCount > 0 && sentCount > 0) {
+                showToast(data.message + (data.errors && data.errors.length > 0 ? ' | ' + data.errors.slice(0, 3).join('; ') : ''), 'warning');
+            } else if (failCount > 0 && sentCount === 0) {
+                showToast(data.message + (data.errors && data.errors.length > 0 ? ' | ' + data.errors.slice(0, 3).join('; ') : ''), 'error');
+            } else {
+                showToast(data.message, 'success');
+            }
         }
         state.sendPhones = [];
         document.getElementById('send-content').value = '';
         document.getElementById('send-template').value = '';
         document.getElementById('send-preview').style.display = 'none';
+        var charsetInfo = document.getElementById('charset-info');
+        if (charsetInfo) charsetInfo.remove();
         renderPhoneTags();
     } catch (err) { showToast(err.message, 'error'); }
 }
@@ -602,12 +635,17 @@ async function renderRecords(container) {
         state.records.totalPages = data.total_pages;
 
         var rows = data.records.length === 0
-            ? '<tr><td colspan="5" class="text-center text-secondary" style="padding:32px;">No hay registros</td></tr>'
-            : data.records.map(function(r) { return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(r.content) + '</td><td>' + getStatusBadge(r.status) + '</td></tr>'; }).join('');
+            ? '<tr><td colspan="6" class="text-center text-secondary" style="padding:32px;">No hay registros</td></tr>'
+            : data.records.map(function(r) {
+                var apiInfo = '';
+                if (r.msgid) apiInfo += '<span class="text-secondary" style="font-size:11px;">ID: ' + escapeHtml(r.msgid) + '</span>';
+                if (r.api_msg) apiInfo += '<br><span class="text-secondary" style="font-size:11px;">' + escapeHtml(r.api_msg) + '</span>';
+                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.content) + '">' + escapeHtml(r.content) + '</td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (apiInfo || '<span class="text-secondary">-</span>') + '</td></tr>';
+            }).join('');
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Envio</h1>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por numero, nombre..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)"><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Enviado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Desde"><input type="date" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Hasta"></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por numero, nombre..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)"><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Enviado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Desde"><input type="date" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Hasta"></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
@@ -675,20 +713,24 @@ async function renderConfig(container) {
         var results = await Promise.all([api('/api/config/sms'), api('/api/config/logs')]);
         var configData = results[0].config || {};
         var logsData = results[1];
-        var isConfigured = configData.api_url && configData.api_key;
+        var isConfigured = configData.domain && configData.spid && configData.api_pwd;
         var logRows = logsData.logs.length === 0
             ? '<tr><td colspan="4" class="text-center text-secondary" style="padding:24px;">No hay registros</td></tr>'
             : logsData.logs.map(function(l) { return '<tr><td class="text-sm text-secondary">' + formatDate(l.created_at) + '</td><td>' + escapeHtml(l.action) + '</td><td class="text-sm">' + escapeHtml(l.details || '-') + '</td><td><span class="badge ' + (l.status === 'success' ? 'badge-green' : l.status === 'error' ? 'badge-red' : 'badge-gray') + '">' + escapeHtml(l.status) + '</span></td></tr>'; }).join('');
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Configuracion API SMS</h1>' +
-            '<div class="card mb-4"><div class="card-header"><h2>Proveedor SMS</h2><span class="badge ' + (isConfigured ? 'badge-green' : 'badge-yellow') + '">' + (isConfigured ? 'Configurado' : 'Sin configurar') + '</span></div><div class="card-body">' +
+            '<div class="card mb-4"><div class="card-header"><h2>Proveedor SMS (infin8linx)</h2><span class="badge ' + (isConfigured ? 'badge-green' : 'badge-yellow') + '">' + (isConfigured ? 'Configurado' : 'Sin configurar') + '</span></div><div class="card-body">' +
                 '<form onsubmit="handleSaveConfig(event)">' +
-                    '<div class="form-group"><label>API URL</label><input type="url" name="api_url" value="' + escapeHtml(configData.api_url || '') + '" placeholder="https://api.smsprovider.com/v1/send"></div>' +
-                    '<div class="form-group"><label>API Key</label><input type="text" name="api_key" value="' + escapeHtml(configData.api_key || '') + '" placeholder="Su clave de API"></div>' +
-                    '<div class="form-group"><label>Nombre del Remitente</label><input type="text" name="sender_name" value="' + escapeHtml(configData.sender_name || '') + '" placeholder="MiEmpresa"></div>' +
+                    '<div class="form-group"><label>Dominio del Servidor</label><input type="text" name="domain" value="' + escapeHtml(configData.domain || '') + '" placeholder="api.infin8linx.com"><small class="text-secondary">Dominio del servidor SMS (sin https://)</small></div>' +
+                    '<div class="form-group"><label>Cuenta de Interfaz (SPID)</label><input type="text" name="spid" value="' + escapeHtml(configData.spid || '') + '" placeholder="Su cuenta de interfaz"><small class="text-secondary">Cuenta proporcionada por la empresa</small></div>' +
+                    '<div class="form-group"><label>Contrasena API</label><input type="password" name="api_pwd" value="' + escapeHtml(configData.api_pwd || '') + '" placeholder="Contrasena de la API"><small class="text-secondary">Contrasena proporcionada por la empresa (se encripta con MD5)</small></div>' +
+                    '<div class="form-group"><label>Nombre del Remitente (senderid)</label><input type="text" name="sender_name" value="' + escapeHtml(configData.sender_name || '') + '" placeholder="MiEmpresa"><small class="text-secondary">Campo opcional, se habilita tras cooperacion con el socio</small></div>' +
                     '<div class="flex gap-2"><button type="submit" class="btn btn-primary">Guardar Configuracion</button><button type="button" class="btn btn-secondary" onclick="testApiConnection()">Probar Conexion</button></div>' +
                 '</form>' +
+                '<div class="mt-4" style="padding:12px;background:#EFF6FF;border-radius:8px;font-size:13px;color:#1E293B;">' +
+                    '<strong>Nota sobre codificacion:</strong> El espanol usa codificacion UCS2. Cada SMS individual admite hasta 70 caracteres. SMS largos se dividen en partes de 67 caracteres cada una.' +
+                '</div>' +
             '</div></div>' +
             '<div class="card"><div class="card-header"><h2>Registros de Actividad</h2></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Accion</th><th>Detalles</th><th>Estado</th></tr></thead><tbody>' + logRows + '</tbody></table></div></div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
@@ -696,7 +738,7 @@ async function renderConfig(container) {
 
 async function handleSaveConfig(event) {
     event.preventDefault(); var form = event.target;
-    try { await api('/api/config/sms', { method: 'PUT', body: { api_url: form.api_url.value.trim(), api_key: form.api_key.value.trim(), sender_name: form.sender_name.value.trim() } }); showToast('Configuracion guardada', 'success'); renderConfig(document.getElementById('page-content')); }
+    try { await api('/api/config/sms', { method: 'PUT', body: { domain: form.domain.value.trim(), spid: form.spid.value.trim(), api_pwd: form.api_pwd.value.trim(), sender_name: form.sender_name.value.trim() } }); showToast('Configuracion guardada', 'success'); renderConfig(document.getElementById('page-content')); }
     catch (err) { showToast(err.message, 'error'); }
 }
 
