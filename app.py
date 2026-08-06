@@ -14,8 +14,9 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
 app.config['DATABASE'] = os.path.join(app.instance_path, 'sms_platform.db')
+app.config['DATABASE_URL'] = os.environ.get('DATABASE_URL', '')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 CORS(app, supports_credentials=True)
 
@@ -23,15 +24,88 @@ CORS(app, supports_credentials=True)
 os.makedirs(app.instance_path, exist_ok=True)
 
 # ============================================================
-# Database helpers
+# Database abstraction (SQLite + PostgreSQL)
 # ============================================================
+
+def get_db_type():
+    """Return 'postgres' or 'sqlite' based on DATABASE_URL."""
+    url = app.config.get('DATABASE_URL', '')
+    if url and url.startswith(('postgresql://', 'postgres://')):
+        return 'postgres'
+    return 'sqlite'
+
+class DBWrapper:
+    """Unified database wrapper that works with both SQLite and PostgreSQL."""
+    def __init__(self, conn, db_type):
+        self.conn = conn
+        self.db_type = db_type
+
+    def execute(self, query, params=None):
+        if params is None:
+            params = ()
+        if self.db_type == 'postgres':
+            # Convert SQLite placeholders to PostgreSQL
+            pg_query = query.replace('?', '%s')
+            pg_query = pg_query.replace("datetime('now')", "NOW()")
+            if self.conn.autocommit is False:
+                cur = self.conn.cursor()
+            else:
+                import psycopg2.extras
+                cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(pg_query, params)
+            return CursorWrapper(cur, self.db_type)
+        else:
+            cur = self.conn.execute(query, params)
+            return CursorWrapper(cur, self.db_type)
+
+    def executescript(self, script):
+        if self.db_type == 'postgres':
+            # PostgreSQL doesn't have executescript, execute as single statement
+            self.conn.cursor().execute(script)
+        else:
+            self.conn.executescript(script)
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+class CursorWrapper:
+    """Unified cursor wrapper that returns dict-like rows for both backends."""
+    def __init__(self, cursor, db_type):
+        self.cursor = cursor
+        self.db_type = db_type
+
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        if row is None:
+            return None
+        if self.db_type == 'postgres':
+            return dict(row)
+        return row
+
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        if self.db_type == 'postgres':
+            return [dict(r) for r in rows]
+        return rows
 
 def get_db():
     if 'db' not in g:
-        g.db = sqlite3.connect(app.config['DATABASE'])
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA journal_mode=WAL")
-        g.db.execute("PRAGMA foreign_keys=ON")
+        db_type = get_db_type()
+        if db_type == 'postgres':
+            import psycopg2
+            import psycopg2.extras
+            conn = psycopg2.connect(app.config['DATABASE_URL'])
+            conn.autocommit = False
+            g.db = DBWrapper(conn, db_type)
+        else:
+            conn = sqlite3.connect(app.config['DATABASE'])
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            g.db = DBWrapper(conn, db_type)
     return g.db
 
 @app.teardown_appcontext
@@ -41,117 +115,210 @@ def close_db(exception):
         db.close()
 
 def init_db():
-    db = sqlite3.connect(app.config['DATABASE'])
-    db.executescript('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            full_name TEXT NOT NULL DEFAULT '',
-            role TEXT NOT NULL DEFAULT 'employee' CHECK(role IN ('admin', 'employee')),
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
+    """Initialize database schema. Supports both SQLite and PostgreSQL."""
+    db_type = get_db_type()
 
-        CREATE TABLE IF NOT EXISTS contact_groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
+    if db_type == 'postgres':
+        import psycopg2
+        conn = psycopg2.connect(app.config['DATABASE_URL'])
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                full_name VARCHAR(255) NOT NULL DEFAULT '',
+                role VARCHAR(20) NOT NULL DEFAULT 'employee' CHECK(role IN ('admin', 'employee')),
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
 
-        CREATE TABLE IF NOT EXISTS contacts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            notes TEXT DEFAULT '',
-            group_id INTEGER,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (group_id) REFERENCES contact_groups(id) ON DELETE SET NULL
-        );
+            CREATE TABLE IF NOT EXISTS contact_groups (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                description TEXT DEFAULT '',
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
 
-        CREATE TABLE IF NOT EXISTS templates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            content TEXT NOT NULL,
-            category TEXT DEFAULT 'general',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
+            CREATE TABLE IF NOT EXISTS contacts (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                phone VARCHAR(50) NOT NULL,
+                notes TEXT DEFAULT '',
+                group_id INTEGER REFERENCES contact_groups(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
 
-        CREATE TABLE IF NOT EXISTS sms_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone TEXT NOT NULL,
-            contact_name TEXT DEFAULT '',
-            content TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'scheduled')),
-            msgid TEXT DEFAULT '',
-            api_code INTEGER DEFAULT 0,
-            api_msg TEXT DEFAULT '',
-            scheduled_at TEXT,
-            sent_at TEXT,
-            created_by INTEGER,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-        );
+            CREATE TABLE IF NOT EXISTS templates (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                content TEXT NOT NULL,
+                category VARCHAR(50) DEFAULT 'general',
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
 
-        CREATE TABLE IF NOT EXISTS sms_config (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain TEXT DEFAULT '',
-            spid TEXT DEFAULT '',
-            api_pwd TEXT DEFAULT '',
-            sender_name TEXT DEFAULT '',
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
+            CREATE TABLE IF NOT EXISTS sms_records (
+                id SERIAL PRIMARY KEY,
+                phone VARCHAR(50) NOT NULL,
+                contact_name VARCHAR(255) DEFAULT '',
+                content TEXT NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'scheduled')),
+                msgid VARCHAR(255) DEFAULT '',
+                api_code INTEGER DEFAULT 0,
+                api_msg TEXT DEFAULT '',
+                scheduled_at TIMESTAMP,
+                sent_at TIMESTAMP,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
 
-        CREATE TABLE IF NOT EXISTS send_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            action TEXT NOT NULL,
-            details TEXT DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'info',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-    ''')
-    # Create default admin if not exists
-    cursor = db.execute("SELECT id FROM users WHERE username='admin'")
-    if cursor.fetchone() is None:
-        pw_hash = hashlib.sha256('admin123'.encode()).hexdigest()
-        db.execute(
-            "INSERT INTO users (username, password_hash, full_name, role) VALUES (?, ?, ?, ?)",
-            ('admin', pw_hash, 'Administrador', 'admin')
-        )
-    # Create default sms_config if not exists
-    cursor = db.execute("SELECT id FROM sms_config LIMIT 1")
-    if cursor.fetchone() is None:
-        db.execute("INSERT INTO sms_config (domain, spid, api_pwd, sender_name) VALUES ('', '', '', '')")
-    # Migration: add new columns if they don't exist
-    try:
-        db.execute("ALTER TABLE sms_config ADD COLUMN domain TEXT DEFAULT ''")
-    except Exception:
-        pass
-    try:
-        db.execute("ALTER TABLE sms_config ADD COLUMN spid TEXT DEFAULT ''")
-    except Exception:
-        pass
-    try:
-        db.execute("ALTER TABLE sms_config ADD COLUMN api_pwd TEXT DEFAULT ''")
-    except Exception:
-        pass
-    try:
-        db.execute("ALTER TABLE sms_records ADD COLUMN msgid TEXT DEFAULT ''")
-    except Exception:
-        pass
-    try:
-        db.execute("ALTER TABLE sms_records ADD COLUMN api_code INTEGER DEFAULT 0")
-    except Exception:
-        pass
-    try:
-        db.execute("ALTER TABLE sms_records ADD COLUMN api_msg TEXT DEFAULT ''")
-    except Exception:
-        pass
-    db.commit()
-    db.close()
+            CREATE TABLE IF NOT EXISTS sms_config (
+                id SERIAL PRIMARY KEY,
+                domain VARCHAR(500) DEFAULT '',
+                spid VARCHAR(255) DEFAULT '',
+                api_pwd VARCHAR(255) DEFAULT '',
+                sender_name VARCHAR(255) DEFAULT '',
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS send_logs (
+                id SERIAL PRIMARY KEY,
+                action VARCHAR(100) NOT NULL,
+                details TEXT DEFAULT '',
+                status VARCHAR(20) NOT NULL DEFAULT 'info',
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+        """)
+        # Create default admin
+        cur.execute("SELECT id FROM users WHERE username='admin'")
+        if cur.fetchone() is None:
+            pw_hash = hashlib.sha256('admin123'.encode()).hexdigest()
+            cur.execute(
+                "INSERT INTO users (username, password_hash, full_name, role) VALUES (%s, %s, %s, %s)",
+                ('admin', pw_hash, 'Administrador', 'admin')
+            )
+        # Create default sms_config
+        cur.execute("SELECT id FROM sms_config LIMIT 1")
+        if cur.fetchone() is None:
+            cur.execute("INSERT INTO sms_config (domain, spid, api_pwd, sender_name) VALUES ('', '', '', '')")
+        cur.close()
+        conn.close()
+    else:
+        # SQLite
+        db = sqlite3.connect(app.config['DATABASE'])
+        db.executescript('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                full_name TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT 'employee' CHECK(role IN ('admin', 'employee')),
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS contact_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                notes TEXT DEFAULT '',
+                group_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (group_id) REFERENCES contact_groups(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                category TEXT DEFAULT 'general',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS sms_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                contact_name TEXT DEFAULT '',
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'scheduled')),
+                msgid TEXT DEFAULT '',
+                api_code INTEGER DEFAULT 0,
+                api_msg TEXT DEFAULT '',
+                scheduled_at TEXT,
+                sent_at TEXT,
+                created_by INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS sms_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT DEFAULT '',
+                spid TEXT DEFAULT '',
+                api_pwd TEXT DEFAULT '',
+                sender_name TEXT DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS send_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                details TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'info',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+        ''')
+        # Create default admin if not exists
+        cursor = db.execute("SELECT id FROM users WHERE username='admin'")
+        if cursor.fetchone() is None:
+            pw_hash = hashlib.sha256('admin123'.encode()).hexdigest()
+            db.execute(
+                "INSERT INTO users (username, password_hash, full_name, role) VALUES (?, ?, ?, ?)",
+                ('admin', pw_hash, 'Administrador', 'admin')
+            )
+        # Create default sms_config if not exists
+        cursor = db.execute("SELECT id FROM sms_config LIMIT 1")
+        if cursor.fetchone() is None:
+            db.execute("INSERT INTO sms_config (domain, spid, api_pwd, sender_name) VALUES ('', '', '', '')")
+        # Migration: add new columns if they don't exist
+        try:
+            db.execute("ALTER TABLE sms_config ADD COLUMN domain TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            db.execute("ALTER TABLE sms_config ADD COLUMN spid TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            db.execute("ALTER TABLE sms_config ADD COLUMN api_pwd TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            db.execute("ALTER TABLE sms_records ADD COLUMN msgid TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            db.execute("ALTER TABLE sms_records ADD COLUMN api_code INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            db.execute("ALTER TABLE sms_records ADD COLUMN api_msg TEXT DEFAULT ''")
+        except Exception:
+            pass
+        db.commit()
+        db.close()
 
 # ============================================================
 # Auth helpers

@@ -1,17 +1,74 @@
 version: '3.8'
 
+# Large team deployment: PostgreSQL + Gunicorn + Nginx
+# Suitable for 20+ users, >10,000 SMS/day
+
 services:
-  sms-platform:
-    build: .
-    container_name: sms-marketing-platform
-    ports:
-      - "5000:5000"
+  # PostgreSQL Database
+  db:
+    image: postgres:16-alpine
+    container_name: sms-platform-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sms_platform
+      POSTGRES_USER: sms_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-sms_secure_password_2024}
     volumes:
-      - sms-data:/app/instance
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sms_user -d sms_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+
+  # Flask Application with Gunicorn
+  app:
+    build: .
+    container_name: sms-platform-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       - DEPLOY_RUN_PORT=5000
       - FLASK_ENV=production
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-change_me_in_production_use_random_hex}
+      - DATABASE_URL=postgresql://sms_user:${DB_PASSWORD:-sms_secure_password_2024}@db:5432/sms_platform
+    volumes:
+      - app-logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: sms-platform-nginx
     restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./static:/app/static:ro
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
 
 volumes:
-  sms-data:
+  postgres-data:
+    driver: local
+  app-logs:
+    driver: local
