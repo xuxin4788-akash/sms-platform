@@ -662,11 +662,26 @@ async function renderRecords(container) {
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Envio</h1>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por numero, nombre o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)"><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Enviado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Desde"><input type="date" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Hasta"></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><div style="display:flex;gap:8px;flex:1;"><input type="text" class="search-input" placeholder="Buscar por numero, nombre o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)" style="flex:1;"><button onclick="triggerRecordSearch()" style="padding:8px 16px;background:#2563EB;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Buscar</button></div><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Enviado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Desde"><input type="date" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Hasta"></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
-function handleRecordSearch(event) { if (event.key === 'Enter') { state.records.search = event.target.value; state.records.page = 1; renderRecords(document.getElementById('page-content')); } }
+function handleRecordSearch(event) {
+    if (event.key === 'Enter' || event.type === 'blur') {
+        state.records.search = event.target.value;
+        state.records.page = 1;
+        renderRecords(document.getElementById('page-content'));
+    }
+}
+
+function triggerRecordSearch() {
+    var input = document.querySelector('.search-input');
+    if (input) {
+        state.records.search = input.value;
+        state.records.page = 1;
+        renderRecords(document.getElementById('page-content'));
+    }
+}
 function handleRecordStatusFilter(status) { state.records.status = status; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
 function handleRecordDateFrom(date) { state.records.dateFrom = date; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
 function handleRecordDateTo(date) { state.records.dateTo = date; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
