@@ -91,6 +91,7 @@ function renderPagination(data, type) {
 function changePage(type, page) {
     if (type === 'contacts') { state.contacts.page = page; renderContacts(document.getElementById('page-content')); }
     else if (type === 'records') { state.records.page = page; renderRecords(document.getElementById('page-content')); }
+    else if (type === 'contentSearch') { state.contentSearch.page = page; renderContentSearch(document.getElementById('page-content')); }
 }
 
 // ============================================================
@@ -199,6 +200,7 @@ function navigateTo(page) {
         case 'templates': renderTemplates(content); break;
         case 'send': renderSendSMS(content); break;
         case 'records': renderRecords(content); break;
+        case 'content-search': renderContentSearch(content); break;
         case 'users': renderUsers(content); break;
         case 'user-usage': renderUserUsage(content); break;
         case 'config': renderConfig(content); break;
@@ -660,7 +662,7 @@ async function renderRecords(container) {
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Envio</h1>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por numero, nombre..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)"><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Enviado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Desde"><input type="date" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Hasta"></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por numero, nombre o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)"><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Enviado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Desde"><input type="date" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Hasta"></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
@@ -668,6 +670,47 @@ function handleRecordSearch(event) { if (event.key === 'Enter') { state.records.
 function handleRecordStatusFilter(status) { state.records.status = status; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
 function handleRecordDateFrom(date) { state.records.dateFrom = date; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
 function handleRecordDateTo(date) { state.records.dateTo = date; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
+
+// ============================================================
+// Content Search
+// ============================================================
+if (!state.contentSearch) state.contentSearch = { keyword: '', dateFrom: '', dateTo: '', page: 1, perPage: 20, total: 0, totalPages: 0 };
+
+async function renderContentSearch(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var params = new URLSearchParams({ page: state.contentSearch.page, per_page: state.contentSearch.perPage });
+        if (state.contentSearch.keyword) params.set('search', state.contentSearch.keyword);
+        if (state.contentSearch.dateFrom) params.set('date_from', state.contentSearch.dateFrom);
+        if (state.contentSearch.dateTo) params.set('date_to', state.contentSearch.dateTo);
+        var data = await api('/api/sms/records?' + params.toString());
+        state.contentSearch.total = data.total;
+        state.contentSearch.totalPages = data.total_pages;
+
+        var rows = data.records.length === 0
+            ? '<tr><td colspan="6" class="text-center text-secondary" style="padding:32px;">No se encontraron mensajes con ese contenido</td></tr>'
+            : data.records.map(function(r) {
+                var highlightContent = state.contentSearch.keyword ? highlightText(r.content, state.contentSearch.keyword) : escapeHtml(r.content);
+                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:300px;">' + highlightContent + '</td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (r.api_msg ? '<span class="text-secondary" style="font-size:11px;">' + escapeHtml(r.api_msg) + '</span>' : '<span class="text-secondary">-</span>') + '</td></tr>';
+            }).join('');
+
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Buscar por Contenido</h1>' +
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Ingrese palabra clave del mensaje..." value="' + escapeHtml(state.contentSearch.keyword) + '" onkeyup="handleContentSearch(event)" style="flex:2;"><input type="date" value="' + state.contentSearch.dateFrom + '" onchange="handleContentDateFrom(this.value)" title="Desde"><input type="date" value="' + state.contentSearch.dateTo + '" onchange="handleContentDateTo(this.value)" title="Hasta"><button class="btn btn-secondary btn-sm" onclick="clearContentSearch()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contentSearch') + '</div>';
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function handleContentSearch(event) { if (event.key === 'Enter') { state.contentSearch.keyword = event.target.value; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); } }
+function handleContentDateFrom(date) { state.contentSearch.dateFrom = date; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); }
+function handleContentDateTo(date) { state.contentSearch.dateTo = date; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); }
+function clearContentSearch() { state.contentSearch = { keyword: '', dateFrom: '', dateTo: '', page: 1, perPage: 20, total: 0, totalPages: 0 }; renderContentSearch(document.getElementById('page-content')); }
+
+function highlightText(text, keyword) {
+    if (!keyword) return escapeHtml(text);
+    var escaped = escapeHtml(text);
+    var regex = new RegExp('(' + keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    return escaped.replace(regex, '<mark style="background:#FEF08A;padding:1px 2px;border-radius:2px;">$1</mark>');
+}
 
 // ============================================================
 // Users (Admin)
