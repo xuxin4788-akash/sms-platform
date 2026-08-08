@@ -50,6 +50,20 @@ function formatDate(dateStr) {
     } catch { return dateStr; }
 }
 
+function timeAgo(dateStr) {
+    if (!dateStr) return '-';
+    try {
+        const now = new Date();
+        const d = new Date(dateStr.replace(' ', 'T'));
+        const diff = Math.floor((now - d) / 1000);
+        if (diff < 60) return 'Hace ' + diff + 's';
+        if (diff < 3600) return 'Hace ' + Math.floor(diff / 60) + 'm';
+        if (diff < 86400) return 'Hace ' + Math.floor(diff / 3600) + 'h';
+        if (diff < 604800) return 'Hace ' + Math.floor(diff / 86400) + 'd';
+        return d.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    } catch { return dateStr; }
+}
+
 function getStatusBadge(status) {
     const map = {
         sent: '<span class="badge badge-green">Enviado</span>',
@@ -186,6 +200,7 @@ function navigateTo(page) {
         case 'send': renderSendSMS(content); break;
         case 'records': renderRecords(content); break;
         case 'users': renderUsers(content); break;
+        case 'user-usage': renderUserUsage(content); break;
         case 'config': renderConfig(content); break;
         default: renderDashboard(content);
     }
@@ -701,6 +716,30 @@ async function deleteUser(id) {
     if (!confirm('Esta seguro de eliminar este usuario?')) return;
     try { await api('/api/users/' + id, { method: 'DELETE' }); showToast('Usuario eliminado', 'success'); renderUsers(document.getElementById('page-content')); }
     catch (err) { showToast(err.message, 'error'); }
+}
+
+// ============================================================
+// User Usage Statistics (Admin)
+// ============================================================
+async function renderUserUsage(container) {
+    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando estadisticas...</p></div>';
+    try {
+        var params = new URLSearchParams();
+        var dateFrom = document.getElementById('usage-date-from') ? document.getElementById('usage-date-from').value : '';
+        var dateTo = document.getElementById('usage-date-to') ? document.getElementById('usage-date-to').value : '';
+        if (dateFrom) params.set('date_from', dateFrom);
+        if (dateTo) params.set('date_to', dateTo);
+        var data = await api('/api/admin/user-usage?' + params.toString());
+        var s = data.summary;
+        var overallRate = s.total_all > 0 ? (s.total_sent / s.total_all * 100).toFixed(1) : 0;
+        var rows = data.users.map(function(u) {
+            var rateClass = u.success_rate >= 90 ? 'badge-success' : u.success_rate >= 70 ? 'badge-warning' : u.total > 0 ? 'badge-danger' : 'badge-secondary';
+            var lastAct = u.last_activity ? timeAgo(u.last_activity) : 'Sin actividad';
+            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong><br><small class="text-secondary">' + escapeHtml(u.full_name || '-') + '</small></td><td><span class="badge ' + (u.role==='admin'?'badge-blue':'badge-secondary') + '">' + (u.role==='admin'?'Admin':'Empleado') + '</span></td><td style="text-align:right;font-weight:600;">' + u.total + '</td><td style="text-align:right;color:var(--success);">' + u.sent + '</td><td style="text-align:right;color:var(--danger);">' + u.failed + '</td><td style="text-align:right;color:var(--warning);">' + u.pending + '</td><td style="text-align:right;"><span class="badge ' + rateClass + '">' + u.success_rate + '%</span></td><td><small class="text-secondary">' + lastAct + '</small></td></tr>';
+        }).join('');
+        container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Uso por Usuario</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="usage-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="usage-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderUserUsage(document.getElementById(\'page-content\'))">Filtrar</button></div></div><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px;"><div class="stat-card"><div class="stat-value">' + s.total_users + '</div><div class="stat-label">Usuarios activos</div></div><div class="stat-card"><div class="stat-value">' + s.total_all + '</div><div class="stat-label">Total SMS</div></div><div class="stat-card"><div class="stat-value" style="color:var(--success);">' + s.total_sent + '</div><div class="stat-label">Enviados</div></div><div class="stat-card"><div class="stat-value">' + overallRate + '%</div><div class="stat-label">Tasa de exito</div></div></div><div class="card"><div class="table-container"><table><thead><tr><th>Usuario</th><th>Rol</th><th style="text-align:right;">Total</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Pendientes</th><th style="text-align:right;">Exito</th><th>Ultima actividad</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty-state">Sin datos</td></tr>') + '</tbody></table></div></div>';
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
 // ============================================================

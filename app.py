@@ -1259,6 +1259,77 @@ def test_sms_config():
         db.commit()
         return jsonify({'error': f'Error de conexion (codigo {api_code}): {error_msg}'}), 400
 
+@app.route('/api/admin/user-usage', methods=['GET'])
+@admin_required
+def get_user_usage():
+    """Get per-user SMS usage statistics (admin only)."""
+    db = get_db()
+    date_from = request.args.get('date_from', '')
+    date_to = request.args.get('date_to', '')
+    # Build date filter
+    date_filter = ''
+    params = []
+    if date_from:
+        date_filter += ' AND date(r.created_at) >= ?'
+        params.append(date_from)
+    if date_to:
+        date_filter += ' AND date(r.created_at) <= ?'
+        params.append(date_to)
+    query = f"""
+        SELECT
+            u.id as user_id,
+            u.username,
+            u.full_name,
+            u.role,
+            u.is_active,
+            COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
+            COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
+            COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
+            COALESCE(COUNT(r.id), 0) as total,
+            MAX(r.created_at) as last_activity
+        FROM users u
+        LEFT JOIN sms_records r ON u.id = r.created_by {date_filter}
+        GROUP BY u.id
+        ORDER BY total DESC
+    """
+    rows = db.execute(query, params).fetchall()
+    users = []
+    for row in rows:
+        total = row['total']
+        sent = row['sent']
+        rate = round((sent / total * 100), 1) if total > 0 else 0
+        users.append({
+            'user_id': row['user_id'],
+            'username': row['username'],
+            'full_name': row['full_name'],
+            'role': row['role'],
+            'is_active': bool(row['is_active']),
+            'sent': sent,
+            'failed': row['failed'],
+            'pending': row['pending'],
+            'total': total,
+            'success_rate': rate,
+            'last_activity': row['last_activity'] or ''
+        })
+    # Overall summary
+    summary = db.execute(f"""
+        SELECT
+            COUNT(*) as total_users,
+            COALESCE(SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END), 0) as total_sent,
+            COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0) as total_failed,
+            COALESCE(COUNT(id), 0) as total_all
+        FROM sms_records WHERE 1=1 {date_filter}
+    """, params).fetchone()
+    return jsonify({
+        'users': users,
+        'summary': {
+            'total_users': summary['total_users'] if summary else 0,
+            'total_sent': summary['total_sent'] if summary else 0,
+            'total_failed': summary['total_failed'] if summary else 0,
+            'total_all': summary['total_all'] if summary else 0
+        }
+    })
+
 @app.route('/api/config/logs', methods=['GET'])
 @admin_required
 def get_send_logs():
