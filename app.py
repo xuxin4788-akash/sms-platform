@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from flask import Flask, request, jsonify, render_template, session, g, send_from_directory
 from flask_cors import CORS
+from flask_compress import Compress
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -18,6 +19,13 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
 app.config['DATABASE'] = os.path.join(app.instance_path, 'sms_platform.db')
 app.config['DATABASE_URL'] = os.environ.get('DATABASE_URL', '')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
+
+# Enable Gzip compression
+Compress(app)
+app.config['COMPRESS_MIMETYPES'] = ['text/html', 'text/css', 'text/xml', 'application/json', 'application/javascript', 'text/javascript']
+app.config['COMPRESS_LEVEL'] = 6
+app.config['COMPRESS_MIN_SIZE'] = 500
+
 CORS(app, supports_credentials=True)
 
 # Ensure instance folder exists
@@ -557,6 +565,13 @@ def sms_api_check_charset(content, config=None):
 # ============================================================
 # Frontend route
 # ============================================================
+
+@app.after_request
+def add_cache_headers(response):
+    """Add cache headers for static files"""
+    if request.path.startswith('/static/'):
+        response.headers['Cache-Control'] = 'public, max-age=86400'  # 1 day
+    return response
 
 @app.route('/')
 def index():
