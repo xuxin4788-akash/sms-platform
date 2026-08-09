@@ -490,6 +490,7 @@ table tbody tr:nth-child(even):hover {
 .badge-red { background: var(--danger-light); color: var(--danger); }
 .badge-yellow { background: var(--warning-light); color: var(--warning); }
 .badge-gray { background: var(--bg); color: var(--text-secondary); }
+.badge-orange { background: #FFF7ED; color: #C2410C; }
 
 /* ============================================================
    Pagination

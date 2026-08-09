@@ -8,7 +8,7 @@
 const state = {
     user: null,
     currentPage: 'dashboard',
-    contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '' },
+    contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '', remark: '' },
     records: { page: 1, perPage: 20, total: 0, totalPages: 0, status: '', dateFrom: '', dateTo: '', search: '' },
     sendPhones: [],
     sendMode: 'manual',
@@ -256,20 +256,39 @@ async function renderContacts(container) {
         var params = new URLSearchParams({ page: state.contacts.page, per_page: state.contacts.perPage });
         if (state.contacts.search) params.set('search', state.contacts.search);
         if (state.contacts.groupId) params.set('group_id', state.contacts.groupId);
+        if (state.contacts.remark) params.set('remark', state.contacts.remark);
         var data = await api('/api/contacts?' + params.toString());
         state.contacts.total = data.total;
         state.contacts.totalPages = data.total_pages;
 
+        var remarkOptions = [
+            { value: 'No contactable', label: 'No contactable' },
+            { value: 'Promesa de pago', label: 'Promesa de pago' },
+            { value: 'Dispuesto a pagar sin fondos', label: 'Dispuesto a pagar sin fondos' },
+            { value: 'No dispuesto a pagar', label: 'No dispuesto a pagar' }
+        ];
+        var remarkSelect = '<select onchange="handleContactRemarkFilter(this.value)"><option value="">Todas las notas</option>' +
+            remarkOptions.map(function(r) { return '<option value="' + r.value + '"' + (state.contacts.remark === r.value ? ' selected' : '') + '>' + r.label + '</option>'; }).join('') + '</select>';
+
         var groupOptions = groups.groups.map(function(g) { return '<option value="' + g.id + '"' + (state.contacts.groupId == g.id ? ' selected' : '') + '>' + escapeHtml(g.name) + '</option>'; }).join('');
+
+        var remarkBadgeMap = {
+            'No contactable': 'badge-red',
+            'Promesa de pago': 'badge-green',
+            'Dispuesto a pagar sin fondos': 'badge-yellow',
+            'No dispuesto a pagar': 'badge-orange'
+        };
+
         var rows = data.contacts.length === 0
-            ? '<tr><td colspan="5" class="text-center text-secondary" style="padding:32px;">No hay contactos</td></tr>'
+            ? '<tr><td colspan="6" class="text-center text-secondary" style="padding:32px;">No hay contactos</td></tr>'
             : data.contacts.map(function(c) {
-                return '<tr><td><strong>' + escapeHtml(c.name) + '</strong></td><td>' + escapeHtml(c.phone) + '</td><td>' + (c.group_name ? '<span class="badge badge-blue">' + escapeHtml(c.group_name) + '</span>' : '<span class="text-secondary text-sm">Sin grupo</span>') + '</td><td class="text-secondary text-sm">' + escapeHtml(c.notes || '-') + '</td><td><button class="btn btn-ghost btn-sm btn-icon" onclick="showEditContactModal(' + c.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button><button class="btn btn-ghost btn-sm btn-icon" onclick="deleteContact(' + c.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></td></tr>';
+                var remarkBadge = c.remark ? '<span class="badge ' + (remarkBadgeMap[c.remark] || 'badge-blue') + '">' + escapeHtml(c.remark) + '</span>' : '<span class="text-secondary text-sm">-</span>';
+                return '<tr><td><strong>' + escapeHtml(c.name) + '</strong></td><td>' + escapeHtml(c.phone) + '</td><td>' + (c.group_name ? '<span class="badge badge-blue">' + escapeHtml(c.group_name) + '</span>' : '<span class="text-secondary text-sm">Sin grupo</span>') + '</td><td>' + remarkBadge + '</td><td class="text-secondary text-sm">' + escapeHtml(c.notes || '-') + '</td><td><button class="btn btn-ghost btn-sm btn-icon" onclick="showEditContactModal(' + c.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button><button class="btn btn-ghost btn-sm btn-icon" onclick="deleteContact(' + c.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></td></tr>';
             }).join('');
 
         container.innerHTML =
             '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Contactos</h1><div class="flex gap-2"><button class="btn btn-secondary btn-sm" onclick="showImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Importar CSV</button><button class="btn btn-primary btn-sm" onclick="showAddContactModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo Contacto</button></div></div>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por nombre, telefono..." value="' + escapeHtml(state.contacts.search) + '" onkeyup="handleContactSearch(event)"><select onchange="handleContactGroupFilter(this.value)"><option value="">Todos los grupos</option>' + groupOptions + '</select></div></div><div class="table-container"><table><thead><tr><th>Nombre</th><th>Telefono</th><th>Grupo</th><th>Notas</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contacts') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por nombre, telefono..." value="' + escapeHtml(state.contacts.search) + '" onkeyup="handleContactSearch(event)"><select onchange="handleContactGroupFilter(this.value)"><option value="">Todos los grupos</option>' + groupOptions + '</select>' + remarkSelect + '</div></div><div class="table-container"><table><thead><tr><th>Nombre</th><th>Telefono</th><th>Grupo</th><th>Nota</th><th>Observaciones</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contacts') + '</div>';
     } catch (err) {
         container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
     }
@@ -283,10 +302,15 @@ function handleContactGroupFilter(groupId) {
     state.contacts.groupId = groupId; state.contacts.page = 1; renderContacts(document.getElementById('page-content'));
 }
 
+function handleContactRemarkFilter(remark) {
+    state.contacts.remark = remark; state.contacts.page = 1; renderContacts(document.getElementById('page-content'));
+}
+
 function showAddContactModal() {
     api('/api/groups').then(function(data) {
         var opts = data.groups.map(function(g) { return '<option value="' + g.id + '">' + escapeHtml(g.name) + '</option>'; }).join('');
-        showModal('Nuevo Contacto', '<form id="add-contact-form" onsubmit="handleAddContact(event)"><div class="form-group"><label>Nombre *</label><input type="text" name="name" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" required placeholder="+34 600 000 000"></div><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Notas</label><textarea name="notes" rows="3"></textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Guardar</button></div></form>');
+        var remarkOpts = '<option value="">Sin nota</option><option value="No contactable">No contactable</option><option value="Promesa de pago">Promesa de pago</option><option value="Dispuesto a pagar sin fondos">Dispuesto a pagar sin fondos</option><option value="No dispuesto a pagar">No dispuesto a pagar</option>';
+        showModal('Nuevo Contacto', '<form id="add-contact-form" onsubmit="handleAddContact(event)"><div class="form-group"><label>Nombre *</label><input type="text" name="name" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" required placeholder="+34 600 000 000"></div><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Nota</label><select name="remark">' + remarkOpts + '</select></div><div class="form-group"><label>Observaciones</label><textarea name="notes" rows="3"></textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Guardar</button></div></form>');
     });
 }
 
@@ -294,7 +318,7 @@ async function handleAddContact(event) {
     event.preventDefault();
     var form = event.target;
     try {
-        await api('/api/contacts', { method: 'POST', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), group_id: form.group_id.value || null, notes: form.notes.value.trim() } });
+        await api('/api/contacts', { method: 'POST', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), group_id: form.group_id.value || null, remark: form.remark.value, notes: form.notes.value.trim() } });
         hideModal(); showToast('Contacto creado exitosamente', 'success'); renderContacts(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }
 }
@@ -306,7 +330,8 @@ async function showEditContactModal(id) {
         var contact = contactData.contacts.find(function(c) { return c.id === id; });
         if (!contact) return showToast('Contacto no encontrado', 'error');
         var groupOpts = groupsData.groups.map(function(g) { return '<option value="' + g.id + '"' + (contact.group_id == g.id ? ' selected' : '') + '>' + escapeHtml(g.name) + '</option>'; }).join('');
-        showModal('Editar Contacto', '<form onsubmit="handleEditContact(event, ' + id + ')"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(contact.name) + '" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" value="' + escapeHtml(contact.phone) + '" required></div><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + groupOpts + '</select></div><div class="form-group"><label>Notas</label><textarea name="notes" rows="3">' + escapeHtml(contact.notes || '') + '</textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+        var remarkOpts = ['No contactable', 'Promesa de pago', 'Dispuesto a pagar sin fondos', 'No dispuesto a pagar'].map(function(r) { return '<option value="' + r + '"' + (contact.remark === r ? ' selected' : '') + '>' + r + '</option>'; }).join('');
+        showModal('Editar Contacto', '<form onsubmit="handleEditContact(event, ' + id + ')"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(contact.name) + '" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" value="' + escapeHtml(contact.phone) + '" required></div><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + groupOpts + '</select></div><div class="form-group"><label>Nota</label><select name="remark"><option value="">Sin nota</option>' + remarkOpts + '</select></div><div class="form-group"><label>Observaciones</label><textarea name="notes" rows="3">' + escapeHtml(contact.notes || '') + '</textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
     } catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -314,7 +339,7 @@ async function handleEditContact(event, id) {
     event.preventDefault();
     var form = event.target;
     try {
-        await api('/api/contacts/' + id, { method: 'PUT', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), group_id: form.group_id.value || null, notes: form.notes.value.trim() } });
+        await api('/api/contacts/' + id, { method: 'PUT', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), group_id: form.group_id.value || null, remark: form.remark.value, notes: form.notes.value.trim() } });
         hideModal(); showToast('Contacto actualizado', 'success'); renderContacts(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }
 }
@@ -328,7 +353,7 @@ async function deleteContact(id) {
 function showImportModal() {
     api('/api/groups').then(function(data) {
         var opts = data.groups.map(function(g) { return '<option value="' + g.id + '">' + escapeHtml(g.name) + '</option>'; }).join('');
-        showModal('Importar Contactos (CSV)', '<p class="text-secondary mb-4" style="font-size:13px;">El archivo CSV debe tener las columnas: <strong>name, phone, notes</strong> (o <strong>nombre, telefono, notas</strong>).</p><form id="import-form" onsubmit="handleImport(event)"><div class="form-group"><label>Grupo destino (opcional)</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Archivo CSV</label><input type="file" name="file" accept=".csv" required style="padding:8px;"></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Importar</button></div></form>');
+        showModal('Importar Contactos (CSV)', '<p class="text-secondary mb-4" style="font-size:13px;">El archivo CSV debe tener las columnas: <strong>name, phone, notes, remark</strong> (o <strong>nombre, telefono, notas, nota</strong>).</p><p class="text-secondary mb-4" style="font-size:12px;">Valores de <strong>remark</strong>: No contactable | Promesa de pago | Dispuesto a pagar sin fondos | No dispuesto a pagar</p><form id="import-form" onsubmit="handleImport(event)"><div class="form-group"><label>Grupo destino (opcional)</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Archivo CSV</label><input type="file" name="file" accept=".csv" required style="padding:8px;"></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Importar</button></div></form>');
     });
 }
 

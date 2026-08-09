@@ -241,6 +241,7 @@ def init_db():
                 name TEXT NOT NULL,
                 phone TEXT NOT NULL,
                 notes TEXT DEFAULT '',
+                remark TEXT DEFAULT '',
                 group_id INTEGER,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (group_id) REFERENCES contact_groups(id) ON DELETE SET NULL
@@ -326,6 +327,12 @@ def init_db():
         except Exception:
             pass
         db.commit()
+        # Migration: add remark column to contacts if not exists
+        try:
+            db.execute("ALTER TABLE contacts ADD COLUMN remark TEXT DEFAULT ''")
+            db.commit()
+        except Exception:
+            pass
         db.close()
 
 # ============================================================
@@ -728,6 +735,11 @@ def list_contacts():
         query += " AND c.group_id = ?"
         count_query += " AND c.group_id = ?"
         params.append(int(group_id))
+    remark = request.args.get('remark', '').strip()
+    if remark:
+        query += " AND c.remark = ?"
+        count_query += " AND c.remark = ?"
+        params.append(remark)
     total = db.execute(count_query, params).fetchone()['total']
     query += " ORDER BY c.created_at DESC LIMIT ? OFFSET ?"
     params.extend([per_page, offset])
@@ -747,6 +759,7 @@ def create_contact():
     name = data.get('name', '').strip()
     phone = data.get('phone', '').strip()
     notes = data.get('notes', '').strip()
+    remark = data.get('remark', '').strip()
     group_id = data.get('group_id', None)
     if not name or not phone:
         return jsonify({'error': 'Nombre y telefono son requeridos'}), 400
@@ -756,8 +769,8 @@ def create_contact():
         if not group:
             group_id = None
     db.execute(
-        "INSERT INTO contacts (name, phone, notes, group_id) VALUES (?, ?, ?, ?)",
-        (name, phone, notes, group_id)
+        "INSERT INTO contacts (name, phone, notes, remark, group_id) VALUES (?, ?, ?, ?, ?)",
+        (name, phone, notes, remark, group_id)
     )
     db.commit()
     return jsonify({'message': 'Contacto creado'}), 201
@@ -773,10 +786,11 @@ def update_contact(contact_id):
     name = data.get('name', contact['name'])
     phone = data.get('phone', contact['phone'])
     notes = data.get('notes', contact['notes'])
+    remark = data.get('remark', contact['remark'])
     group_id = data.get('group_id', contact['group_id'])
     db.execute(
-        "UPDATE contacts SET name=?, phone=?, notes=?, group_id=? WHERE id=?",
-        (name, phone, notes, group_id, contact_id)
+        "UPDATE contacts SET name=?, phone=?, notes=?, remark=?, group_id=? WHERE id=?",
+        (name, phone, notes, remark, group_id, contact_id)
     )
     db.commit()
     return jsonify({'message': 'Contacto actualizado'})
@@ -814,13 +828,14 @@ def import_contacts():
         for i, row in enumerate(reader, start=2):
             name = (row.get('name') or row.get('nombre') or '').strip()
             phone = (row.get('phone') or row.get('telefono') or row.get('tel') or '').strip()
-            notes = (row.get('notes') or row.get('notas') or '').strip()
+            notes = (row.get('notes') or row.get('notas') or row.get('observaciones') or '').strip()
+            remark = (row.get('remark') or row.get('nota') or '').strip()
             if not name or not phone:
                 errors.append(f"Fila {i}: nombre y telefono son requeridos")
                 continue
             db.execute(
-                "INSERT INTO contacts (name, phone, notes, group_id) VALUES (?, ?, ?, ?)",
-                (name, phone, notes, group_id)
+                "INSERT INTO contacts (name, phone, notes, remark, group_id) VALUES (?, ?, ?, ?, ?)",
+                (name, phone, notes, remark, group_id)
             )
             imported += 1
         db.commit()
