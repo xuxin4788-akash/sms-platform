@@ -165,10 +165,29 @@ function showMainApp() {
     document.getElementById('main-layout').style.display = 'flex';
     document.getElementById('user-name').textContent = state.user.full_name || state.user.username;
     var roleEl = document.getElementById('user-role');
-    roleEl.textContent = state.user.role === 'admin' ? 'Administrador' : 'Empleado';
-    roleEl.className = state.user.role === 'admin' ? 'badge badge-blue' : 'badge badge-gray';
-    document.querySelectorAll('.admin-only').forEach(function(el) {
-        el.style.display = state.user.role === 'admin' ? 'flex' : 'none';
+    roleEl.textContent = state.user.role_label || state.user.role;
+    var roleBadgeClass = {
+        'admin': 'badge badge-blue',
+        'team_admin': 'badge badge-green',
+        'team_member': 'badge badge-gray'
+    };
+    roleEl.className = roleBadgeClass[state.user.role] || 'badge badge-gray';
+
+    // Role-based navigation visibility
+    var role = state.user.role;
+    document.querySelectorAll('.nav-item').forEach(function(el) {
+        var page = el.dataset.page;
+        var show = true;
+        // System admin only pages
+        if (['config', 'logs'].includes(page)) {
+            show = role === 'admin';
+        }
+        // Manager pages (admin + team_admin)
+        else if (['users', 'user-usage'].includes(page)) {
+            show = role === 'admin' || role === 'team_admin';
+        }
+        // All roles can see: dashboard, contacts, groups, templates, send, records, content-search
+        el.style.display = show ? 'flex' : 'none';
     });
     navigateTo(state.currentPage || 'dashboard');
 }
@@ -753,24 +772,44 @@ function highlightText(text, keyword) {
 }
 
 // ============================================================
-// Users (Admin)
+// Users (Admin + Team Admin)
 // ============================================================
+var ROLE_LABELS = { admin: 'Administrador del Sistema', team_admin: 'Administrador de Equipo', team_member: 'Miembro de Equipo' };
+var ROLE_BADGE = { admin: 'badge-blue', team_admin: 'badge-green', team_member: 'badge-gray' };
+
 async function renderUsers(container) {
-    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3><p>Solo administradores pueden ver esta seccion.</p></div>'; return; }
+    if (!['admin', 'team_admin'].includes(state.user.role)) { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3><p>Solo administradores pueden ver esta seccion.</p></div>'; return; }
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
         var data = await api('/api/users');
+        var myRole = state.user.role;
         var rows = data.users.map(function(u) {
-            var deleteBtn = u.id !== state.user.id ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="deleteUser(' + u.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>' : '';
-            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (u.role === 'admin' ? 'badge-blue' : 'badge-gray') + '">' + (u.role === 'admin' ? 'Administrador' : 'Empleado') + '</span></td><td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td><button class="btn btn-ghost btn-sm btn-icon" onclick="showEditUserModal(' + u.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>' + deleteBtn + '</td></tr>';
+            var canEdit = false;
+            if (myRole === 'admin') canEdit = u.id !== state.user.id;
+            else if (myRole === 'team_admin') canEdit = u.role === 'team_member' && u.team_creator_id === state.user.id;
+            var editBtn = canEdit ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="showEditUserModal(' + u.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>' : '';
+            var deleteBtn = canEdit ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="deleteUser(' + u.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>' : '';
+            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + deleteBtn + '</td></tr>';
         }).join('');
-        container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Gestion de Usuarios</h1><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo Usuario</button></div><div class="card"><div class="table-container"><table><thead><tr><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+        var title = myRole === 'admin' ? 'Gestion de Usuarios' : 'Mi Equipo';
+        var desc = myRole === 'admin' ? 'Administradores de equipo y miembros' : 'Crear y gestionar miembros de tu equipo';
+        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div><div class="card"><div class="table-container"><table><thead><tr><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
         window._users = data.users;
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
 function showAddUserModal() {
-    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role"><option value="employee">Empleado</option><option value="admin">Administrador</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+    var myRole = state.user.role;
+    var roleOptions = '';
+    if (myRole === 'admin') {
+        roleOptions = '<option value="team_admin">Administrador de Equipo</option>';
+    } else if (myRole === 'team_admin') {
+        roleOptions = '<option value="team_member">Miembro de Equipo</option>';
+    }
+    var infoText = myRole === 'admin'
+        ? 'Se creara un Administrador de Equipo que podra gestionar sus propios miembros.'
+        : 'Se creara un Miembro de Equipo bajo tu gestion.';
+    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
 }
 
 async function handleAddUser(event) {
@@ -782,13 +821,13 @@ async function handleAddUser(event) {
 function showEditUserModal(id) {
     var u = (window._users || []).find(function(usr) { return usr.id === id; });
     if (!u) return;
-    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div><div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Rol</label><select name="role"><option value="employee"' + (u.role==='employee'?' selected':'') + '>Empleado</option><option value="admin"' + (u.role==='admin'?' selected':'') + '>Administrador</option></select></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Rol</label><input type="text" value="' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '" disabled style="background:var(--bg);"><small class="text-secondary">El rol no se puede cambiar despues de la creacion</small></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div><div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
 }
 
 async function handleEditUser(event, id) {
     event.preventDefault(); var form = event.target;
     try {
-        var body = { full_name: form.full_name.value.trim(), role: form.role.value, is_active: parseInt(form.is_active.value) };
+        var body = { full_name: form.full_name.value.trim(), is_active: parseInt(form.is_active.value) };
         if (form.password.value) body.password = form.password.value;
         await api('/api/users/' + id, { method: 'PUT', body: body });
         hideModal(); showToast('Usuario actualizado', 'success'); renderUsers(document.getElementById('page-content'));
@@ -805,7 +844,7 @@ async function deleteUser(id) {
 // User Usage Statistics (Admin)
 // ============================================================
 async function renderUserUsage(container) {
-    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
+    if (!['admin', 'team_admin'].includes(state.user.role)) { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
     container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando estadisticas...</p></div>';
     try {
         var params = new URLSearchParams();
@@ -819,7 +858,7 @@ async function renderUserUsage(container) {
         var rows = data.users.map(function(u) {
             var rateClass = u.success_rate >= 90 ? 'badge-success' : u.success_rate >= 70 ? 'badge-warning' : u.total > 0 ? 'badge-danger' : 'badge-secondary';
             var lastAct = u.last_activity ? timeAgo(u.last_activity) : 'Sin actividad';
-            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong><br><small class="text-secondary">' + escapeHtml(u.full_name || '-') + '</small></td><td><span class="badge ' + (u.role==='admin'?'badge-blue':'badge-secondary') + '">' + (u.role==='admin'?'Admin':'Empleado') + '</span></td><td style="text-align:right;font-weight:600;">' + u.total + '</td><td style="text-align:right;color:var(--success);">' + u.sent + '</td><td style="text-align:right;color:var(--danger);">' + u.failed + '</td><td style="text-align:right;color:var(--warning);">' + u.pending + '</td><td style="text-align:right;"><span class="badge ' + rateClass + '">' + u.success_rate + '%</span></td><td><small class="text-secondary">' + lastAct + '</small></td></tr>';
+            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong><br><small class="text-secondary">' + escapeHtml(u.full_name || '-') + '</small></td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td style="text-align:right;font-weight:600;">' + u.total + '</td><td style="text-align:right;color:var(--success);">' + u.sent + '</td><td style="text-align:right;color:var(--danger);">' + u.failed + '</td><td style="text-align:right;color:var(--warning);">' + u.pending + '</td><td style="text-align:right;"><span class="badge ' + rateClass + '">' + u.success_rate + '%</span></td><td><small class="text-secondary">' + lastAct + '</small></td></tr>';
         }).join('');
         container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Uso por Usuario</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="usage-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="usage-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderUserUsage(document.getElementById(\'page-content\'))">Filtrar</button></div></div><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px;"><div class="stat-card"><div class="stat-value">' + s.total_users + '</div><div class="stat-label">Usuarios activos</div></div><div class="stat-card"><div class="stat-value">' + s.total_all + '</div><div class="stat-label">Total SMS</div></div><div class="stat-card"><div class="stat-value" style="color:var(--success);">' + s.total_sent + '</div><div class="stat-label">Enviados</div></div><div class="stat-card"><div class="stat-value">' + overallRate + '%</div><div class="stat-label">Tasa de exito</div></div></div><div class="card"><div class="table-container"><table><thead><tr><th>Usuario</th><th>Rol</th><th style="text-align:right;">Total</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Pendientes</th><th style="text-align:right;">Exito</th><th>Ultima actividad</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty-state">Sin datos</td></tr>') + '</tbody></table></div></div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }

@@ -223,10 +223,12 @@ def init_db():
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 full_name TEXT NOT NULL DEFAULT '',
-                role TEXT NOT NULL DEFAULT 'employee' CHECK(role IN ('admin', 'employee')),
+                role TEXT NOT NULL DEFAULT 'team_member' CHECK(role IN ('admin', 'team_admin', 'team_member')),
+                team_creator_id INTEGER,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (team_creator_id) REFERENCES users(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS contact_groups (
@@ -333,6 +335,46 @@ def init_db():
             db.commit()
         except Exception:
             pass
+        # Migration: add team_creator_id to users if not exists
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN team_creator_id INTEGER")
+            db.commit()
+        except Exception:
+            pass
+        # Migration: update old 'employee' role to 'team_member'
+        try:
+            db.execute("UPDATE users SET role='team_member' WHERE role='employee'")
+            db.commit()
+        except Exception:
+            pass
+        # Migration: recreate users table with new role CHECK constraint
+        try:
+            cursor = db.execute("SELECT sql FROM sqlite_master WHERE name='users'")
+            schema_sql = cursor.fetchone()[0]
+            if "'admin', 'employee'" in schema_sql:
+                db.execute("PRAGMA foreign_keys=OFF")
+                db.execute("DROP TABLE IF EXISTS users_old")
+                db.execute("ALTER TABLE users RENAME TO users_old")
+                db.execute("""CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    full_name TEXT NOT NULL DEFAULT '',
+                    role TEXT NOT NULL DEFAULT 'team_member' CHECK(role IN ('admin', 'team_admin', 'team_member')),
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    team_creator_id INTEGER
+                )""")
+                db.execute("INSERT INTO users (id, username, password_hash, full_name, role, is_active, created_at, updated_at, team_creator_id) SELECT id, username, password_hash, full_name, CASE WHEN role='employee' THEN 'team_member' ELSE role END, is_active, created_at, updated_at, team_creator_id FROM users_old")
+                db.execute("DROP TABLE users_old")
+                db.execute("PRAGMA foreign_keys=ON")
+                db.commit()
+        except Exception as e:
+            print(f"Migration users table error: {e}")
+            db.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            pass
         db.close()
 
 # ============================================================
@@ -365,6 +407,22 @@ def admin_required(f):
             session.clear()
             return jsonify({'error': 'Sesion expirada'}), 401
         if user['role'] != 'admin':
+            return jsonify({'error': 'Permisos insuficientes'}), 403
+        g.user = dict(user)
+        return f(*args, **kwargs)
+    return decorated
+
+def manager_required(f):
+    """Require admin or team_admin role."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'error': 'No autorizado'}), 401
+        user = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
+        if not user:
+            session.clear()
+            return jsonify({'error': 'Sesion expirada'}), 401
+        if user['role'] not in ('admin', 'team_admin'):
             return jsonify({'error': 'Permisos insuficientes'}), 403
         g.user = dict(user)
         return f(*args, **kwargs)
@@ -588,6 +646,12 @@ def index():
 # Auth API
 # ============================================================
 
+ROLE_LABELS = {
+    'admin': 'Administrador del Sistema',
+    'team_admin': 'Administrador de Equipo',
+    'team_member': 'Miembro de Equipo'
+}
+
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -608,7 +672,8 @@ def login():
             'id': user['id'],
             'username': user['username'],
             'full_name': user['full_name'],
-            'role': user['role']
+            'role': user['role'],
+            'role_label': ROLE_LABELS.get(user['role'], user['role'])
         }
     })
 
@@ -625,56 +690,96 @@ def get_me():
             'id': g.user['id'],
             'username': g.user['username'],
             'full_name': g.user['full_name'],
-            'role': g.user['role']
+            'role': g.user['role'],
+            'role_label': ROLE_LABELS.get(g.user['role'], g.user['role'])
         }
     })
 
 # ============================================================
-# Users API (admin)
+# Users API (role-based access control)
 # ============================================================
 
 @app.route('/api/users', methods=['GET'])
-@admin_required
+@manager_required
 def list_users():
     db = get_db()
-    users = db.execute("SELECT id, username, full_name, role, is_active, created_at, updated_at FROM users ORDER BY created_at DESC").fetchall()
-    return jsonify({'users': [dict(u) for u in users]})
+    current = g.user
+    if current['role'] == 'admin':
+        # System admin sees all users
+        users = db.execute("SELECT id, username, full_name, role, team_creator_id, is_active, created_at, updated_at FROM users ORDER BY created_at DESC").fetchall()
+    else:
+        # Team admin sees only their own team members + themselves
+        users = db.execute(
+            "SELECT id, username, full_name, role, team_creator_id, is_active, created_at, updated_at FROM users WHERE id=? OR team_creator_id=? ORDER BY created_at DESC",
+            (current['id'], current['id'])
+        ).fetchall()
+    result = []
+    for u in users:
+        ud = dict(u)
+        ud['role_label'] = ROLE_LABELS.get(ud['role'], ud['role'])
+        result.append(ud)
+    return jsonify({'users': result})
 
 @app.route('/api/users', methods=['POST'])
-@admin_required
+@manager_required
 def create_user():
     data = request.get_json()
+    current = g.user
     username = data.get('username', '').strip()
     password = data.get('password', '')
     full_name = data.get('full_name', '').strip()
-    role = data.get('role', 'employee')
+    role = data.get('role', 'team_member')
     if not username or not password:
         return jsonify({'error': 'Usuario y contrasena son requeridos'}), 400
-    if role not in ('admin', 'employee'):
-        return jsonify({'error': 'Rol invalido'}), 400
     if len(password) < 6:
         return jsonify({'error': 'La contrasena debe tener minimo 6 caracteres'}), 400
+    # Role assignment rules
+    if current['role'] == 'admin':
+        # System admin can only create team_admin
+        if role != 'team_admin':
+            return jsonify({'error': 'El Administrador del Sistema solo puede crear Administradores de Equipo'}), 400
+        team_creator_id = None
+    elif current['role'] == 'team_admin':
+        # Team admin can only create team_member
+        if role != 'team_member':
+            return jsonify({'error': 'Solo puede crear Miembros de Equipo'}), 400
+        team_creator_id = current['id']
+    else:
+        return jsonify({'error': 'Permisos insuficientes'}), 403
     db = get_db()
     existing = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
     if existing:
         return jsonify({'error': 'El nombre de usuario ya existe'}), 409
     db.execute(
-        "INSERT INTO users (username, password_hash, full_name, role) VALUES (?, ?, ?, ?)",
-        (username, hash_password(password), full_name, role)
+        "INSERT INTO users (username, password_hash, full_name, role, team_creator_id) VALUES (?, ?, ?, ?, ?)",
+        (username, hash_password(password), full_name, role, team_creator_id)
     )
     db.commit()
     return jsonify({'message': 'Usuario creado exitosamente'}), 201
 
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
-@admin_required
+@manager_required
 def update_user(user_id):
     data = request.get_json()
+    current = g.user
     db = get_db()
     user = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
     if not user:
         return jsonify({'error': 'Usuario no encontrado'}), 404
+    # Permission checks
+    if current['role'] == 'admin':
+        # System admin can edit anyone except changing their own role
+        pass
+    elif current['role'] == 'team_admin':
+        # Team admin can only edit their own team members
+        if user['team_creator_id'] != current['id']:
+            return jsonify({'error': 'Solo puede editar miembros de su propio equipo'}), 403
+        # Cannot change role
+        if 'role' in data and data['role'] != user['role']:
+            return jsonify({'error': 'No puede cambiar el rol de un usuario'}), 403
+    else:
+        return jsonify({'error': 'Permisos insuficientes'}), 403
     full_name = data.get('full_name', user['full_name'])
-    role = data.get('role', user['role'])
     is_active = data.get('is_active', user['is_active'])
     password = data.get('password', None)
     updates = ["updated_at=datetime('now')"]
@@ -682,9 +787,12 @@ def update_user(user_id):
     if full_name is not None:
         updates.append("full_name=?")
         params.append(full_name)
-    if role in ('admin', 'employee'):
-        updates.append("role=?")
-        params.append(role)
+    # Only system admin can change roles
+    if current['role'] == 'admin' and 'role' in data:
+        new_role = data['role']
+        if new_role in ('admin', 'team_admin', 'team_member'):
+            updates.append("role=?")
+            params.append(new_role)
     if is_active in (0, 1, True, False):
         updates.append("is_active=?")
         params.append(int(is_active))
@@ -699,14 +807,28 @@ def update_user(user_id):
     return jsonify({'message': 'Usuario actualizado'})
 
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
-@admin_required
+@manager_required
 def delete_user(user_id):
+    current = g.user
     db = get_db()
-    if user_id == g.user['id']:
+    if user_id == current['id']:
         return jsonify({'error': 'No puede eliminar su propia cuenta'}), 400
     user = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
     if not user:
         return jsonify({'error': 'Usuario no encontrado'}), 404
+    # Permission checks
+    if current['role'] == 'admin':
+        # System admin can delete team_admins (but not other system admins)
+        if user['role'] == 'admin':
+            return jsonify({'error': 'No puede eliminar a otro Administrador del Sistema'}), 403
+    elif current['role'] == 'team_admin':
+        # Team admin can only delete their own team members
+        if user['team_creator_id'] != current['id']:
+            return jsonify({'error': 'Solo puede eliminar miembros de su propio equipo'}), 403
+        if user['role'] != 'team_member':
+            return jsonify({'error': 'Solo puede eliminar Miembros de Equipo'}), 403
+    else:
+        return jsonify({'error': 'Permisos insuficientes'}), 403
     db.execute("DELETE FROM users WHERE id=?", (user_id,))
     db.commit()
     return jsonify({'message': 'Usuario eliminado'})
@@ -1142,6 +1264,16 @@ def list_sms_records():
     query = "SELECT * FROM sms_records WHERE 1=1"
     count_query = "SELECT COUNT(*) as total FROM sms_records WHERE 1=1"
     params = []
+    # Role-based scope filtering
+    if g.user['role'] == 'team_member':
+        query += " AND created_by = ?"
+        count_query += " AND created_by = ?"
+        params.append(g.user['id'])
+    elif g.user['role'] == 'team_admin':
+        query += " AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)"
+        count_query += " AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)"
+        params.extend([g.user['id'], g.user['id']])
+    # admin sees all
     if status:
         query += " AND status = ?"
         count_query += " AND status = ?"
@@ -1174,26 +1306,47 @@ def list_sms_records():
 @login_required
 def sms_statistics():
     db = get_db()
+    # Build scope filter based on role
+    scope_filter = ''
+    scope_params = []
+    if g.user['role'] == 'team_member':
+        scope_filter = ' AND created_by = ?'
+        scope_params = [g.user['id']]
+    elif g.user['role'] == 'team_admin':
+        scope_filter = ' AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)'
+        scope_params = [g.user['id'], g.user['id']]
     today = datetime.now().strftime('%Y-%m-%d')
     today_sent = db.execute(
-        "SELECT COUNT(*) as count FROM sms_records WHERE status='sent' AND date(sent_at)=?",
-        (today,)
+        f"SELECT COUNT(*) as count FROM sms_records WHERE status='sent' AND date(sent_at)=? {scope_filter}",
+        [today] + scope_params
     ).fetchone()['count']
     today_total = db.execute(
-        "SELECT COUNT(*) as count FROM sms_records WHERE date(created_at)=?",
-        (today,)
+        f"SELECT COUNT(*) as count FROM sms_records WHERE date(created_at)=? {scope_filter}",
+        [today] + scope_params
     ).fetchone()['count']
-    total_sent = db.execute("SELECT COUNT(*) as count FROM sms_records WHERE status='sent'").fetchone()['count']
-    total_failed = db.execute("SELECT COUNT(*) as count FROM sms_records WHERE status='failed'").fetchone()['count']
-    total_pending = db.execute("SELECT COUNT(*) as count FROM sms_records WHERE status IN ('pending', 'scheduled')").fetchone()['count']
-    total_all = db.execute("SELECT COUNT(*) as count FROM sms_records").fetchone()['count']
+    total_sent = db.execute(
+        f"SELECT COUNT(*) as count FROM sms_records WHERE status='sent' {scope_filter}",
+        scope_params
+    ).fetchone()['count']
+    total_failed = db.execute(
+        f"SELECT COUNT(*) as count FROM sms_records WHERE status='failed' {scope_filter}",
+        scope_params
+    ).fetchone()['count']
+    total_pending = db.execute(
+        f"SELECT COUNT(*) as count FROM sms_records WHERE status IN ('pending', 'scheduled') {scope_filter}",
+        scope_params
+    ).fetchone()['count']
+    total_all = db.execute(
+        f"SELECT COUNT(*) as count FROM sms_records WHERE 1=1 {scope_filter}",
+        scope_params
+    ).fetchone()['count']
     # Last 7 days stats
     last_7_days = []
     for i in range(6, -1, -1):
         day = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
         count = db.execute(
-            "SELECT COUNT(*) as count FROM sms_records WHERE status='sent' AND date(sent_at)=?",
-            (day,)
+            f"SELECT COUNT(*) as count FROM sms_records WHERE status='sent' AND date(sent_at)=? {scope_filter}",
+            [day] + scope_params
         ).fetchone()['count']
         last_7_days.append({'date': day, 'count': count})
     success_rate = (total_sent / total_all * 100) if total_all > 0 else 0
@@ -1290,9 +1443,9 @@ def test_sms_config():
         return jsonify({'error': f'Error de conexion (codigo {api_code}): {error_msg}'}), 400
 
 @app.route('/api/admin/user-usage', methods=['GET'])
-@admin_required
+@manager_required
 def get_user_usage():
-    """Get per-user SMS usage statistics (admin only)."""
+    """Get per-user SMS Usage statistics. System admin sees all; team admin sees own team."""
     db = get_db()
     date_from = request.args.get('date_from', '')
     date_to = request.args.get('date_to', '')
@@ -1305,6 +1458,11 @@ def get_user_usage():
     if date_to:
         date_filter += ' AND date(r.created_at) <= ?'
         params.append(date_to)
+    # Build user filter
+    user_filter = ''
+    if g.user['role'] == 'team_admin':
+        user_filter = ' AND (u.id = ? OR u.team_creator_id = ?)'
+        params = [g.user['id'], g.user['id']] + params
     query = f"""
         SELECT
             u.id as user_id,
@@ -1319,6 +1477,7 @@ def get_user_usage():
             MAX(r.created_at) as last_activity
         FROM users u
         LEFT JOIN sms_records r ON u.id = r.created_by {date_filter}
+        WHERE 1=1 {user_filter}
         GROUP BY u.id
         ORDER BY total DESC
     """
@@ -1333,6 +1492,7 @@ def get_user_usage():
             'username': row['username'],
             'full_name': row['full_name'],
             'role': row['role'],
+            'role_label': ROLE_LABELS.get(row['role'], row['role']),
             'is_active': bool(row['is_active']),
             'sent': sent,
             'failed': row['failed'],
@@ -1342,14 +1502,19 @@ def get_user_usage():
             'last_activity': row['last_activity'] or ''
         })
     # Overall summary
+    summary_filter = ''
+    summary_params = list(params)
+    if g.user['role'] == 'team_admin':
+        summary_filter = ' AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)'
+        summary_params.extend([g.user['id'], g.user['id']])
     summary = db.execute(f"""
         SELECT
             COUNT(*) as total_users,
             COALESCE(SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END), 0) as total_sent,
             COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0) as total_failed,
             COALESCE(COUNT(id), 0) as total_all
-        FROM sms_records WHERE 1=1 {date_filter}
-    """, params).fetchone()
+        FROM sms_records WHERE 1=1 {date_filter} {summary_filter}
+    """, summary_params).fetchone()
     return jsonify({
         'users': users,
         'summary': {

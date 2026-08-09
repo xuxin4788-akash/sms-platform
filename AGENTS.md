@@ -48,25 +48,40 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | POST | /api/auth/login | Public | Login |
 | POST | /api/auth/logout | Public | Logout |
 | GET | /api/auth/me | User | Current user info |
-| GET/POST | /api/users | Admin | List/Create users |
-| PUT/DELETE | /api/users/<id> | Admin | Update/Delete user |
-| GET/POST | /api/contacts | User | List/Create contacts |
-| PUT/DELETE | /api/contacts/<id> | User | Update/Delete contact |
+| GET/POST | /api/users | Admin/TeamAdmin | List/Create users (role-based scope) |
+| PUT/DELETE | /api/users/<id> | Admin/TeamAdmin | Update/Delete user (role-based scope) |
+| GET/POST | /api/contacts | User | List/Create contacts (team: all, member: own) |
+| PUT/DELETE | /api/contacts/<id> | User | Update/Delete contact (team: all, member: own) |
 | POST | /api/contacts/import | User | Import CSV contacts |
-| GET/POST | /api/groups | User | List/Create groups |
-| PUT/DELETE | /api/groups/<id> | User | Update/Delete group |
-| GET/POST | /api/templates | User | List/Create templates |
+| GET/POST | /api/groups | User | List/Create groups (team: all, member: own) |
+| PUT/DELETE | /api/groups/<id> | User | Update/Delete group (team: all, member: own) |
+| GET/POST | /api/templates | User | List/Create templates (shared across all users) |
 | PUT/DELETE | /api/templates/<id> | User | Update/Delete template |
 | POST | /api/sms/send | User | Send SMS (real API or simulation) |
 | POST | /api/sms/schedule | User | Schedule SMS |
-| GET | /api/sms/records | User | List send records |
-| GET | /api/sms/statistics | User | Dashboard stats |
+| GET | /api/sms/records | User | List send records (team: all, member: own) |
+| GET | /api/sms/statistics | User | Dashboard stats (team: all, member: own) |
 | POST | /api/sms/query-status | User | Query delivery status via API |
 | POST | /api/sms/check-charset | User | Check charset/billing for content |
 | POST | /api/sms/process-scheduled | User | Process scheduled messages |
+| GET | /api/admin/user-usage | Admin/TeamAdmin | Per-user usage statistics |
 | GET/PUT | /api/config/sms | Admin | SMS API config (domain, spid, api_pwd, sender_name) |
 | POST | /api/config/sms/test | Admin | Test API connection (charset check) |
 | GET | /api/config/logs | Admin | Activity logs |
+
+## Permission System (Three-Tier Roles)
+| Role | Value | Can Create | Can Manage | Scope |
+|------|-------|-----------|-----------|-------|
+| Administrador del Sistema | `admin` | Team Admins only | All users, SMS config, logs | Full system |
+| Administrador de Equipo | `team_admin` | Team Members only | Own team members | Team data (contacts, groups, SMS records) |
+| Miembro de Equipo | `team_member` | None | Self only | Own data only |
+
+### Key Rules
+- System Admin creates Team Admin accounts (NOT Team Members)
+- Team Admin creates Team Member accounts under their management (`team_creator_id`)
+- Team Admin cannot create same-level or higher accounts
+- Team Admin sees all team data; Team Member sees only their own data
+- Templates are shared across all users regardless of role
 
 ## SMS API Integration (infin8linx)
 - Provider: infin8linx SMS API
@@ -76,7 +91,7 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 - Fallback: Simulation mode when API not configured
 
 ## Default Credentials
-- Admin: `admin` / `admin123`
+- System Admin: `admin` / `admin123`
 
 ## Database
 Dual database support via `DBWrapper` abstraction layer:
