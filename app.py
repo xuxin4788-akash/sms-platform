@@ -1584,9 +1584,14 @@ def get_user_usage():
             'success_rate': rate,
             'last_activity': row['last_activity'] or ''
         })
-    # Overall summary
+    # Overall summary - only use date params (not user_filter params)
+    date_params = []
+    if date_from:
+        date_params.append(date_from)
+    if date_to:
+        date_params.append(date_to)
     summary_filter = ''
-    summary_params = list(params)
+    summary_params = list(date_params)
     if g.user['role'] == 'team_admin':
         summary_filter = ' AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)'
         summary_params.extend([g.user['id'], g.user['id']])
