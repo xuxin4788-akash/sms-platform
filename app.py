@@ -1603,6 +1603,72 @@ def get_user_usage():
             COALESCE(COUNT(id), 0) as total_all
         FROM sms_records WHERE 1=1 {date_filter} {summary_filter}
     """, summary_params).fetchone()
+
+    # Team summary: aggregate by team (team_admin's team)
+    team_summary = []
+    if g.user['role'] == 'admin':
+        # For system admin: show all teams
+        team_rows = db.execute(f"""
+            SELECT
+                ta.id as team_admin_id,
+                ta.username as team_admin_username,
+                ta.full_name as team_admin_name,
+                COUNT(DISTINCT m.id) + 1 as member_count,
+                COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as team_sent,
+                COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as team_failed,
+                COALESCE(COUNT(r.id), 0) as team_total
+            FROM users ta
+            LEFT JOIN users m ON m.team_creator_id = ta.id
+            LEFT JOIN sms_records r ON (r.created_by = ta.id OR r.created_by = m.id) {('AND date(r.created_at) >= ? AND date(r.created_at) <= ?' if date_from and date_to else '')}
+            WHERE ta.role = 'team_admin'
+            GROUP BY ta.id
+            ORDER BY team_total DESC
+        """, ([date_from, date_to] if date_from and date_to else [])).fetchall()
+        for tr in team_rows:
+            team_total = tr['team_total'] or 0
+            team_sent = tr['team_sent'] or 0
+            team_failed = tr['team_failed'] or 0
+            team_rate = round((team_sent / team_total * 100), 1) if team_total > 0 else 0
+            team_summary.append({
+                'team_name': tr['team_admin_name'] or tr['team_admin_username'],
+                'team_admin': tr['team_admin_username'],
+                'member_count': tr['member_count'],
+                'total': team_total,
+                'sent': team_sent,
+                'failed': team_failed,
+                'rate': team_rate
+            })
+    elif g.user['role'] == 'team_admin':
+        # For team admin: show own team only
+        member_ids = [u['id'] for u in db.execute(
+            "SELECT id FROM users WHERE team_creator_id = ?", (g.user['id'],)
+        ).fetchall()]
+        member_ids.append(g.user['id'])
+        placeholders = ','.join('?' * len(member_ids))
+        team_row = db.execute(f"""
+            SELECT
+                COUNT(DISTINCT u.id) as member_count,
+                COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as team_sent,
+                COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as team_failed,
+                COALESCE(COUNT(r.id), 0) as team_total
+            FROM users u
+            LEFT JOIN sms_records r ON r.created_by = u.id {('AND date(r.created_at) >= ? AND date(r.created_at) <= ?' if date_from and date_to else '')}
+            WHERE u.id IN ({placeholders})
+        """, (member_ids + ([date_from, date_to] if date_from and date_to else []))).fetchone()
+        team_total = team_row['team_total'] or 0
+        team_sent = team_row['team_sent'] or 0
+        team_failed = team_row['team_failed'] or 0
+        team_rate = round((team_sent / team_total * 100), 1) if team_total > 0 else 0
+        team_summary.append({
+            'team_name': g.user['full_name'] or g.user['username'],
+            'team_admin': g.user['username'],
+            'member_count': team_row['member_count'],
+            'total': team_total,
+            'sent': team_sent,
+            'failed': team_failed,
+            'rate': team_rate
+        })
+
     return jsonify({
         'users': users,
         'summary': {
@@ -1610,7 +1676,8 @@ def get_user_usage():
             'total_sent': summary['total_sent'] if summary else 0,
             'total_failed': summary['total_failed'] if summary else 0,
             'total_all': summary['total_all'] if summary else 0
-        }
+        },
+        'team_summary': team_summary
     })
 
 @app.route('/api/admin/team-daily-stats', methods=['GET'])
