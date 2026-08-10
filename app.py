@@ -704,19 +704,51 @@ def get_me():
 def list_users():
     db = get_db()
     current = g.user
+    role_filter = request.args.get('role', '').strip()
+    search = request.args.get('search', '').strip()
+
+    # Base query with team creator name
+    base_select = """
+        SELECT u.id, u.username, u.full_name, u.role, u.team_creator_id,
+               u.is_active, u.created_at, u.updated_at,
+               tc.username AS team_creator_name, tc.full_name AS team_creator_fullname
+        FROM users u
+        LEFT JOIN users tc ON u.team_creator_id = tc.id
+    """
+
     if current['role'] == 'admin':
-        # System admin sees all users
-        users = db.execute("SELECT id, username, full_name, role, team_creator_id, is_active, created_at, updated_at FROM users ORDER BY created_at DESC").fetchall()
+        where_clauses = []
+        params = []
+        if role_filter:
+            where_clauses.append("u.role = ?")
+            params.append(role_filter)
+        if search:
+            where_clauses.append("(u.username LIKE ? OR u.full_name LIKE ?)")
+            params.extend([f'%{search}%', f'%{search}%'])
+        where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+        users = db.execute(base_select + where_sql + " ORDER BY u.created_at DESC", params).fetchall()
     else:
         # Team admin sees only their own team members + themselves
-        users = db.execute(
-            "SELECT id, username, full_name, role, team_creator_id, is_active, created_at, updated_at FROM users WHERE id=? OR team_creator_id=? ORDER BY created_at DESC",
-            (current['id'], current['id'])
-        ).fetchall()
+        where_clauses = ["(u.id = ? OR u.team_creator_id = ?)"]
+        params = [current['id'], current['id']]
+        if role_filter:
+            where_clauses.append("u.role = ?")
+            params.append(role_filter)
+        if search:
+            where_clauses.append("(u.username LIKE ? OR u.full_name LIKE ?)")
+            params.extend([f'%{search}%', f'%{search}%'])
+        where_sql = " AND ".join(where_clauses)
+        users = db.execute(base_select + " WHERE " + where_sql + " ORDER BY u.created_at DESC", params).fetchall()
+
     result = []
     for u in users:
         ud = dict(u)
         ud['role_label'] = ROLE_LABELS.get(ud['role'], ud['role'])
+        # Team affiliation: show team creator name for team members
+        if ud['team_creator_name']:
+            ud['team_affiliation'] = ud['team_creator_fullname'] or ud['team_creator_name']
+        else:
+            ud['team_affiliation'] = None
         result.append(ud)
     return jsonify({'users': result})
 
