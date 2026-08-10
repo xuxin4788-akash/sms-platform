@@ -933,8 +933,10 @@ async function renderUnifiedStats(container) {
         var params = new URLSearchParams();
         var dateFrom = document.getElementById('stats-date-from') ? document.getElementById('stats-date-from').value : '';
         var dateTo = document.getElementById('stats-date-to') ? document.getElementById('stats-date-to').value : '';
+        var filterUserId = document.getElementById('stats-user-filter') ? document.getElementById('stats-user-filter').value : '';
         if (dateFrom) params.set('date_from', dateFrom);
         if (dateTo) params.set('date_to', dateTo);
+        if (filterUserId) params.set('user_id', filterUserId);
 
         var data = await api('/api/admin/unified-stats?' + params.toString());
         var myAcct = data.my_account || {};
@@ -952,11 +954,14 @@ async function renderUnifiedStats(container) {
             return '<tr><td style="color:var(--text-secondary);">' + label + '</td><td style="text-align:right;font-weight:600;">' + value + '</td></tr>';
         }
 
-        var html = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Panel de Estadisticas</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="stats-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="stats-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderUnifiedStats(document.getElementById(\'page-content\'))">Filtrar</button></div></div>';
+        var userOptions = (data.users || []).map(function(u) {
+            return '<option value="' + u.id + '"' + (filterUserId == u.id ? ' selected' : '') + '>' + escapeHtml(u.username) + (u.full_name ? ' - ' + escapeHtml(u.full_name) : '') + '</option>';
+        }).join('');
+        var filterHtml = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Panel de Estadisticas</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="stats-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="stats-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><select id="stats-user-filter" class="form-control" style="width:auto;padding:6px 10px;"><option value="">Todos los usuarios</option>' + userOptions + '</select><button class="btn btn-primary btn-sm" onclick="renderUnifiedStats(document.getElementById(\'page-content\'))">Filtrar</button></div></div>';
 
         // Panel 1: My Account (all roles)
         var myRate = myAcct.total > 0 ? (myAcct.sent / myAcct.total * 100).toFixed(1) : '0.0';
-        html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;"></span><h3 style="margin:0;">Mi Cuenta</h3><span class="badge badge-primary" style="margin-left:auto;">' + escapeHtml(state.user.username) + '</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);">' + statCard('Total SMS', myAcct.total || 0) + statCard('Enviados', myAcct.sent || 0, 'var(--success)') + statCard('Fallidos', myAcct.failed || 0, 'var(--danger)') + statCard('Tasa de Exito', myRate + '%') + '</div></div></div>';
+        html = filterHtml + '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;"></span><h3 style="margin:0;">Mi Cuenta</h3><span class="badge badge-primary" style="margin-left:auto;">' + escapeHtml(state.user.username) + '</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);">' + statCard('Total SMS', myAcct.total || 0) + statCard('Enviados', myAcct.sent || 0, 'var(--success)') + statCard('Fallidos', myAcct.failed || 0, 'var(--danger)') + statCard('Tasa de Exito', myRate + '%') + '</div></div></div>';
 
         // Panel 2: My Team (team_admin and team_member)
         if (role === 'team_admin' || role === 'team_member') {

@@ -1689,6 +1689,7 @@ def get_unified_stats():
     role = session['role']
     date_from = request.args.get('date_from', '')
     date_to = request.args.get('date_to', '')
+    filter_user_id = request.args.get('user_id', '')  # Account filter
 
     # Build date filter
     date_filter = ''
@@ -1700,7 +1701,8 @@ def get_unified_stats():
         date_filter += ' AND date(created_at) <= ?'
         date_params.append(date_to)
 
-    # 1. My Account stats
+    # 1. My Account stats (with optional account filter)
+    account_user_id = int(filter_user_id) if filter_user_id and filter_user_id.isdigit() else user_id
     my_account = db.execute(f"""
         SELECT
             COALESCE(SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END), 0) as sent,
@@ -1708,7 +1710,7 @@ def get_unified_stats():
             COALESCE(SUM(CASE WHEN status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
             COALESCE(COUNT(id), 0) as total
         FROM sms_records WHERE created_by = ? {date_filter}
-    """, [user_id] + date_params).fetchone()
+    """, [account_user_id] + date_params).fetchone()
 
     my_account_data = {
         'total': my_account['total'] if my_account else 0,
