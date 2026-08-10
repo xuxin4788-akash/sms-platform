@@ -879,16 +879,117 @@ async function renderUserUsage(container) {
         var dateTo = document.getElementById('usage-date-to') ? document.getElementById('usage-date-to').value : '';
         if (dateFrom) params.set('date_from', dateFrom);
         if (dateTo) params.set('date_to', dateTo);
-        var data = await api('/api/admin/user-usage?' + params.toString());
+        var results = await Promise.all([
+            api('/api/admin/user-usage?' + params.toString()),
+            api('/api/admin/team-daily-stats?' + params.toString())
+        ]);
+        var data = results[0];
+        var dailyData = results[1];
         var s = data.summary;
         var overallRate = s.total_all > 0 ? (s.total_sent / s.total_all * 100).toFixed(1) : 0;
+
+        // Team stats cards
+        var teamTotal = dailyData.total || 0;
+        var teamToday = dailyData.today || 0;
+        var teamSent = dailyData.sent || 0;
+        var teamRate = teamTotal > 0 ? (teamSent / teamTotal * 100).toFixed(1) : 0;
+
         var rows = data.users.map(function(u) {
             var rateClass = u.success_rate >= 90 ? 'badge-success' : u.success_rate >= 70 ? 'badge-warning' : u.total > 0 ? 'badge-danger' : 'badge-secondary';
             var lastAct = u.last_activity ? timeAgo(u.last_activity) : 'Sin actividad';
-            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong><br><small class="text-secondary">' + escapeHtml(u.full_name || '-') + '</small></td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td style="text-align:right;font-weight:600;">' + u.total + '</td><td style="text-align:right;color:var(--success);">' + u.sent + '</td><td style="text-align:right;color:var(--danger);">' + u.failed + '</td><td style="text-align:right;color:var(--warning);">' + u.pending + '</td><td style="text-align:right;"><span class="badge ' + rateClass + '">' + u.success_rate + '%</span></td><td><small class="text-secondary">' + lastAct + '</small></td></tr>';
+            var teamCell = u.team_affiliation ? '<small class="text-secondary">' + escapeHtml(u.team_affiliation) + '</small>' : '<span class="text-secondary">-</span>';
+            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong><br><small class="text-secondary">' + escapeHtml(u.full_name || '-') + '</small></td><td>' + teamCell + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td style="text-align:right;font-weight:600;">' + u.total + '</td><td style="text-align:right;color:var(--success);">' + u.sent + '</td><td style="text-align:right;color:var(--danger);">' + u.failed + '</td><td style="text-align:right;color:var(--warning);">' + u.pending + '</td><td style="text-align:right;"><span class="badge ' + rateClass + '">' + u.success_rate + '%</span></td><td><small class="text-secondary">' + lastAct + '</small></td></tr>';
         }).join('');
-        container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Uso por Usuario</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="usage-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="usage-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderUserUsage(document.getElementById(\'page-content\'))">Filtrar</button></div></div><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px;"><div class="stat-card"><div class="stat-value">' + s.total_users + '</div><div class="stat-label">Usuarios activos</div></div><div class="stat-card"><div class="stat-value">' + s.total_all + '</div><div class="stat-label">Total SMS</div></div><div class="stat-card"><div class="stat-value" style="color:var(--success);">' + s.total_sent + '</div><div class="stat-label">Enviados</div></div><div class="stat-card"><div class="stat-value">' + overallRate + '%</div><div class="stat-label">Tasa de exito</div></div></div><div class="card"><div class="table-container"><table><thead><tr><th>Usuario</th><th>Rol</th><th style="text-align:right;">Total</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Pendientes</th><th style="text-align:right;">Exito</th><th>Ultima actividad</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty-state">Sin datos</td></tr>') + '</tbody></table></div></div>';
+
+        // Build chart
+        var chartLabels = dailyData.labels || [];
+        var chartValues = dailyData.values || [];
+
+        container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Uso por Usuario</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="usage-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="usage-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderUserUsage(document.getElementById(\'page-content\'))">Filtrar</button></div></div><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px;"><div class="stat-card"><div class="stat-value">' + s.total_users + '</div><div class="stat-label">Usuarios activos</div></div><div class="stat-card"><div class="stat-value">' + teamTotal + '</div><div class="stat-label">Total SMS</div></div><div class="stat-card"><div class="stat-value" style="color:var(--success);">' + teamToday + '</div><div class="stat-label">Hoy</div></div><div class="stat-card"><div class="stat-value">' + teamRate + '%</div><div class="stat-label">Tasa de exito</div></div></div><div class="card mb-4"><div class="card-header"><h3>Envios diarios</h3></div><div class="card-body" style="padding:16px;"><canvas id="dailyChart" height="100"></canvas></div></div><div class="card"><div class="table-container"><table><thead><tr><th>Usuario</th><th>Equipo</th><th>Rol</th><th style="text-align:right;">Total</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Pendientes</th><th style="text-align:right;">Exito</th><th>Ultima actividad</th></tr></thead><tbody>' + (rows || '<tr><td colspan="9" class="empty-state">Sin datos</td></tr>') + '</tbody></table></div></div>';
+
+        // Draw chart
+        if (chartLabels.length > 0) drawDailyChart(chartLabels, chartValues);
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function drawDailyChart(labels, values) {
+    var canvas = document.getElementById('dailyChart');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    var dpr = window.devicePixelRatio || 1;
+    var rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = 280 * dpr;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = '280px';
+    ctx.scale(dpr, dpr);
+
+    var w = rect.width;
+    var h = 280;
+    var pad = { top: 20, right: 20, bottom: 40, left: 50 };
+    var chartW = w - pad.left - pad.right;
+    var chartH = h - pad.top - pad.bottom;
+
+    var maxVal = Math.max.apply(null, values) || 1;
+    maxVal = Math.ceil(maxVal * 1.2);
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Grid lines
+    ctx.strokeStyle = '#E2E8F0';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#64748B';
+    ctx.font = '11px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    for (var i = 0; i <= 4; i++) {
+        var y = pad.top + chartH - (chartH * i / 4);
+        var val = Math.round(maxVal * i / 4);
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(w - pad.right, y);
+        ctx.stroke();
+        ctx.fillText(val, pad.left - 8, y + 4);
+    }
+
+    // X labels
+    ctx.textAlign = 'center';
+    var step = Math.max(1, Math.floor(labels.length / 7));
+    for (var i = 0; i < labels.length; i += step) {
+        var x = pad.left + (chartW * i / (labels.length - 1 || 1));
+        ctx.fillText(labels[i], x, h - 10);
+    }
+
+    // Line
+    ctx.strokeStyle = '#2563EB';
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (var i = 0; i < values.length; i++) {
+        var x = pad.left + (chartW * i / (values.length - 1 || 1));
+        var y = pad.top + chartH - (chartH * values[i] / maxVal);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Area fill
+    ctx.lineTo(pad.left + chartW, pad.top + chartH);
+    ctx.lineTo(pad.left, pad.top + chartH);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(37, 99, 235, 0.08)';
+    ctx.fill();
+
+    // Dots
+    for (var i = 0; i < values.length; i++) {
+        var x = pad.left + (chartW * i / (values.length - 1 || 1));
+        var y = pad.top + chartH - (chartH * values[i] / maxVal);
+        ctx.beginPath();
+        ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#2563EB';
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
 }
 
 // ============================================================

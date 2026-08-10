@@ -1502,6 +1502,7 @@ def get_user_usage():
             u.full_name,
             u.role,
             u.is_active,
+            u.team_creator_id,
             COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
             COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
             COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
@@ -1513,12 +1514,24 @@ def get_user_usage():
         GROUP BY u.id
         ORDER BY total DESC
     """
+    # Build user lookup for team affiliation
+    user_map = {}
+    all_users = db.execute('SELECT id, username, full_name FROM users').fetchall()
+    for u in all_users:
+        user_map[u['id']] = {'username': u['username'], 'full_name': u['full_name']}
+
     rows = db.execute(query, params).fetchall()
     users = []
     for row in rows:
         total = row['total']
         sent = row['sent']
         rate = round((sent / total * 100), 1) if total > 0 else 0
+        # Team affiliation
+        team_affiliation = '-'
+        if row['role'] == 'team_member' and row['team_creator_id']:
+            creator = user_map.get(row['team_creator_id'])
+            if creator:
+                team_affiliation = creator['full_name'] or creator['username']
         users.append({
             'user_id': row['user_id'],
             'username': row['username'],
@@ -1526,6 +1539,7 @@ def get_user_usage():
             'role': row['role'],
             'role_label': ROLE_LABELS.get(row['role'], row['role']),
             'is_active': bool(row['is_active']),
+            'team_affiliation': team_affiliation,
             'sent': sent,
             'failed': row['failed'],
             'pending': row['pending'],
@@ -1556,6 +1570,61 @@ def get_user_usage():
             'total_all': summary['total_all'] if summary else 0
         }
     })
+
+@app.route('/api/admin/team-daily-stats', methods=['GET'])
+@login_required
+def get_team_daily_stats():
+    """Get daily SMS statistics for the team (last 30 days)"""
+    db = get_db()
+    user_id = session['user_id']
+    role = session['role']
+    user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+    if role == 'admin':
+        date_filter = ""
+        params = ()
+    elif role == 'team_admin':
+        member_ids = [u['id'] for u in db.execute(
+            "SELECT id FROM users WHERE team_creator_id = ?", (user['id'],)
+        ).fetchall()]
+        member_ids.append(user['id'])
+        placeholders = ','.join('?' * len(member_ids))
+        date_filter = f" AND created_by IN ({placeholders})"
+        params = tuple(member_ids)
+    else:
+        date_filter = " AND created_by = ?"
+        params = (user['id'],)
+
+    # Get last 30 days daily stats
+    rows = db.execute(f"""
+        SELECT
+            DATE(created_at) as day,
+            COUNT(*) as total,
+            SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
+            SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed
+        FROM sms_records
+        WHERE created_at >= date('now', '-30 days') {date_filter}
+        GROUP BY DATE(created_at)
+        ORDER BY day ASC
+    """, params).fetchall()
+
+    # Fill in missing days with zeros
+    from datetime import datetime, timedelta
+    stats = {}
+    for row in rows:
+        stats[row['day']] = {'total': row['total'], 'sent': row['sent'], 'failed': row['failed']}
+
+    result = []
+    for i in range(29, -1, -1):
+        day = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+        result.append({
+            'day': day,
+            'total': stats.get(day, {}).get('total', 0),
+            'sent': stats.get(day, {}).get('sent', 0),
+            'failed': stats.get(day, {}).get('failed', 0)
+        })
+
+    return jsonify({'daily_stats': result})
 
 @app.route('/api/config/logs', methods=['GET'])
 @admin_required
