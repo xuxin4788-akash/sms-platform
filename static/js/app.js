@@ -179,7 +179,7 @@ function showMainApp() {
         var page = el.dataset.page;
         var show = true;
         // System admin only pages
-        if (['config', 'logs'].includes(page)) {
+        if (['config', 'logs', 'team-stats'].includes(page)) {
             show = role === 'admin';
         }
         // Manager pages (admin + team_admin)
@@ -222,7 +222,11 @@ function navigateTo(page) {
         case 'content-search': renderContentSearch(content); break;
         case 'users': renderUsers(content); break;
         case 'user-usage': renderUserUsage(content); break;
-        case 'config': renderConfig(content); break;
+        case 'team-stats': renderTeamStats(content); break;
+        case 'config':
+            if (state.user.role === 'team_admin') renderTeamConfig(content);
+            else renderConfig(content);
+            break;
         default: renderDashboard(content);
     }
 }
@@ -993,10 +997,157 @@ function drawDailyChart(labels, values) {
 }
 
 // ============================================================
+// Team Statistics (Admin only)
+// ============================================================
+async function renderTeamStats(container) {
+    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var data = await api('/api/admin/team-stats');
+        var s = data.summary;
+        var teams = data.teams;
+
+        // Summary cards
+        var cardsHtml = '<div class="stats-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:20px;">' +
+            '<div class="stat-card"><div class="stat-value">' + s.total_teams + '</div><div class="stat-label">Equipos</div></div>' +
+            '<div class="stat-card"><div class="stat-value">' + s.total_members + '</div><div class="stat-label">Miembros totales</div></div>' +
+            '<div class="stat-card"><div class="stat-value">' + s.total_sms + '</div><div class="stat-label">Total SMS</div></div>' +
+            '<div class="stat-card"><div class="stat-value" style="color:var(--success);">' + s.today_sms + '</div><div class="stat-label">Hoy</div></div>' +
+            '<div class="stat-card"><div class="stat-value">' + s.success_rate + '%</div><div class="stat-label">Tasa de exito</div></div>' +
+            '</div>';
+
+        // Chart
+        var chartHtml = '<div class="card mb-4"><div class="card-header"><h3>Envios diarios por equipo (ultimos 30 dias)</h3></div><div class="card-body" style="padding:16px;"><canvas id="teamStatsChart" height="120"></canvas></div></div>';
+
+        // Team table
+        var rows = '';
+        if (teams.length === 0) {
+            rows = '<tr><td colspan="8" class="empty-state">No hay equipos registrados</td></tr>';
+        } else {
+            teams.forEach(function(t) {
+                var statusBadge = t.is_active ? '<span class="badge badge-green">Activo</span>' : '<span class="badge badge-red">Inactivo</span>';
+                var limitText = t.daily_limit > 0 ? t.daily_limit : '<span class="text-secondary">Sin limite</span>';
+                var rateClass = t.success_rate >= 90 ? 'badge-green' : (t.success_rate >= 70 ? 'badge-orange' : 'badge-red');
+                rows += '<tr>' +
+                    '<td><strong>' + escapeHtml(t.team_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.username) + '</small></td>' +
+                    '<td>' + statusBadge + '</td>' +
+                    '<td style="text-align:center;">' + t.member_count + '</td>' +
+                    '<td style="text-align:center;">' + limitText + '</td>' +
+                    '<td style="text-align:right;font-weight:600;">' + t.total_sms + '</td>' +
+                    '<td style="text-align:right;color:var(--success);">' + t.today_sms + '</td>' +
+                    '<td style="text-align:right;color:var(--danger);">' + t.failed_sms + '</td>' +
+                    '<td style="text-align:right;"><span class="badge ' + rateClass + '">' + t.success_rate + '%</span></td>' +
+                    '</tr>';
+            });
+        }
+
+        var tableHtml = '<div class="card"><div class="table-container"><table>' +
+            '<thead><tr>' +
+            '<th>Equipo</th><th>Estado</th><th style="text-align:center;">Miembros</th><th style="text-align:center;">Limite diario</th>' +
+            '<th style="text-align:right;">Total SMS</th><th style="text-align:right;">Hoy</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Exito</th>' +
+            '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+
+        container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Estadisticas por Equipo</h1></div>' + cardsHtml + chartHtml + tableHtml;
+
+        // Draw chart - stacked area for all teams
+        drawTeamStatsChart(teams);
+    } catch (err) {
+        container.innerHTML = '<div class="empty-state"><h3>Error al cargar</h3><p>' + escapeHtml(err.message) + '</p></div>';
+    }
+}
+
+function drawTeamStatsChart(teams) {
+    var canvas = document.getElementById('teamStatsChart');
+    if (!canvas || teams.length === 0) return;
+    var ctx = canvas.getContext('2d');
+    var dpr = window.devicePixelRatio || 1;
+    var rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    var W = rect.width, H = rect.height;
+    var pad = { top: 20, right: 20, bottom: 40, left: 50 };
+    var chartW = W - pad.left - pad.right;
+    var chartH = H - pad.top - pad.bottom;
+
+    // Get days from first team's daily_chart
+    var days = teams[0].daily_chart.map(function(d) { return d.day; });
+    var n = days.length;
+
+    // Find max value
+    var maxVal = 1;
+    teams.forEach(function(t) {
+        t.daily_chart.forEach(function(d) { if (d.total > maxVal) maxVal = d.total; });
+    });
+    maxVal = Math.ceil(maxVal * 1.1);
+
+    // Colors for each team
+    var colors = ['#2563EB', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
+
+    // Clear
+    ctx.clearRect(0, 0, W, H);
+
+    // Grid lines
+    ctx.strokeStyle = '#E2E8F0';
+    ctx.lineWidth = 0.5;
+    for (var i = 0; i <= 4; i++) {
+        var y = pad.top + chartH - (chartH * i / 4);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + chartW, y); ctx.stroke();
+        ctx.fillStyle = '#64748B'; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText(Math.round(maxVal * i / 4), pad.left - 8, y + 4);
+    }
+
+    // X-axis labels (every 5 days)
+    ctx.textAlign = 'center'; ctx.fillStyle = '#64748B'; ctx.font = '10px Inter, sans-serif';
+    for (var i = 0; i < n; i += 5) {
+        var x = pad.left + (chartW * i / (n - 1));
+        ctx.fillText(days[i].substring(5), x, H - pad.bottom + 18);
+    }
+    // Last day
+    var lastX = pad.left + chartW;
+    ctx.fillText(days[n-1].substring(5), lastX, H - pad.bottom + 18);
+
+    // Draw lines for each team
+    teams.forEach(function(team, ti) {
+        var color = colors[ti % colors.length];
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        team.daily_chart.forEach(function(d, di) {
+            var x = pad.left + (chartW * di / (n - 1));
+            var y = pad.top + chartH - (chartH * d.total / maxVal);
+            if (di === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        // Draw dots
+        ctx.fillStyle = color;
+        team.daily_chart.forEach(function(d, di) {
+            if (d.total > 0) {
+                var x = pad.left + (chartW * di / (n - 1));
+                var y = pad.top + chartH - (chartH * d.total / maxVal);
+                ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+            }
+        });
+    });
+
+    // Legend
+    var legendX = pad.left + 10;
+    var legendY = pad.top + 5;
+    teams.forEach(function(team, ti) {
+        var color = colors[ti % colors.length];
+        ctx.fillStyle = color;
+        ctx.fillRect(legendX, legendY + ti * 18, 12, 12);
+        ctx.fillStyle = '#1E293B'; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'left';
+        ctx.fillText(team.team_name, legendX + 16, legendY + ti * 18 + 10);
+    });
+}
+
+// ============================================================
 // Config (Admin)
 // ============================================================
 async function renderConfig(container) {
-    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
+    if (state.user.role !== 'admin' && state.user.role !== 'team_admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
         var results = await Promise.all([api('/api/config/sms'), api('/api/config/logs')]);
@@ -1033,6 +1184,58 @@ async function handleSaveConfig(event) {
 
 async function testApiConnection() {
     try { var data = await api('/api/config/sms/test', { method: 'POST' }); showToast(data.message, 'success'); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+async function renderTeamConfig(container) {
+    if (state.user.role !== 'team_admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var data = await api('/api/config/daily-limit');
+        container.innerHTML = `
+            <div class="page-header"><h2>Configuracion de Equipo</h2></div>
+            <div class="card">
+                <div class="card-header"><h3>Limite diario de envio por miembro</h3></div>
+                <div class="card-body">
+                    <p class="text-secondary" style="margin-bottom:16px">Establece el numero maximo de SMS que cada miembro de tu equipo puede enviar por dia. Los miembros del equipo no podran enviar mas SMS una vez alcanzado el limite.</p>
+                    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+                        <div style="flex:1;min-width:200px">
+                            <label class="form-label">Limite diario (SMS por miembro)</label>
+                            <input type="number" id="daily-limit-input" class="form-input" value="${data.daily_limit}" min="0" max="10000" placeholder="0 = sin limite">
+                            <small class="text-secondary">0 = sin limite</small>
+                        </div>
+                        <div style="padding-top:24px">
+                            <button class="btn btn-primary" onclick="saveDailyLimit()">Guardar</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card" style="margin-top:16px">
+                <div class="card-header"><h3>Uso de hoy</h3></div>
+                <div class="card-body">
+                    <div id="team-today-usage" class="text-secondary">Cargando...</div>
+                </div>
+            </div>`;
+        // Load today's usage per member
+        try {
+            var usage = await api('/api/admin/user-usage');
+            var today = new Date().toISOString().split('T')[0];
+            var rows = usage.users.map(function(u) {
+                var todayCount = (u.last_activity && u.last_activity.startsWith(today)) ? u.sent : 0;
+                return `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+                    <span>${u.full_name} <small class="text-secondary">(${u.username})</small></span>
+                    <span><strong>${todayCount}</strong> / ${data.daily_limit || '∞'} SMS</span>
+                </div>`;
+            }).join('');
+            document.getElementById('team-today-usage').innerHTML = rows || '<span class="text-secondary">Sin miembros</span>';
+        } catch(e) {}
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error al cargar</h3></div>'; }
+}
+
+async function saveDailyLimit() {
+    var val = parseInt(document.getElementById('daily-limit-input').value);
+    if (isNaN(val) || val < 0) { showToast('Valor invalido', 'error'); return; }
+    try { await api('/api/config/daily-limit', { method: 'POST', body: { limit: val } }); showToast('Limite guardado', 'success'); renderTeamConfig(document.getElementById('page-content')); }
     catch (err) { showToast(err.message, 'error'); }
 }
 

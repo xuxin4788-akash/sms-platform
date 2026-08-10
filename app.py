@@ -226,6 +226,7 @@ def init_db():
                 role TEXT NOT NULL DEFAULT 'team_member' CHECK(role IN ('admin', 'team_admin', 'team_member')),
                 team_creator_id INTEGER,
                 is_active INTEGER NOT NULL DEFAULT 1,
+                daily_limit INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (team_creator_id) REFERENCES users(id) ON DELETE SET NULL
@@ -347,6 +348,12 @@ def init_db():
             db.commit()
         except Exception:
             pass
+        # Migration: add daily_limit to users if not exists
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN daily_limit INTEGER DEFAULT 0")
+            db.commit()
+        except Exception:
+            pass
         # Migration: recreate users table with new role CHECK constraint
         try:
             cursor = db.execute("SELECT sql FROM sqlite_master WHERE name='users'")
@@ -373,6 +380,19 @@ def init_db():
         except Exception as e:
             print(f"Migration users table error: {e}")
             db.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            pass
+        # Migration: create team_config table
+        try:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS team_config (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_admin_id INTEGER NOT NULL UNIQUE,
+                    daily_sms_limit INTEGER DEFAULT 100,
+                    FOREIGN KEY (team_admin_id) REFERENCES users(id)
+                )
+            """)
+            db.commit()
         except Exception:
             pass
         db.close()
@@ -1133,6 +1153,23 @@ def delete_template(template_id):
 def send_sms():
     data = request.get_json()
     phones = data.get('phones', [])
+
+    # Check daily limit for team members
+    if g.user['role'] == 'team_member':
+        db = get_db()
+        team_cfg = db.execute(
+            "SELECT daily_sms_limit FROM team_config WHERE team_admin_id=?",
+            (g.user['team_creator_id'],)
+        ).fetchone()
+        daily_limit = team_cfg['daily_sms_limit'] if team_cfg and team_cfg['daily_sms_limit'] else 0
+        if daily_limit > 0:
+            today_count = db.execute(
+                "SELECT COUNT(*) as cnt FROM sms_records WHERE created_by=? AND date(created_at)=date('now') AND status IN ('sent','pending')",
+                (g.user['id'],)
+            ).fetchone()
+            cnt = today_count['cnt'] if today_count else 0
+            if cnt >= daily_limit:
+                return jsonify({'error': f'Has alcanzado tu limite diario de {daily_limit} SMS. Intenta manana.'}), 429
     content = data.get('content', '').strip()
     contact_names = data.get('contact_names', {})
     if not phones or not content:
@@ -1624,7 +1661,184 @@ def get_team_daily_stats():
             'failed': stats.get(day, {}).get('failed', 0)
         })
 
-    return jsonify({'daily_stats': result})
+    # Compute summary totals
+    total_all = sum(r['total'] for r in result)
+    sent_all = sum(r['sent'] for r in result)
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    today_all = stats.get(today_str, {}).get('total', 0)
+
+    return jsonify({'daily_stats': result, 'total': total_all, 'today': today_all, 'sent': sent_all})
+
+# ==================== Estadisticas por Equipo (Admin) ====================
+
+@app.route('/api/admin/team-stats', methods=['GET'])
+@login_required
+def get_team_stats():
+    """Get aggregated SMS statistics grouped by team (for system admin only)"""
+    if session['role'] != 'admin':
+        return jsonify({'error': 'Acceso denegado'}), 403
+
+    db = get_db()
+
+    # Get all team admins with their team info
+    team_admins = db.execute("""
+        SELECT u.id, u.username, u.full_name, u.is_active, u.created_at,
+               (SELECT COUNT(*) FROM users WHERE team_creator_id = u.id) as member_count,
+               (SELECT daily_sms_limit FROM team_config WHERE team_admin_id = u.id) as daily_limit
+        FROM users u
+        WHERE u.role = 'team_admin'
+        ORDER BY u.username ASC
+    """).fetchall()
+
+    teams = []
+    for ta in team_admins:
+        ta_id = ta['id']
+        # Get member IDs (team admin + their members)
+        member_ids = [u['id'] for u in db.execute(
+            "SELECT id FROM users WHERE team_creator_id = ? UNION SELECT ? as id",
+            (ta_id, ta_id)
+        ).fetchall()]
+        placeholders = ','.join('?' * len(member_ids))
+
+        # Total SMS stats for this team
+        total_row = db.execute(f"""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
+                SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending
+            FROM sms_records
+            WHERE created_by IN ({placeholders})
+        """, member_ids).fetchone()
+
+        # Today's SMS count
+        today_row = db.execute(f"""
+            SELECT COUNT(*) as cnt
+            FROM sms_records
+            WHERE created_by IN ({placeholders})
+              AND DATE(created_at) = DATE('now')
+        """, member_ids).fetchone()
+
+        # Last 30 days daily breakdown for chart
+        daily_rows = db.execute(f"""
+            SELECT
+                DATE(created_at) as day,
+                COUNT(*) as total,
+                SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent
+            FROM sms_records
+            WHERE created_by IN ({placeholders})
+              AND created_at >= date('now', '-30 days')
+            GROUP BY DATE(created_at)
+            ORDER BY day ASC
+        """, member_ids).fetchall()
+
+        daily_stats = {}
+        for dr in daily_rows:
+            daily_stats[dr['day']] = {'total': dr['total'], 'sent': dr['sent']}
+
+        from datetime import datetime, timedelta
+        chart_data = []
+        for i in range(29, -1, -1):
+            day = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+            chart_data.append({
+                'day': day,
+                'total': daily_stats.get(day, {}).get('total', 0),
+                'sent': daily_stats.get(day, {}).get('sent', 0)
+            })
+
+        total_sms = total_row['total'] if total_row and total_row['total'] else 0
+        sent_sms = total_row['sent'] if total_row and total_row['sent'] else 0
+        success_rate = round(sent_sms / total_sms * 100, 1) if total_sms > 0 else 0
+
+        teams.append({
+            'team_admin_id': ta_id,
+            'team_name': ta['full_name'] or ta['username'],
+            'username': ta['username'],
+            'is_active': ta['is_active'],
+            'member_count': ta['member_count'],
+            'daily_limit': ta['daily_limit'] if ta['daily_limit'] else 0,
+            'total_sms': total_sms,
+            'sent_sms': sent_sms,
+            'failed_sms': total_row['failed'] if total_row and total_row['failed'] else 0,
+            'pending_sms': total_row['pending'] if total_row and total_row['pending'] else 0,
+            'today_sms': today_row['cnt'] if today_row else 0,
+            'success_rate': success_rate,
+            'daily_chart': chart_data
+        })
+
+    # Grand totals
+    grand_total = sum(t['total_sms'] for t in teams)
+    grand_sent = sum(t['sent_sms'] for t in teams)
+    grand_today = sum(t['today_sms'] for t in teams)
+    grand_members = sum(t['member_count'] for t in teams) + len(teams)
+
+    return jsonify({
+        'teams': teams,
+        'summary': {
+            'total_teams': len(teams),
+            'total_members': grand_members,
+            'total_sms': grand_total,
+            'today_sms': grand_today,
+            'sent_sms': grand_sent,
+            'success_rate': round(grand_sent / grand_total * 100, 1) if grand_total > 0 else 0
+        }
+    })
+
+# ==================== Configuracion de limite diario ====================
+
+@app.route('/api/config/daily-limit', methods=['GET'])
+@manager_required
+def get_daily_limit():
+    """Obtener el limite diario de SMS del equipo actual"""
+    db = get_db()
+    user = g.user
+    if user['role'] == 'admin':
+        # Admin: ver limite global (primer registro sin team_admin_id especifico)
+        row = db.execute(
+            "SELECT daily_sms_limit FROM team_config WHERE team_admin_id=0"
+        ).fetchone()
+        return jsonify({'daily_limit': row['daily_sms_limit'] if row else 100})
+    else:
+        # Team admin: ver limite de su equipo
+        row = db.execute(
+            "SELECT daily_sms_limit FROM team_config WHERE team_admin_id=?",
+            (user['id'],)
+        ).fetchone()
+        return jsonify({'daily_limit': row['daily_sms_limit'] if row else 100})
+
+@app.route('/api/config/daily-limit', methods=['POST'])
+@manager_required
+def set_daily_limit():
+    """Establecer el limite diario de SMS"""
+    db = get_db()
+    user = g.user
+    data = request.get_json()
+    limit = data.get('limit')
+
+    if limit is None or not isinstance(limit, int) or limit < 0:
+        return jsonify({'error': 'Proporcione un valor valido (entero no negativo)'}), 400
+
+    if user['role'] == 'admin':
+        team_admin_id = 0  # global config
+    else:
+        team_admin_id = user['id']
+
+    existing = db.execute(
+        "SELECT id FROM team_config WHERE team_admin_id=?",
+        (team_admin_id,)
+    ).fetchone()
+    if existing:
+        db.execute(
+            "UPDATE team_config SET daily_sms_limit=? WHERE team_admin_id=?",
+            (limit, team_admin_id)
+        )
+    else:
+        db.execute(
+            "INSERT INTO team_config (team_admin_id, daily_sms_limit) VALUES (?, ?)",
+            (team_admin_id, limit)
+        )
+    db.commit()
+    return jsonify({'message': 'Limite diario actualizado', 'daily_limit': limit})
 
 @app.route('/api/config/logs', methods=['GET'])
 @admin_required
