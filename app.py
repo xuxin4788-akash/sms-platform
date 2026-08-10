@@ -1756,12 +1756,58 @@ def get_unified_stats():
             """, date_params).fetchone()
 
         if team_stats:
+            # Get team name (admin's username)
+            team_name = 'Mi Equipo'
+            daily_limit = 0
+            if role == 'team_admin':
+                admin_row = db.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+                if admin_row:
+                    team_name = f"Equipo de {admin_row['username']}"
+                # Get daily limit from team_config
+                limit_row = db.execute("SELECT daily_limit FROM team_config WHERE admin_id = ?", (user_id,)).fetchone()
+                if limit_row and limit_row['daily_limit']:
+                    daily_limit = limit_row['daily_limit']
+            elif role == 'admin':
+                team_name = 'Todos los Equipos'
+
+            # Today's SMS count
+            today_filter_simple = "AND date(created_at) = date('now')" if db.db_type != 'postgres' else "AND date(created_at) = CURRENT_DATE"
+            if role == 'team_admin':
+                today_row = db.execute(f"""
+                    SELECT COUNT(*) as cnt FROM sms_records
+                    WHERE created_by IN ({placeholders}) {today_filter_simple}
+                """, member_ids).fetchone()
+            else:
+                today_row = db.execute(f"""
+                    SELECT COUNT(*) as cnt FROM sms_records
+                    WHERE created_by IN (SELECT id FROM users WHERE role IN ('team_admin','team_member'))
+                    {today_filter_simple}
+                """).fetchone()
+            today_count = today_row['cnt'] if today_row else 0
+
+            # Last activity
+            if role == 'team_admin':
+                last_row = db.execute(f"""
+                    SELECT MAX(created_at) as last_at FROM sms_records
+                    WHERE created_by IN ({placeholders})
+                """, member_ids).fetchone()
+            else:
+                last_row = db.execute("""
+                    SELECT MAX(created_at) as last_at FROM sms_records
+                    WHERE created_by IN (SELECT id FROM users WHERE role IN ('team_admin','team_member'))
+                """).fetchone()
+            last_activity = last_row['last_at'] if last_row and last_row['last_at'] else None
+
             my_team_data = {
+                'team_name': team_name,
                 'member_count': team_stats['member_count'],
                 'total': team_stats['total'],
                 'sent': team_stats['sent'],
                 'failed': team_stats['failed'],
                 'pending': team_stats['pending'],
+                'today': today_count,
+                'daily_limit': daily_limit,
+                'last_activity': last_activity,
                 'rate': round((team_stats['sent'] / team_stats['total'] * 100), 1) if team_stats['total'] > 0 else 0
             }
 
@@ -1780,12 +1826,20 @@ def get_unified_stats():
             LEFT JOIN sms_records r ON r.created_by = u.id {date_filter}
         """, date_params).fetchone()
 
+        # Today's total SMS
+        today_total_row = db.execute("""
+            SELECT COUNT(*) as cnt FROM sms_records
+            WHERE date(created_at) = date('now')
+        """).fetchone()
+        today_total = today_total_row['cnt'] if today_total_row else 0
+
         if overall:
             all_teams_data = {
                 'member_count': overall['member_count'],
                 'total': overall['total'],
                 'sent': overall['sent'],
                 'failed': overall['failed'],
+                'today': today_total,
                 'rate': round((overall['sent'] / overall['total'] * 100), 1) if overall['total'] > 0 else 0
             }
 
@@ -1812,6 +1866,14 @@ def get_unified_stats():
             team_sent = tr['sent'] or 0
             team_failed = tr['failed'] or 0
             team_rate = round((team_sent / team_total * 100), 1) if team_total > 0 else 0
+            # Get today's count for this team
+            team_today_row = db.execute("""
+                SELECT COUNT(*) as cnt FROM sms_records
+                WHERE created_by IN (
+                    SELECT id FROM users WHERE id = ? OR team_creator_id = ?
+                ) AND date(created_at) = date('now')
+            """, (tr['team_admin_id'], tr['team_admin_id'])).fetchone()
+            team_today = team_today_row['cnt'] if team_today_row else 0
             all_teams_list.append({
                 'team_name': tr['team_admin_name'] or tr['team_admin_username'],
                 'team_admin': tr['team_admin_username'],
@@ -1819,14 +1881,28 @@ def get_unified_stats():
                 'total': team_total,
                 'sent': team_sent,
                 'failed': team_failed,
+                'today': team_today,
                 'rate': team_rate
             })
+
+    # Get users list for filter dropdown
+    users_list = []
+    if role == 'admin':
+        users_list = db.execute("SELECT id, username, full_name FROM users WHERE role IN ('team_admin','team_member') ORDER BY username").fetchall()
+    elif role == 'team_admin':
+        users_list = db.execute("SELECT id, username, full_name FROM users WHERE id = ? OR team_creator_id = ? ORDER BY username", (user_id, user_id)).fetchall()
+    else:
+        users_list = [{'id': user_id, 'username': session.get('username', ''), 'full_name': ''}]
+
+    # Convert to dicts
+    users_dicts = [{'id': u['id'], 'username': u['username'], 'full_name': u['full_name']} for u in users_list]
 
     return jsonify({
         'my_account': my_account_data,
         'my_team': my_team_data,
         'all_teams': all_teams_data,
-        'all_teams_list': all_teams_list
+        'all_teams_list': all_teams_list,
+        'users': users_dicts
     })
 
 @app.route('/api/admin/team-daily-stats', methods=['GET'])
