@@ -183,9 +183,10 @@ function showMainApp() {
             show = role === 'admin';
         }
         // Manager pages (admin + team_admin)
-        else if (['users', 'user-usage'].includes(page)) {
+        else if (['users'].includes(page)) {
             show = role === 'admin' || role === 'team_admin';
         }
+        // user-usage now accessible to all roles (shows personal stats)
         // All roles can see: dashboard, contacts, groups, templates, send, records, content-search
         el.style.display = show ? 'flex' : 'none';
     });
@@ -221,7 +222,7 @@ function navigateTo(page) {
         case 'records': renderRecords(content); break;
         case 'content-search': renderContentSearch(content); break;
         case 'users': renderUsers(content); break;
-        case 'user-usage': renderUserUsage(content); break;
+        case 'user-usage': renderUnifiedStats(content); break;
         case 'team-stats': renderTeamStats(content); break;
         case 'config':
             if (state.user.role === 'team_admin') renderTeamConfig(content);
@@ -923,6 +924,64 @@ async function renderUserUsage(container) {
 
         // Draw chart
         if (chartLabels.length > 0) drawDailyChart(chartLabels, chartValues);
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+async function renderUnifiedStats(container) {
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando estadisticas...</p></div>';
+    try {
+        var params = new URLSearchParams();
+        var dateFrom = document.getElementById('stats-date-from') ? document.getElementById('stats-date-from').value : '';
+        var dateTo = document.getElementById('stats-date-to') ? document.getElementById('stats-date-to').value : '';
+        if (dateFrom) params.set('date_from', dateFrom);
+        if (dateTo) params.set('date_to', dateTo);
+
+        var data = await api('/api/admin/unified-stats?' + params.toString());
+        var myAcct = data.my_account || {};
+        var myTeam = data.my_team || {};
+        var allTeams = data.all_teams || {};
+        var role = state.user.role;
+
+        // Helper: stat card
+        function statCard(label, value, color) {
+            return '<div class="stat-card"><div class="stat-value" style="' + (color ? 'color:' + color : '') + '">' + value + '</div><div class="stat-label">' + label + '</div></div>';
+        }
+
+        // Helper: mini table row
+        function statRow(label, value) {
+            return '<tr><td style="color:var(--text-secondary);">' + label + '</td><td style="text-align:right;font-weight:600;">' + value + '</td></tr>';
+        }
+
+        var html = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Panel de Estadisticas</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="stats-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="stats-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderUnifiedStats(document.getElementById(\'page-content\'))">Filtrar</button></div></div>';
+
+        // Panel 1: My Account (all roles)
+        var myRate = myAcct.total > 0 ? (myAcct.sent / myAcct.total * 100).toFixed(1) : '0.0';
+        html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;"></span><h3 style="margin:0;">Mi Cuenta</h3><span class="badge badge-primary" style="margin-left:auto;">' + escapeHtml(state.user.username) + '</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);">' + statCard('Total SMS', myAcct.total || 0) + statCard('Enviados', myAcct.sent || 0, 'var(--success)') + statCard('Fallidos', myAcct.failed || 0, 'var(--danger)') + statCard('Tasa de Exito', myRate + '%') + '</div></div></div>';
+
+        // Panel 2: My Team (team_admin and team_member)
+        if (role === 'team_admin' || role === 'team_member') {
+            var teamRate = myTeam.total > 0 ? (myTeam.sent / myTeam.total * 100).toFixed(1) : '0.0';
+            html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;">👥</span><h3 style="margin:0;">Mi Equipo</h3><span class="badge badge-success" style="margin-left:auto;">' + (myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px;">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard('Enviados Hoy', myTeam.today || 0, 'var(--success)') + statCard('Tasa de Exito', teamRate + '%') + '</div><table style="width:100%;font-size:13px;"><tbody>' + statRow('SMS Pendientes', myTeam.pending || 0) + statRow('Limite Diario', myTeam.daily_limit > 0 ? myTeam.daily_limit + ' SMS/usuario' : 'Sin limite') + statRow('Ultima Actividad', myTeam.last_activity ? timeAgo(myTeam.last_activity) : 'Sin actividad') + '</tbody></table></div></div>';
+        }
+
+        // Panel 3: All Teams (admin only)
+        if (role === 'admin') {
+            var allRate = allTeams.total > 0 ? (allTeams.sent / allTeams.total * 100).toFixed(1) : '0.0';
+            html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;">🌐</span><h3 style="margin:0;">Todos los Equipos</h3><span class="badge" style="margin-left:auto;background:var(--primary);color:#fff;">' + allTeams.team_count + ' equipos</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px;">' + statCard('Total Equipos', allTeams.team_count || 0) + statCard('Total Miembros', allTeams.member_count || 0) + statCard('Total SMS', allTeams.total || 0) + statCard('Tasa de Exito', allRate + '%') + '</div>';
+
+            // Team breakdown table
+            if (allTeams.teams && allTeams.teams.length > 0) {
+                var teamRows = allTeams.teams.map(function(t) {
+                    var r = t.total > 0 ? (t.sent / t.total * 100).toFixed(1) : '0.0';
+                    var rateClass = r >= 90 ? 'badge-success' : r >= 70 ? 'badge-warning' : 'badge-danger';
+                    return '<tr><td><strong>' + escapeHtml(t.team_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.admin_name || '-') + '</small></td><td style="text-align:center;">' + t.member_count + '</td><td style="text-align:right;font-weight:600;">' + t.total + '</td><td style="text-align:right;color:var(--success);">' + t.today + '</td><td style="text-align:right;color:var(--danger);">' + t.failed + '</td><td style="text-align:right;"><span class="badge ' + rateClass + '">' + r + '%</span></td></tr>';
+                }).join('');
+                html += '<div class="table-container" style="margin-top:16px;"><table><thead><tr><th>Equipo</th><th style="text-align:center;">Miembros</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;">Hoy</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Exito</th></tr></thead><tbody>' + teamRows + '</tbody></table></div>';
+            }
+            html += '</div></div>';
+        }
+
+        container.innerHTML = html;
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
