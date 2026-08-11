@@ -354,6 +354,12 @@ def init_db():
             db.commit()
         except Exception:
             pass
+        # Migration: add permissions column to users if not exists
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT ''")
+            db.commit()
+        except Exception:
+            pass
         # Migration: recreate users table with new role CHECK constraint
         try:
             cursor = db.execute("SELECT sql FROM sqlite_master WHERE name='users'")
@@ -371,7 +377,8 @@ def init_db():
                     is_active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    team_creator_id INTEGER
+                    team_creator_id INTEGER,
+                    permissions TEXT DEFAULT ''
                 )""")
                 db.execute("INSERT INTO users (id, username, password_hash, full_name, role, is_active, created_at, updated_at, team_creator_id) SELECT id, username, password_hash, full_name, CASE WHEN role='employee' THEN 'team_member' ELSE role END, is_active, created_at, updated_at, team_creator_id FROM users_old")
                 db.execute("DROP TABLE users_old")
@@ -705,13 +712,25 @@ def logout():
 @app.route('/api/auth/me', methods=['GET'])
 @login_required
 def get_me():
+    # Parse permissions from user record
+    perms_raw = g.user.get('permissions', '') or ''
+    try:
+        import json as _json
+        permissions = _json.loads(perms_raw) if perms_raw else []
+    except Exception:
+        permissions = []
+    # Admin always has all permissions
+    if g.user['role'] == 'admin':
+        permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config']
+
     return jsonify({
         'user': {
             'id': g.user['id'],
             'username': g.user['username'],
             'full_name': g.user['full_name'],
             'role': g.user['role'],
-            'role_label': ROLE_LABELS.get(g.user['role'], g.user['role'])
+            'role_label': ROLE_LABELS.get(g.user['role'], g.user['role']),
+            'permissions': permissions
         }
     })
 
@@ -764,6 +783,16 @@ def list_users():
     for u in users:
         ud = dict(u)
         ud['role_label'] = ROLE_LABELS.get(ud['role'], ud['role'])
+        # Parse permissions
+        import json as _json
+        perms_raw = ud.get('permissions', '') or ''
+        try:
+            ud['permissions'] = _json.loads(perms_raw) if perms_raw else []
+        except Exception:
+            ud['permissions'] = []
+        # Admin always has all permissions
+        if ud['role'] == 'admin':
+            ud['permissions'] = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config']
         # Team affiliation: show team creator name for team members
         if ud['team_creator_name']:
             ud['team_affiliation'] = ud['team_creator_fullname'] or ud['team_creator_name']
@@ -884,6 +913,89 @@ def delete_user(user_id):
     db.execute("DELETE FROM users WHERE id=?", (user_id,))
     db.commit()
     return jsonify({'message': 'Usuario eliminado'})
+
+# ============================================================
+# Permissions API (admin manages menu access for each user)
+# ============================================================
+
+# Available menu pages that can be assigned
+AVAILABLE_PAGES = [
+    {'id': 'dashboard', 'label': 'Panel Principal', 'icon': 'grid'},
+    {'id': 'contacts', 'label': 'Contactos', 'icon': 'users'},
+    {'id': 'groups', 'label': 'Grupos', 'icon': 'folder'},
+    {'id': 'templates', 'label': 'Plantillas', 'icon': 'file-text'},
+    {'id': 'send', 'label': 'Enviar SMS', 'icon': 'send'},
+    {'id': 'records', 'label': 'Registros', 'icon': 'activity'},
+    {'id': 'content-search', 'label': 'Buscar Contenido', 'icon': 'search'},
+    {'id': 'users', 'label': 'Usuarios', 'icon': 'user-plus'},
+    {'id': 'my-account', 'label': 'Mi Cuenta', 'icon': 'user'},
+    {'id': 'my-team', 'label': 'Mi Equipo', 'icon': 'users'},
+    {'id': 'all-teams', 'label': 'Todos los Equipos', 'icon': 'bar-chart'},
+    {'id': 'config', 'label': 'Configuracion API', 'icon': 'settings'},
+]
+
+@app.route('/api/permissions', methods=['GET'])
+@admin_required
+def get_permissions():
+    """Get all available pages and current permissions for all users"""
+    import json as _json
+    db = get_db()
+    users = db.execute("""
+        SELECT id, username, full_name, role, permissions
+        FROM users
+        ORDER BY role, username
+    """).fetchall()
+
+    user_perms = []
+    for u in users:
+        perms_raw = u['permissions'] or ''
+        try:
+            perms = _json.loads(perms_raw) if perms_raw else []
+        except Exception:
+            perms = []
+        # Admin always has all permissions
+        if u['role'] == 'admin':
+            perms = [p['id'] for p in AVAILABLE_PAGES]
+        user_perms.append({
+            'id': u['id'],
+            'username': u['username'],
+            'full_name': u['full_name'],
+            'role': u['role'],
+            'role_label': ROLE_LABELS.get(u['role'], u['role']),
+            'permissions': perms
+        })
+
+    return jsonify({
+        'available_pages': AVAILABLE_PAGES,
+        'users': user_perms
+    })
+
+@app.route('/api/permissions/<int:user_id>', methods=['PUT'])
+@admin_required
+def update_permissions(user_id):
+    """Update permissions for a specific user"""
+    import json as _json
+    db = get_db()
+
+    # Cannot modify admin permissions
+    target = db.execute("SELECT id, role FROM users WHERE id=?", (user_id,)).fetchone()
+    if not target:
+        return jsonify({'error': 'Usuario no encontrado'}), 404
+    if target['role'] == 'admin':
+        return jsonify({'error': 'No se pueden modificar los permisos del administrador'}), 403
+
+    data = request.get_json()
+    permissions = data.get('permissions', [])
+
+    # Validate permissions
+    valid_ids = [p['id'] for p in AVAILABLE_PAGES]
+    permissions = [p for p in permissions if p in valid_ids]
+
+    db.execute("UPDATE users SET permissions=?, updated_at=datetime('now') WHERE id=?",
+               (_json.dumps(permissions), user_id))
+    db.commit()
+
+    return jsonify({'message': 'Permisos actualizados', 'permissions': permissions})
 
 # ============================================================
 # Contacts API

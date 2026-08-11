@@ -173,21 +173,18 @@ function showMainApp() {
     };
     roleEl.className = roleBadgeClass[state.user.role] || 'badge badge-gray';
 
-    // Role-based navigation visibility
+    // Permission-based navigation visibility
+    var perms = state.user.permissions || [];
     var role = state.user.role;
     document.querySelectorAll('.nav-item').forEach(function(el) {
         var page = el.dataset.page;
-        var show = true;
-        // System admin only pages
-        if (['config', 'logs', 'team-stats', 'all-teams'].includes(page)) {
-            show = role === 'admin';
+        // Admin always sees everything
+        if (role === 'admin') {
+            el.style.display = 'flex';
+            return;
         }
-        // Manager pages (admin + team_admin)
-        else if (['users', 'my-team'].includes(page)) {
-            show = role === 'admin' || role === 'team_admin';
-        }
-        // my-account accessible to all roles
-        // All roles can see: dashboard, contacts, groups, templates, send, records, content-search, my-account
+        // Check permissions list
+        var show = perms.indexOf(page) !== -1;
         el.style.display = show ? 'flex' : 'none';
     });
     navigateTo(state.currentPage || 'dashboard');
@@ -806,9 +803,10 @@ async function renderUsers(container) {
             if (myRole === 'admin') canEdit = u.id !== state.user.id;
             else if (myRole === 'team_admin') canEdit = u.role === 'team_member' && u.team_creator_id === state.user.id;
             var editBtn = canEdit ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="showEditUserModal(' + u.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>' : '';
+            var permBtn = (myRole === 'admin' && u.role !== 'admin') ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="showPermModal(' + u.id + ')" title="Permisos" style="color:var(--primary);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg></button>' : '';
             var deleteBtn = canEdit ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="deleteUser(' + u.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>' : '';
             var teamCell = u.team_affiliation ? '<span class="text-sm">' + escapeHtml(u.team_affiliation) + '</span>' : '<span class="text-sm text-secondary">-</span>';
-            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + deleteBtn + '</td></tr>';
+            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + permBtn + deleteBtn + '</td></tr>';
         }).join('');
 
         // Role filter options based on current user role
@@ -865,6 +863,46 @@ async function handleEditUser(event, id) {
         if (form.password.value) body.password = form.password.value;
         await api('/api/users/' + id, { method: 'PUT', body: body });
         hideModal(); showToast('Usuario actualizado', 'success'); renderUsers(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+// Permission menu items definition
+var PERM_ITEMS = [
+    { key: 'dashboard', label: 'Panel Principal', icon: 'grid' },
+    { key: 'contacts', label: 'Contactos', icon: 'users' },
+    { key: 'groups', label: 'Grupos', icon: 'folder' },
+    { key: 'templates', label: 'Plantillas', icon: 'file' },
+    { key: 'send', label: 'Enviar SMS', icon: 'send' },
+    { key: 'records', label: 'Registros', icon: 'activity' },
+    { key: 'content-search', label: 'Buscar Contenido', icon: 'search' },
+    { key: 'users', label: 'Usuarios', icon: 'user-plus' },
+    { key: 'my-account', label: 'Mi Cuenta', icon: 'user' },
+    { key: 'my-team', label: 'Mi Equipo', icon: 'users' },
+    { key: 'all-teams', label: 'Todos los Equipos', icon: 'bar-chart' },
+    { key: 'config', label: 'Configuracion API', icon: 'settings' }
+];
+
+function showPermModal(id) {
+    var u = (window._users || []).find(function(usr) { return usr.id === id; });
+    if (!u) return;
+    var currentPerms = u.permissions || [];
+    var checkboxes = PERM_ITEMS.map(function(item) {
+        var checked = currentPerms.indexOf(item.key) !== -1 ? ' checked' : '';
+        return '<label style="display:flex;align-items:center;gap:8px;padding:8px 0;cursor:pointer;border-bottom:1px solid var(--border);"><input type="checkbox" value="' + item.key + '"' + checked + ' style="width:16px;height:16px;accent-color:var(--primary);"><span style="font-size:14px;">' + item.label + '</span></label>';
+    }).join('');
+    showModal('Permisos de ' + escapeHtml(u.username), '<div style="padding:8px 0;"><p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">Selecciona los modulos a los que este usuario puede acceder:</p><div id="perm-checkboxes">' + checkboxes + '</div><div style="margin-top:12px;display:flex;gap:8px;"><button class="btn btn-secondary btn-sm" onclick="toggleAllPerms(true)">Seleccionar todo</button><button class="btn btn-secondary btn-sm" onclick="toggleAllPerms(false)">Deseleccionar todo</button></div></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button class="btn btn-primary" onclick="savePerms(' + id + ')">Guardar</button></div>');
+}
+
+function toggleAllPerms(check) {
+    document.querySelectorAll('#perm-checkboxes input[type="checkbox"]').forEach(function(cb) { cb.checked = check; });
+}
+
+async function savePerms(id) {
+    var checked = [];
+    document.querySelectorAll('#perm-checkboxes input[type="checkbox"]:checked').forEach(function(cb) { checked.push(cb.value); });
+    try {
+        await api('/api/permissions/' + id, { method: 'PUT', body: { permissions: checked } });
+        hideModal(); showToast('Permisos actualizados', 'success'); renderUsers(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }
 }
 
