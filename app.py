@@ -199,6 +199,10 @@ def init_db():
                 status VARCHAR(20) NOT NULL DEFAULT 'info',
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
+            CREATE TABLE IF NOT EXISTS role_permissions (
+                role VARCHAR(20) PRIMARY KEY,
+                permissions TEXT NOT NULL DEFAULT ''
+            );
         """)
         # Create default admin
         cur.execute("SELECT id FROM users WHERE username='admin'")
@@ -212,6 +216,12 @@ def init_db():
         cur.execute("SELECT id FROM sms_config LIMIT 1")
         if cur.fetchone() is None:
             cur.execute("INSERT INTO sms_config (domain, spid, api_pwd, sender_name) VALUES ('', '', '', '')")
+        # Create default role_permissions
+        cur.execute("SELECT role FROM role_permissions LIMIT 1")
+        if cur.fetchone() is None:
+            cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('admin', '')")
+            cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_admin', '')")
+            cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_member', '')")
         cur.close()
         conn.close()
     else:
@@ -291,6 +301,10 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'info',
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE TABLE IF NOT EXISTS role_permissions (
+                role TEXT PRIMARY KEY,
+                permissions TEXT NOT NULL DEFAULT ''
+            );
         ''')
         # Create default admin if not exists
         cursor = db.execute("SELECT id FROM users WHERE username='admin'")
@@ -304,6 +318,13 @@ def init_db():
         cursor = db.execute("SELECT id FROM sms_config LIMIT 1")
         if cursor.fetchone() is None:
             db.execute("INSERT INTO sms_config (domain, spid, api_pwd, sender_name) VALUES ('', '', '', '')")
+        # Create default role_permissions
+        cursor = db.execute("SELECT role FROM role_permissions LIMIT 1")
+        if cursor.fetchone() is None:
+            db.execute("INSERT INTO role_permissions (role, permissions) VALUES ('admin', '')")
+            db.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_admin', '')")
+            db.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_member', '')")
+            db.commit()
         # Migration: add new columns if they don't exist
         try:
             db.execute("ALTER TABLE sms_config ADD COLUMN domain TEXT DEFAULT ''")
@@ -712,16 +733,23 @@ def logout():
 @app.route('/api/auth/me', methods=['GET'])
 @login_required
 def get_me():
-    # Parse permissions from user record
-    perms_raw = g.user.get('permissions', '') or ''
+    # Get permissions from role_permissions table
+    permissions = []
     try:
-        import json as _json
-        permissions = _json.loads(perms_raw) if perms_raw else []
+        role = g.user['role']
+        if role == 'admin':
+            # Admin always has all permissions
+            permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'role-permissions']
+        else:
+            # Get permissions from role_permissions table
+            row = db.execute("SELECT permissions FROM role_permissions WHERE role = %s" if db.db_type == 'postgresql' else "SELECT permissions FROM role_permissions WHERE role = ?", (role,)).fetchone()
+            if row:
+                perms_raw = row['permissions'] if db.db_type == 'postgresql' else row[0]
+                perms_raw = perms_raw or ''
+                import json as _json
+                permissions = _json.loads(perms_raw) if perms_raw else []
     except Exception:
         permissions = []
-    # Admin always has all permissions
-    if g.user['role'] == 'admin':
-        permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config']
 
     return jsonify({
         'user': {
@@ -933,6 +961,69 @@ AVAILABLE_PAGES = [
     {'id': 'all-teams', 'label': 'Todos los Equipos', 'icon': 'bar-chart'},
     {'id': 'config', 'label': 'Configuracion API', 'icon': 'settings'},
 ]
+
+@app.route('/api/role-permissions', methods=['GET'])
+@admin_required
+def get_role_permissions():
+    """Get permissions for all roles"""
+    import json as _json
+    db = get_db()
+
+    # Get all roles and their permissions
+    roles = db.execute("""
+        SELECT role, permissions FROM role_permissions
+        ORDER BY role
+    """).fetchall()
+
+    role_perms = []
+    for r in roles:
+        perms_raw = r['permissions'] or ''
+        try:
+            perms = _json.loads(perms_raw) if perms_raw else []
+        except Exception:
+            perms = []
+        role_perms.append({
+            'role': r['role'],
+            'role_label': ROLE_LABELS.get(r['role'], r['role']),
+            'permissions': perms
+        })
+
+    return jsonify({
+        'available_pages': AVAILABLE_PAGES,
+        'roles': role_perms
+    })
+
+@app.route('/api/role-permissions/<role>', methods=['PUT'])
+@admin_required
+def update_role_permissions(role):
+    """Update permissions for a specific role"""
+    import json as _json
+    db = get_db()
+
+    data = request.get_json()
+    permissions = data.get('permissions', [])
+
+    # Validate permissions
+    valid_ids = [p['id'] for p in AVAILABLE_PAGES]
+    for p in permissions:
+        if p not in valid_ids:
+            return jsonify({'error': 'Invalid permission: ' + p}), 400
+
+    # Admin role always has all permissions
+    if role == 'admin':
+        permissions = [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions']
+
+    perms_json = _json.dumps(permissions)
+
+    # Update or insert
+    existing = db.execute("SELECT role FROM role_permissions WHERE role = %s" if db.db_type == 'postgresql' else "SELECT role FROM role_permissions WHERE role = ?", (role,)).fetchone()
+    if existing:
+        db.execute("UPDATE role_permissions SET permissions = %s WHERE role = %s" if db.db_type == 'postgresql' else "UPDATE role_permissions SET permissions = ? WHERE role = ?", (perms_json, role))
+    else:
+        db.execute("INSERT INTO role_permissions (role, permissions) VALUES (%s, %s)" if db.db_type == 'postgresql' else "INSERT INTO role_permissions (role, permissions) VALUES (?, ?)", (role, perms_json))
+    db.commit()
+
+    return jsonify({'success': True, 'role': role, 'permissions': permissions})
 
 @app.route('/api/permissions', methods=['GET'])
 @admin_required

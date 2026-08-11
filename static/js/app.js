@@ -223,6 +223,7 @@ function navigateTo(page) {
         case 'my-team': renderMyTeam(content); break;
         case 'all-teams': renderAllTeams(content); break;
         case 'team-stats': renderTeamStats(content); break;
+        case 'role-permissions': renderRolePermissions(content); break;
         case 'config':
             if (state.user.role === 'team_admin') renderTeamConfig(content);
             else renderConfig(content);
@@ -1303,6 +1304,53 @@ function drawTeamStatsChart(teams) {
 // ============================================================
 // Config (Admin)
 // ============================================================
+async function renderRolePermissions(container) {
+    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var data = await api('/api/role-permissions');
+        var pages = data.available_pages || [];
+        var roles = data.roles || [];
+
+        var html = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Permisos por Rol</h1></div>';
+        html += '<p class="text-secondary mb-4">Configura que menus puede ver cada rol. Los cambios se aplican inmediatamente al iniciar sesion.</p>';
+
+        roles.forEach(function(role) {
+            var rolePerms = role.permissions || [];
+            html += '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">' + escapeHtml(role.role_label) + '</h3></div><div class="card-body">';
+            html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">';
+
+            pages.forEach(function(page) {
+                var checked = rolePerms.indexOf(page.id) >= 0 ? 'checked' : '';
+                var disabled = role.role === 'admin' ? 'disabled' : '';
+                html += '<label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;cursor:pointer;">';
+                html += '<input type="checkbox" class="role-perm-check" data-role="' + escapeHtml(role.role) + '" data-page="' + escapeHtml(page.id) + '" ' + checked + ' ' + disabled + '>';
+                html += '<span>' + escapeHtml(page.label) + '</span>';
+                html += '</label>';
+            });
+
+            html += '</div>';
+            if (role.role !== 'admin') {
+                html += '<div style="margin-top:16px;text-align:right;"><button class="btn btn-primary btn-sm" onclick="saveRolePermissions(\'' + escapeHtml(role.role) + '\')">Guardar</button></div>';
+            }
+            html += '</div></div>';
+        });
+
+        container.innerHTML = html;
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+async function saveRolePermissions(role) {
+    var checks = document.querySelectorAll('.role-perm-check[data-role="' + role + '"]');
+    var permissions = [];
+    checks.forEach(function(cb) { if (cb.checked) permissions.push(cb.dataset.page); });
+
+    try {
+        await api('/api/role-permissions/' + role, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({permissions: permissions}) });
+        showToast('Permisos actualizados para ' + role);
+    } catch (err) { showToast('Error: ' + err.message, 'error'); }
+}
+
 async function renderConfig(container) {
     if (state.user.role !== 'admin' && state.user.role !== 'team_admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
