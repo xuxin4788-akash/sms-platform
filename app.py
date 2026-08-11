@@ -285,12 +285,16 @@ def init_db():
                 FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             );
 
-            CREATE TABLE IF NOT EXISTS sms_config (
+            CREATE TABLE IF NOT EXISTS sms_api_configs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                country TEXT NOT NULL DEFAULT '',
                 domain TEXT DEFAULT '',
                 spid TEXT DEFAULT '',
                 api_pwd TEXT DEFAULT '',
                 sender_name TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -314,10 +318,11 @@ def init_db():
                 "INSERT INTO users (username, password_hash, full_name, role) VALUES (?, ?, ?, ?)",
                 ('admin', pw_hash, 'Administrador', 'admin')
             )
-        # Create default sms_config if not exists
-        cursor = db.execute("SELECT id FROM sms_config LIMIT 1")
+        # Create default sms_api_configs if not exists
+        cursor = db.execute("SELECT id FROM sms_api_configs LIMIT 1")
         if cursor.fetchone() is None:
-            db.execute("INSERT INTO sms_config (domain, spid, api_pwd, sender_name) VALUES ('', '', '', '')")
+            db.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Mexico', 'MX', '', '', '', '')")
+            db.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Colombia', 'CO', '', '', '', '')")
         # Create default role_permissions
         cursor = db.execute("SELECT role FROM role_permissions LIMIT 1")
         if cursor.fetchone() is None:
@@ -417,12 +422,55 @@ def init_db():
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     team_admin_id INTEGER NOT NULL UNIQUE,
                     daily_sms_limit INTEGER DEFAULT 100,
-                    FOREIGN KEY (team_admin_id) REFERENCES users(id)
+                    api_config_id INTEGER DEFAULT NULL,
+                    FOREIGN KEY (team_admin_id) REFERENCES users(id),
+                    FOREIGN KEY (api_config_id) REFERENCES sms_api_configs(id) ON DELETE SET NULL
                 )
             """)
             db.commit()
         except Exception:
             pass
+
+        # Migration: create sms_api_configs table and migrate from sms_config
+        try:
+            cursor = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sms_api_configs'")
+            if cursor.fetchone() is None:
+                db.execute('''CREATE TABLE sms_api_configs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    country TEXT NOT NULL DEFAULT '',
+                    domain TEXT DEFAULT '',
+                    spid TEXT DEFAULT '',
+                    api_pwd TEXT DEFAULT '',
+                    sender_name TEXT DEFAULT '',
+                    is_active INTEGER DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )''')
+                # Migrate existing sms_config data
+                old_cursor = db.execute("SELECT * FROM sms_config LIMIT 1")
+                old_config = old_cursor.fetchone()
+                if old_config:
+                    db.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Mexico', 'MX', ?, ?, ?, ?)",
+                        (old_config['domain'] or '', old_config['spid'] or '', old_config['api_pwd'] or '', old_config['sender_name'] or ''))
+                    db.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Colombia', 'CO', '', '', '', '')")
+                else:
+                    db.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Mexico', 'MX', '', '', '', '')")
+                    db.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Colombia', 'CO', '', '', '', '')")
+                db.commit()
+        except Exception:
+            pass
+
+        # Migration: add api_config_id to team_config
+        try:
+            cursor = db.execute("PRAGMA table_info(team_config)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if 'api_config_id' not in cols:
+                db.execute("ALTER TABLE team_config ADD COLUMN api_config_id INTEGER DEFAULT NULL REFERENCES sms_api_configs(id) ON DELETE SET NULL")
+                db.commit()
+        except Exception:
+            pass
+
         db.close()
 
 # ============================================================
@@ -509,22 +557,49 @@ def generate_api_pwd(spid, api_pwd, timestamp):
     raw = f"{spid}{api_pwd}{timestamp}"
     return hashlib.md5(raw.encode('utf-8')).hexdigest()
 
-def get_sms_api_config():
-    """Get SMS API configuration from database."""
+def get_sms_api_config(config_id=None):
+    """Get SMS API configuration from database. If config_id given, get that config; otherwise get first active config."""
     db = get_db()
-    config = db.execute("SELECT * FROM sms_config LIMIT 1").fetchone()
+    if config_id:
+        config = db.execute("SELECT * FROM sms_api_configs WHERE id = ?", (config_id,)).fetchone()
+    else:
+        config = db.execute("SELECT * FROM sms_api_configs WHERE is_active = 1 LIMIT 1").fetchone()
     if not config:
         return None
     return {
+        'id': config['id'],
+        'name': config['name'] or '',
+        'country': config['country'] or '',
         'domain': config['domain'] or '',
         'spid': config['spid'] or '',
         'api_pwd': config['api_pwd'] or '',
         'sender_name': config['sender_name'] or '',
     }
 
-def is_sms_api_configured():
+def get_team_sms_config(user_id):
+    """Get SMS API config for a user based on their team."""
+    db = get_db()
+    # Find user's team admin
+    user = db.execute("SELECT id, role, team_creator_id FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not user:
+        return get_sms_api_config()
+    if user['role'] == 'admin':
+        return get_sms_api_config()
+    # Find team admin's config
+    team_admin_id = user['team_creator_id']
+    if not team_admin_id:
+        return get_sms_api_config()
+    tc = db.execute("SELECT api_config_id FROM team_config WHERE team_admin_id = ?", (team_admin_id,)).fetchone()
+    if tc and tc['api_config_id']:
+        return get_sms_api_config(tc['api_config_id'])
+    return get_sms_api_config()
+
+def is_sms_api_configured(user_id=None):
     """Check if SMS API is properly configured."""
-    config = get_sms_api_config()
+    if user_id:
+        config = get_team_sms_config(user_id)
+    else:
+        config = get_sms_api_config()
     if not config:
         return False
     return bool(config['domain'] and config['spid'] and config['api_pwd'])
@@ -536,7 +611,7 @@ def sms_api_send_single(phone, content, config=None):
     """
     if config is None:
         config = get_sms_api_config()
-    if not config or not (config['domain'] and config['spid'] and config['api_pwd']):
+    if not config or not (config.get('domain') and config.get('spid') and config.get('api_pwd')):
         return {'code': -1, 'msg': 'API SMS no configurada', 'data': None}
 
     timestamp = str(int(time.time()))
@@ -573,7 +648,7 @@ def sms_api_send_batch(phone_content_pairs, config=None):
     """
     if config is None:
         config = get_sms_api_config()
-    if not config or not (config['domain'] and config['spid'] and config['api_pwd']):
+    if not config or not (config.get('domain') and config.get('spid') and config.get('api_pwd')):
         return {'code': -1, 'msg': 'API SMS no configurada', 'data': None}
 
     timestamp = str(int(time.time()))
@@ -616,7 +691,7 @@ def sms_api_query_status(msgids, config=None):
     """
     if config is None:
         config = get_sms_api_config()
-    if not config or not (config['domain'] and config['spid'] and config['api_pwd']):
+    if not config or not (config.get('domain') and config.get('spid') and config.get('api_pwd')):
         return {'code': -1, 'msg': 'API SMS no configurada', 'data': None}
 
     timestamp = str(int(time.time()))
@@ -649,7 +724,7 @@ def sms_api_check_charset(content, config=None):
     """
     if config is None:
         config = get_sms_api_config()
-    if not config or not (config['domain'] and config['spid'] and config['api_pwd']):
+    if not config or not (config.get('domain') and config.get('spid') and config.get('api_pwd')):
         return {'code': -1, 'msg': 'API SMS no configurada', 'data': None}
 
     timestamp = str(int(time.time()))
@@ -1380,7 +1455,8 @@ def send_sms():
     if len(phones) > 500:
         return jsonify({'error': 'Maximo 500 numeros por envio'}), 400
     db = get_db()
-    api_configured = is_sms_api_configured()
+    api_configured = is_sms_api_configured(g.user['id'])
+    sms_config = get_team_sms_config(g.user['id'])
     records = []
     errors = []
 
@@ -1641,42 +1717,82 @@ def sms_statistics():
 
 @app.route('/api/config/sms', methods=['GET'])
 @admin_required
-def get_sms_config():
+def get_sms_configs():
     db = get_db()
-    config = db.execute("SELECT * FROM sms_config LIMIT 1").fetchone()
-    if config:
-        return jsonify({'config': {
-            'id': config['id'],
-            'domain': config['domain'] or '',
-            'spid': config['spid'] or '',
-            'api_pwd': config['api_pwd'] or '',
-            'sender_name': config['sender_name'] or '',
-            'updated_at': config['updated_at']
-        }})
-    return jsonify({'config': {}})
+    configs = db.execute("SELECT * FROM sms_api_configs ORDER BY id").fetchall()
+    config_list = []
+    for c in configs:
+        config_list.append({
+            'id': c['id'],
+            'name': c['name'] or '',
+            'country': c['country'] or '',
+            'domain': c['domain'] or '',
+            'spid': c['spid'] or '',
+            'api_pwd': c['api_pwd'] or '',
+            'sender_name': c['sender_name'] or '',
+            'is_active': bool(c['is_active']),
+            'updated_at': c['updated_at']
+        })
+    return jsonify({'configs': config_list})
 
-@app.route('/api/config/sms', methods=['PUT'])
+@app.route('/api/config/sms', methods=['POST'])
 @admin_required
-def update_sms_config():
+def create_sms_config():
     data = request.get_json()
     db = get_db()
+    name = data.get('name', '').strip()
+    country = data.get('country', '').strip()
     domain = data.get('domain', '').strip()
     spid = data.get('spid', '').strip()
     api_pwd = data.get('api_pwd', '').strip()
     sender_name = data.get('sender_name', '').strip()
+    if not name:
+        return jsonify({'error': 'Nombre es requerido'}), 400
+    try:
+        cursor = db.execute(
+            "INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, country, domain, spid, api_pwd, sender_name)
+        )
+        db.commit()
+        return jsonify({'message': 'Configuracion creada', 'id': cursor.lastrowid})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/api/config/sms/<int:config_id>', methods=['PUT'])
+@admin_required
+def update_sms_config(config_id):
+    data = request.get_json()
+    db = get_db()
+    name = data.get('name', '').strip()
+    country = data.get('country', '').strip()
+    domain = data.get('domain', '').strip()
+    spid = data.get('spid', '').strip()
+    api_pwd = data.get('api_pwd', '').strip()
+    sender_name = data.get('sender_name', '').strip()
+    is_active = data.get('is_active', True)
     db.execute(
-        "UPDATE sms_config SET domain=?, spid=?, api_pwd=?, sender_name=?, updated_at=datetime('now') WHERE id=1",
-        (domain, spid, api_pwd, sender_name)
+        "UPDATE sms_api_configs SET name=?, country=?, domain=?, spid=?, api_pwd=?, sender_name=?, is_active=?, updated_at=datetime('now') WHERE id=?",
+        (name, country, domain, spid, api_pwd, sender_name, 1 if is_active else 0, config_id)
     )
     db.commit()
     return jsonify({'message': 'Configuracion actualizada'})
 
+@app.route('/api/config/sms/<int:config_id>', methods=['DELETE'])
+@admin_required
+def delete_sms_config(config_id):
+    db = get_db()
+    db.execute("DELETE FROM sms_api_configs WHERE id=?", (config_id,))
+    db.commit()
+    return jsonify({'message': 'Configuracion eliminada'})
+
 @app.route('/api/config/sms/test', methods=['POST'])
 @admin_required
 def test_sms_config():
+    data = request.get_json()
+    config_id = data.get('config_id')
     db = get_db()
-    config = get_sms_api_config()
-    if not config or not (config['domain'] and config['spid'] and config['api_pwd']):
+    config = get_sms_api_config(config_id)
+    if not config or not (config.get('domain') and config.get('spid') and config.get('api_pwd')):
         return jsonify({'error': 'Configure el Dominio, SPID y Contrasena API primero'}), 400
 
     # Test connection by calling charset check with a simple text
@@ -2339,6 +2455,63 @@ def set_daily_limit():
         )
     db.commit()
     return jsonify({'message': 'Limite diario actualizado', 'daily_limit': limit})
+
+@app.route('/api/config/team-api-config', methods=['GET'])
+@admin_required
+def get_team_api_configs():
+    """Get all teams with their API config assignments."""
+    db = get_db()
+    teams = db.execute('''
+        SELECT tc.id, tc.team_admin_id, tc.api_config_id, tc.daily_sms_limit,
+               u.username as team_admin_name, u.full_name as team_admin_full_name,
+               sac.name as api_config_name, sac.country as api_config_country
+        FROM team_config tc
+        JOIN users u ON tc.team_admin_id = u.id
+        LEFT JOIN sms_api_configs sac ON tc.api_config_id = sac.id
+        ORDER BY u.username
+    ''').fetchall()
+    team_list = []
+    for t in teams:
+        team_list.append({
+            'id': t['id'],
+            'team_admin_id': t['team_admin_id'],
+            'team_admin_name': t['team_admin_name'],
+            'team_admin_full_name': t['team_admin_full_name'] or '',
+            'api_config_id': t['api_config_id'],
+            'api_config_name': t['api_config_name'] or 'Sin asignar',
+            'api_config_country': t['api_config_country'] or '',
+            'daily_sms_limit': t['daily_sms_limit']
+        })
+    configs = db.execute("SELECT id, name, country FROM sms_api_configs WHERE is_active=1 ORDER BY name").fetchall()
+    config_list = [{'id': c['id'], 'name': c['name'], 'country': c['country']} for c in configs]
+    return jsonify({'teams': team_list, 'configs': config_list})
+
+@app.route('/api/config/team-api-config', methods=['PUT'])
+@admin_required
+def update_team_api_config():
+    """Update team's API config assignment."""
+    db = get_db()
+    data = request.get_json()
+    team_admin_id = data.get('team_admin_id')
+    api_config_id = data.get('api_config_id')
+    if not team_admin_id:
+        return jsonify({'error': 'team_admin_id es requerido'}), 400
+    existing = db.execute(
+        "SELECT id FROM team_config WHERE team_admin_id=?",
+        (team_admin_id,)
+    ).fetchone()
+    if existing:
+        db.execute(
+            "UPDATE team_config SET api_config_id=? WHERE team_admin_id=?",
+            (api_config_id if api_config_id else None, team_admin_id)
+        )
+    else:
+        db.execute(
+            "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, 100)",
+            (team_admin_id, api_config_id if api_config_id else None)
+        )
+    db.commit()
+    return jsonify({'message': 'Configuracion API actualizada'})
 
 @app.route('/api/config/logs', methods=['GET'])
 @admin_required

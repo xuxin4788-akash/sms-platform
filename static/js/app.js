@@ -228,6 +228,9 @@ function navigateTo(page) {
             if (state.user.role === 'team_admin') renderTeamConfig(content);
             else renderConfig(content);
             break;
+        case 'team-api-config':
+            renderTeamApiConfig(content);
+            break;
         default: renderDashboard(content);
     }
 }
@@ -1304,6 +1307,39 @@ function drawTeamStatsChart(teams) {
 // ============================================================
 // Config (Admin)
 // ============================================================
+async function renderTeamApiConfig(container) {
+    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var data = await api('/api/config/team-api-config');
+        var teams = data.teams || [];
+        var configs = data.configs || [];
+
+        var configOptions = configs.map(function(c) {
+            return '<option value="' + c.id + '">' + escapeHtml(c.name) + ' (' + escapeHtml(c.country) + ')</option>';
+        }).join('');
+
+        var teamRows = teams.map(function(t) {
+            return '<tr><td><strong>' + escapeHtml(t.team_admin_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.team_admin_full_name || '') + '</small></td><td style="text-align:center;">' + t.daily_sms_limit + '</td><td><select onchange="updateTeamApiConfig(' + t.team_admin_id + ', this.value)" style="padding:6px 10px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;"><option value="">Sin asignar</option>' + configOptions.replace('value="' + t.api_config_id + '"', 'value="' + t.api_config_id + '" selected') + '</select></td><td><span class="badge badge-blue">' + escapeHtml(t.api_config_name) + '</span></td></tr>';
+        }).join('');
+
+        var html = '<h1 class="mb-4" style="font-size:22px;font-weight:700;">API por Equipo</h1>' +
+            '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">Asignacion de API SMS por Equipo</h3></div><div class="card-body">' +
+            '<p class="text-secondary mb-3">Asigna una configuracion de API SMS a cada equipo. Los mensajes de los miembros del equipo se enviaran usando la API configurada.</p>' +
+            (teams.length > 0 ? '<div class="table-container"><table><thead><tr><th>Equipo (Admin)</th><th style="text-align:center;">Limite Diario</th><th>Configuracion API</th><th>API Asignada</th></tr></thead><tbody>' + teamRows + '</tbody></table></div>' : '<div class="empty-state"><p>No hay equipos configurados</p></div>') +
+            '</div></div>';
+
+        container.innerHTML = html;
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+async function updateTeamApiConfig(teamAdminId, apiConfigId) {
+    try {
+        await api('/api/config/team-api-config', { method: 'PUT', body: { team_admin_id: teamAdminId, api_config_id: apiConfigId ? parseInt(apiConfigId) : null } });
+        showToast('Configuracion API actualizada', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
 async function renderRolePermissions(container) {
     if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
@@ -1352,38 +1388,51 @@ async function saveRolePermissions(role) {
 }
 
 async function renderConfig(container) {
-    if (state.user.role !== 'admin' && state.user.role !== 'team_admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
+    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
         var results = await Promise.all([api('/api/config/sms'), api('/api/config/logs')]);
-        var configData = results[0].config || {};
+        var configs = results[0].configs || [];
         var logsData = results[1];
-        var isConfigured = configData.domain && configData.spid && configData.api_pwd;
+        var anyConfigured = configs.some(function(c) { return c.domain && c.spid && c.api_pwd; });
         var logRows = logsData.logs.length === 0
             ? '<tr><td colspan="4" class="text-center text-secondary" style="padding:24px;">No hay registros</td></tr>'
             : logsData.logs.map(function(l) { return '<tr><td class="text-sm text-secondary">' + formatDate(l.created_at) + '</td><td>' + escapeHtml(l.action) + '</td><td class="text-sm">' + escapeHtml(l.details || '-') + '</td><td><span class="badge ' + (l.status === 'success' ? 'badge-green' : l.status === 'error' ? 'badge-red' : 'badge-gray') + '">' + escapeHtml(l.status) + '</span></td></tr>'; }).join('');
 
         container.innerHTML =
-            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Configuracion API SMS</h1>' +
-            '<div class="card mb-4"><div class="card-header"><h2>Proveedor SMS (infin8linx)</h2><span class="badge ' + (isConfigured ? 'badge-green' : 'badge-yellow') + '">' + (isConfigured ? 'Configurado' : 'Sin configurar') + '</span></div><div class="card-body">' +
-                '<form onsubmit="handleSaveConfig(event)">' +
-                    '<div class="form-group"><label>Dominio del Servidor</label><input type="text" name="domain" value="' + escapeHtml(configData.domain || '') + '" placeholder="api.infin8linx.com"><small class="text-secondary">Dominio del servidor SMS (sin https://)</small></div>' +
-                    '<div class="form-group"><label>Cuenta de Interfaz (SPID)</label><input type="text" name="spid" value="' + escapeHtml(configData.spid || '') + '" placeholder="Su cuenta de interfaz"><small class="text-secondary">Cuenta proporcionada por la empresa</small></div>' +
-                    '<div class="form-group"><label>Contrasena API</label><input type="password" name="api_pwd" value="' + escapeHtml(configData.api_pwd || '') + '" placeholder="Contrasena de la API"><small class="text-secondary">Contrasena proporcionada por la empresa (se encripta con MD5)</small></div>' +
-                    '<div class="form-group"><label>Nombre del Remitente (senderid)</label><input type="text" name="sender_name" value="' + escapeHtml(configData.sender_name || '') + '" placeholder="MiEmpresa"><small class="text-secondary">Campo opcional, se habilita tras cooperacion con el socio</small></div>' +
-                    '<div class="flex gap-2"><button type="submit" class="btn btn-primary">Guardar Configuracion</button><button type="button" class="btn btn-secondary" onclick="testApiConnection()">Probar Conexion</button></div>' +
-                '</form>' +
-                '<div class="mt-4" style="padding:12px;background:#EFF6FF;border-radius:8px;font-size:13px;color:#1E293B;">' +
-                    '<strong>Nota sobre codificacion:</strong> El espanol usa codificacion UCS2. Cada SMS individual admite hasta 70 caracteres. SMS largos se dividen en partes de 67 caracteres cada una.' +
-                '</div>' +
-            '</div></div>' +
+            '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Configuraciones API SMS</h1><button class="btn btn-primary btn-sm" onclick="showAddApiConfig()">+ Nueva Configuracion</button></div>' +
+            configs.map(function(c) {
+                var isCfg = c.domain && c.spid && c.api_pwd;
+                return '<div class="card mb-3"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><h3 style="margin:0;">' + escapeHtml(c.name) + ' <span class="badge ' + (c.country === 'MX' ? 'badge-green' : 'badge-blue') + '">' + escapeHtml(c.country) + '</span></h3><span class="badge ' + (c.is_active ? 'badge-green' : 'badge-gray') + '" style="margin-left:auto;">' + (c.is_active ? 'Activa' : 'Inactiva') + '</span></div><div class="card-body"><form onsubmit="handleSaveApiConfig(event, ' + c.id + ')"><div class="form-grid"><div class="form-group"><label>Dominio del Servidor</label><input type="text" name="domain" value="' + escapeHtml(c.domain || '') + '" placeholder="api.infin8linx.com"></div><div class="form-group"><label>Cuenta de Interfaz (SPID)</label><input type="text" name="spid" value="' + escapeHtml(c.spid || '') + '" placeholder="Su cuenta de interfaz"></div><div class="form-group"><label>Contrasena API</label><input type="password" name="api_pwd" value="' + escapeHtml(c.api_pwd || '') + '" placeholder="Contrasena de la API"></div><div class="form-group"><label>Nombre del Remitente</label><input type="text" name="sender_name" value="' + escapeHtml(c.sender_name || '') + '" placeholder="MiEmpresa"></div></div><div class="flex gap-2 mt-3"><button type="submit" class="btn btn-primary">Guardar</button><button type="button" class="btn btn-secondary" onclick="testApiConfig(' + c.id + ')">Probar</button><button type="button" class="btn btn-danger btn-sm" onclick="deleteApiConfig(' + c.id + ')">Eliminar</button></div></form>' + (isCfg ? '<div class="mt-3"><span class="badge badge-green">API Configurada</span></div>' : '<div class="mt-3"><span class="badge badge-yellow">API No Configurada - Modo Simulacion</span></div>') + '</div></div>';
+            }).join('') +
+            '<div class="card mb-4"><div class="card-body"><div style="padding:12px;background:#EFF6FF;border-radius:8px;font-size:13px;color:#1E293B;"><strong>Nota sobre codificacion:</strong> El espanol usa codificacion UCS2. Cada SMS individual admite hasta 70 caracteres. SMS largos se dividen en partes de 67 caracteres cada una.</div></div></div>' +
             '<div class="card"><div class="card-header"><h2>Registros de Actividad</h2></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Accion</th><th>Detalles</th><th>Estado</th></tr></thead><tbody>' + logRows + '</tbody></table></div></div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
-async function handleSaveConfig(event) {
+async function handleSaveApiConfig(event, configId) {
     event.preventDefault(); var form = event.target;
-    try { await api('/api/config/sms', { method: 'PUT', body: { domain: form.domain.value.trim(), spid: form.spid.value.trim(), api_pwd: form.api_pwd.value.trim(), sender_name: form.sender_name.value.trim() } }); showToast('Configuracion guardada', 'success'); renderConfig(document.getElementById('page-content')); }
+    try { await api('/api/config/sms/' + configId, { method: 'PUT', body: { name: form.closest('.card').querySelector('h3').textContent.trim().split(' ')[0], country: '', domain: form.domain.value.trim(), spid: form.spid.value.trim(), api_pwd: form.api_pwd.value.trim(), sender_name: form.sender_name.value.trim(), is_active: true } }); showToast('Configuracion guardada', 'success'); renderConfig(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+async function testApiConfig(configId) {
+    try { var data = await api('/api/config/sms/test', { method: 'POST', body: { config_id: configId } }); showToast(data.message, 'success'); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+async function showAddApiConfig() {
+    var name = prompt('Nombre de la configuracion (ej: Mexico, Colombia):');
+    if (!name) return;
+    var country = prompt('Codigo de pais (ej: MX, CO):');
+    if (!country) return;
+    try { await api('/api/config/sms', { method: 'POST', body: { name: name.trim(), country: country.trim().toUpperCase(), domain: '', spid: '', api_pwd: '', sender_name: '' } }); showToast('Configuracion creada', 'success'); renderConfig(document.getElementById('page-content')); }
+    catch (err) { showToast(err.message, 'error'); }
+}
+
+async function deleteApiConfig(configId) {
+    if (!confirm('Eliminar esta configuracion?')) return;
+    try { await api('/api/config/sms/' + configId, { method: 'DELETE' }); showToast('Configuracion eliminada', 'success'); renderConfig(document.getElementById('page-content')); }
     catch (err) { showToast(err.message, 'error'); }
 }
 
