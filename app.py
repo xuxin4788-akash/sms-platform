@@ -934,10 +934,19 @@ def create_user():
     existing = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
     if existing:
         return jsonify({'error': 'El nombre de usuario ya existe'}), 409
+    api_config_id = data.get('api_config_id')
     db.execute(
         "INSERT INTO users (username, password_hash, full_name, role, team_creator_id) VALUES (?, ?, ?, ?, ?)",
         (username, hash_password(password), full_name, role, team_creator_id)
     )
+    # If creating a team_admin, create team_config with api_config_id
+    if role == 'team_admin':
+        new_user_row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+        new_user_id = new_user_row['id']
+        db.execute(
+            "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, 100)",
+            (new_user_id, api_config_id if api_config_id else None)
+        )
     db.commit()
     return jsonify({'message': 'Usuario creado exitosamente'}), 201
 

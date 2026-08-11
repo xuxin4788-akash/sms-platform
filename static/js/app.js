@@ -228,9 +228,6 @@ function navigateTo(page) {
             if (state.user.role === 'team_admin') renderTeamConfig(content);
             else renderConfig(content);
             break;
-        case 'team-api-config':
-            renderTeamApiConfig(content);
-            break;
         default: renderDashboard(content);
     }
 }
@@ -834,7 +831,7 @@ function debounceRenderUsers() {
     _userSearchTimer = setTimeout(function() { renderUsers(document.getElementById('page-content')); }, 300);
 }
 
-function showAddUserModal() {
+async function showAddUserModal() {
     var myRole = state.user.role;
     var roleOptions = '';
     if (myRole === 'admin') {
@@ -845,12 +842,39 @@ function showAddUserModal() {
     var infoText = myRole === 'admin'
         ? 'Se creara un Administrador de Equipo que podra gestionar sus propios miembros.'
         : 'Se creara un Miembro de Equipo bajo tu gestion.';
-    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+    // Fetch API configs for team_admin creation
+    var apiConfigHtml = '';
+    if (myRole === 'admin') {
+        try {
+            var configsData = await api('/api/config/sms');
+            var configs = configsData.configs || [];
+            var configOptions = configs.map(function(c) {
+                return '<option value="' + c.id + '">' + escapeHtml(c.name) + ' (' + escapeHtml(c.country) + ')</option>';
+            }).join('');
+            apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais) *</label><select name="api_config_id" required><option value="">Seleccionar pais...</option>' + configOptions + '</select><small class="text-secondary">Cada equipo usa la API de un solo pais. Esta configuracion no se puede cambiar despues.</small></div>';
+        } catch (e) {
+            apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais)</label><p class="text-secondary">No hay configuraciones API disponibles</p></div>';
+        }
+    }
+    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role" id="add-user-role" onchange="toggleApiConfig()">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div>' + apiConfigHtml + '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+}
+
+function toggleApiConfig() {
+    var roleSelect = document.getElementById('add-user-role');
+    var apiSelect = document.querySelector('select[name="api_config_id"]');
+    if (apiSelect) {
+        apiSelect.required = (roleSelect.value === 'team_admin');
+    }
 }
 
 async function handleAddUser(event) {
     event.preventDefault(); var form = event.target;
-    try { await api('/api/users', { method: 'POST', body: { username: form.username.value.trim(), full_name: form.full_name.value.trim(), password: form.password.value, role: form.role.value } }); hideModal(); showToast('Usuario creado', 'success'); renderUsers(document.getElementById('page-content')); }
+    var body = { username: form.username.value.trim(), full_name: form.full_name.value.trim(), password: form.password.value, role: form.role.value };
+    var apiConfigSelect = form.querySelector('select[name="api_config_id"]');
+    if (apiConfigSelect && apiConfigSelect.value) {
+        body.api_config_id = parseInt(apiConfigSelect.value);
+    }
+    try { await api('/api/users', { method: 'POST', body: body }); hideModal(); showToast('Usuario creado', 'success'); renderUsers(document.getElementById('page-content')); }
     catch (err) { showToast(err.message, 'error'); }
 }
 
