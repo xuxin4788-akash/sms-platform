@@ -879,7 +879,7 @@ def list_users():
     """
 
     if current['role'] == 'admin':
-        where_clauses = []
+        where_clauses = ["u.role != 'admin'"]
         params = []
         if role_filter:
             where_clauses.append("u.role = ?")
@@ -890,9 +890,9 @@ def list_users():
         where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
         users = db.execute(base_select + where_sql + " ORDER BY u.created_at DESC", params).fetchall()
     else:
-        # Team admin sees only their own team members + themselves
-        where_clauses = ["(u.id = ? OR u.team_creator_id = ?)"]
-        params = [current['id'], current['id']]
+        # Team admin sees only their own team members (subordinates)
+        where_clauses = ["u.team_creator_id = ?"]
+        params = [current['id']]
         if role_filter:
             where_clauses.append("u.role = ?")
             params.append(role_filter)
