@@ -844,7 +844,7 @@ async function showAddUserModal() {
         : 'Se creara un Miembro de Equipo bajo tu gestion.';
     // Fetch API configs for team_admin creation
     var apiConfigHtml = '';
-    if (myRole === 'admin') {
+    if (myRole === 'admin' || (state.user.permissions || []).includes('team-api-select')) {
         try {
             var configsData = await api('/api/config/sms');
             var configs = configsData.configs || [];
@@ -907,7 +907,8 @@ var PERM_ITEMS = [
     { key: 'my-account', label: 'Mi Cuenta', icon: 'user' },
     { key: 'my-team', label: 'Mi Equipo', icon: 'users' },
     { key: 'all-teams', label: 'Todos los Equipos', icon: 'bar-chart' },
-    { key: 'config', label: 'Configuracion API', icon: 'settings' }
+    { key: 'config', label: 'Configuracion API', icon: 'settings' },
+    { key: 'team-api-select', label: 'Seleccionar API de Equipo', icon: 'server' }
 ];
 
 function showPermModal(id) {
