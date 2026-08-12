@@ -471,6 +471,18 @@ def init_db():
         except Exception:
             pass
 
+        # Migration: add last_login_ip and last_login_at to users
+        try:
+            cursor = db.execute("PRAGMA table_info(users)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if 'last_login_ip' not in cols:
+                db.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT DEFAULT ''")
+            if 'last_login_at' not in cols:
+                db.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL")
+            db.commit()
+        except Exception:
+            pass
+
         db.close()
 
 # ============================================================
@@ -790,6 +802,13 @@ def login():
         return jsonify({'error': 'Cuenta desactivada. Contacte al administrador.'}), 403
     session['user_id'] = user['id']
     session['role'] = user['role']
+    # Record login IP
+    login_ip = request.headers.get('X-Forwarded-For', request.remote_addr or '').split(',')[0].strip()
+    db.execute(
+        "UPDATE users SET last_login_ip=?, last_login_at=datetime('now') WHERE id=?",
+        (login_ip, user['id'])
+    )
+    db.commit()
     return jsonify({
         'user': {
             'id': user['id'],
@@ -853,6 +872,7 @@ def list_users():
     base_select = """
         SELECT u.id, u.username, u.full_name, u.role, u.team_creator_id,
                u.is_active, u.created_at, u.updated_at,
+               u.last_login_ip, u.last_login_at,
                tc.username AS team_creator_name, tc.full_name AS team_creator_fullname
         FROM users u
         LEFT JOIN users tc ON u.team_creator_id = tc.id
