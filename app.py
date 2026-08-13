@@ -618,7 +618,7 @@ def is_sms_api_configured(user_id=None):
 
 def sms_api_send_single(phone, content, config=None):
     """Send a single SMS via the API.
-    POST /sms/send
+    GET /sms/send (all params in URL query string)
     Returns: dict with code, msg, data (msgid, parts, state)
     """
     if config is None:
@@ -630,8 +630,7 @@ def sms_api_send_single(phone, content, config=None):
     pwd = generate_api_pwd(config['spid'], config['api_pwd'], timestamp)
     sm_hex = str_to_hex(content)
 
-    url = f"https://{config['domain']}/sms/send"
-    payload = {
+    params = {
         'spid': config['spid'],
         'pwd': pwd,
         'timestamp': timestamp,
@@ -639,10 +638,14 @@ def sms_api_send_single(phone, content, config=None):
         'sm': sm_hex,
     }
     if config['sender_name']:
-        payload['senderid'] = config['sender_name']
+        params['senderid'] = config['sender_name']
+
+    # Build full URL with query string
+    from urllib.parse import urlencode
+    url = f"https://{config['domain']}/sms/send?{urlencode(params)}"
 
     try:
-        resp = http_requests.post(url, data=payload, timeout=15)
+        resp = http_requests.get(url, timeout=15)
         result = resp.json()
         return result
     except http_requests.exceptions.Timeout:
@@ -654,7 +657,7 @@ def sms_api_send_single(phone, content, config=None):
 
 def sms_api_send_batch(phone_content_pairs, config=None):
     """Send multiple SMS via the API (max 200 per request).
-    POST /sms/rsend
+    GET /sms/rsend (all params in URL query string)
     phone_content_pairs: list of (phone, content) tuples
     Returns: dict with code, msg, data (list of {das, msgid, parts, state})
     """
@@ -673,18 +676,21 @@ def sms_api_send_batch(phone_content_pairs, config=None):
         parts.append(f"{phone},{hex_content}")
     dasm = '/'.join(parts)
 
-    url = f"https://{config['domain']}/sms/rsend"
-    payload = {
+    params = {
         'spid': config['spid'],
         'pwd': pwd,
         'timestamp': timestamp,
         'dasm': dasm,
     }
     if config['sender_name']:
-        payload['senderid'] = config['sender_name']
+        params['senderid'] = config['sender_name']
+
+    # Build full URL with query string
+    from urllib.parse import urlencode
+    url = f"https://{config['domain']}/sms/rsend?{urlencode(params)}"
 
     try:
-        resp = http_requests.post(url, data=payload, timeout=30)
+        resp = http_requests.get(url, timeout=30)
         result = resp.json()
         return result
     except http_requests.exceptions.Timeout:
