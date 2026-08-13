@@ -561,12 +561,12 @@ SMS_STATUS_CODES = {
 }
 
 def str_to_hex(s):
-    """Convert a string to hex encoding (UCS2 for Spanish)."""
-    return s.encode('utf-16-be').hex().upper()
+    """Convert a string to hex encoding (UTF-8)."""
+    return s.encode('utf-8').hex()
 
 def generate_api_pwd(spid, api_pwd, timestamp):
-    """Generate encrypted password: MD5(spid + pwd + timestamp), lowercase."""
-    raw = f"{spid}{api_pwd}{timestamp}"
+    """Generate encrypted password: MD5(spid + '00000000' + pwd + timestamp), lowercase."""
+    raw = f"{spid}00000000{api_pwd}{timestamp}"
     return hashlib.md5(raw.encode('utf-8')).hexdigest()
 
 def get_sms_api_config(config_id=None):
@@ -618,7 +618,7 @@ def is_sms_api_configured(user_id=None):
 
 def sms_api_send_single(phone, content, config=None):
     """Send a single SMS via the API.
-    GET /sms/send (all params in URL query string)
+    GET /sms/send?spid=xx&pwd=xx&das=xx&timestamp=xx&sm=xx
     Returns: dict with code, msg, data (msgid, parts, state)
     """
     if config is None:
@@ -630,11 +630,14 @@ def sms_api_send_single(phone, content, config=None):
     pwd = generate_api_pwd(config['spid'], config['api_pwd'], timestamp)
     sm_hex = str_to_hex(content)
 
+    # Convert phone format: +52... -> 0052...
+    das = phone.replace('+', '00') if phone.startswith('+') else phone
+
     params = {
         'spid': config['spid'],
         'pwd': pwd,
         'timestamp': timestamp,
-        'to': phone,
+        'das': das,
         'sm': sm_hex,
     }
     if config['sender_name']:
@@ -657,7 +660,7 @@ def sms_api_send_single(phone, content, config=None):
 
 def sms_api_send_batch(phone_content_pairs, config=None):
     """Send multiple SMS via the API (max 200 per request).
-    GET /sms/rsend (all params in URL query string)
+    POST /sms/rsend Content-Type: application/x-www-form-urlencoded
     phone_content_pairs: list of (phone, content) tuples
     Returns: dict with code, msg, data (list of {das, msgid, parts, state})
     """
@@ -673,24 +676,24 @@ def sms_api_send_batch(phone_content_pairs, config=None):
     parts = []
     for phone, content in phone_content_pairs:
         hex_content = str_to_hex(content)
-        parts.append(f"{phone},{hex_content}")
+        # Convert phone format: +52... -> 0052...
+        das = phone.replace('+', '00') if phone.startswith('+') else phone
+        parts.append(f"{das},{hex_content}")
     dasm = '/'.join(parts)
 
-    params = {
+    payload = {
         'spid': config['spid'],
         'pwd': pwd,
         'timestamp': timestamp,
         'dasm': dasm,
     }
     if config['sender_name']:
-        params['senderid'] = config['sender_name']
+        payload['senderid'] = config['sender_name']
 
-    # Build full URL with query string
-    from urllib.parse import urlencode
-    url = f"https://{config['domain']}/sms/rsend?{urlencode(params)}"
+    url = f"https://{config['domain']}/sms/rsend"
 
     try:
-        resp = http_requests.get(url, timeout=30)
+        resp = http_requests.post(url, data=payload, timeout=30)
         result = resp.json()
         return result
     except http_requests.exceptions.Timeout:
