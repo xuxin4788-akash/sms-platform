@@ -1,0 +1,25 @@
+[
+  {
+    "id": "deploy-sms-platform",
+    "execute-command": "/opt/sms-platform/deploy.sh",
+    "command-working-directory": "/opt/sms-platform",
+    "response-message": "Deployment started",
+    "trigger-rule": {
+      "match": {
+        "type": "value",
+        "value": "main",
+        "parameter": {
+          "source": "payload",
+          "name": "ref"
+        }
+      }
+    },
+    "trigger-rule-mismatch-http-response-code": 200,
+    "pass-arguments-to-command": [
+      {
+        "source": "payload",
+        "name": "head_commit.message"
+      }
+    ]
+  }
+]

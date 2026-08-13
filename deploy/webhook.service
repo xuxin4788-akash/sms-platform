@@ -1,0 +1,14 @@
+[Unit]
+Description=SMS Platform Webhook Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+ExecStart=/usr/local/bin/webhook -hooks /opt/sms-platform/deploy/webhook.json -port 9000 -verbose
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
