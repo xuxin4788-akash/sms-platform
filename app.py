@@ -845,6 +845,28 @@ def get_me():
     except Exception:
         permissions = []
 
+    # Get team country code
+    team_country = ''
+    try:
+        if g.user['role'] == 'admin':
+            # Admin: get first active config country
+            cfg = db.execute("SELECT country FROM sms_api_configs WHERE is_active = 1 LIMIT 1").fetchone()
+            if cfg:
+                team_country = cfg['country'] or ''
+        else:
+            team_admin_id = g.user.get('team_creator_id')
+            if team_admin_id:
+                tc = db.execute("SELECT api_config_id FROM team_config WHERE team_admin_id = ?", (team_admin_id,)).fetchone()
+                if tc and tc['api_config_id']:
+                    cfg = db.execute("SELECT country FROM sms_api_configs WHERE id = ?", (tc['api_config_id'],)).fetchone()
+                    if cfg:
+                        team_country = cfg['country'] or ''
+    except Exception:
+        pass
+
+    country_codes = {'MX': '+52', 'CO': '+57', 'US': '+1', 'BR': '+55'}
+    team_country_code = country_codes.get(team_country, '+52')
+
     return jsonify({
         'user': {
             'id': g.user['id'],
@@ -852,7 +874,8 @@ def get_me():
             'full_name': g.user['full_name'],
             'role': g.user['role'],
             'role_label': ROLE_LABELS.get(g.user['role'], g.user['role']),
-            'permissions': permissions
+            'permissions': permissions,
+            'team_country_code': team_country_code
         }
     })
 

@@ -540,7 +540,10 @@ function handlePhoneInput(event) {
     if (event.key === 'Enter' || event.key === ',') {
         event.preventDefault();
         var input = document.getElementById('phone-input');
-        var phone = input.value.replace(',', '').trim();
+        var rawPhone = input.value.replace(',', '').trim();
+        if (!rawPhone) return;
+        var defaultCode = (state.user && state.user.team_country_code) || '+52';
+        var phone = normalizePhone(rawPhone, defaultCode);
         if (phone && state.sendPhones.indexOf(phone) === -1) { state.sendPhones.push(phone); renderPhoneTags(); }
         input.value = '';
     }
@@ -647,6 +650,129 @@ function getSendPhones() {
         return Array.from(document.querySelectorAll('#contacts-select-list input[type="checkbox"]:checked')).map(function(cb) { return cb.value; });
     }
     return state.sendPhones;
+}
+
+
+function normalizePhone(phone, defaultCode) {
+    phone = phone.replace(/[\s\-\(\)]/g, '');
+    if (!phone) return '';
+    // Known country codes (1-3 digits)
+    var knownCodes = ['+52', '+57', '+1', '+55', '+54', '+56', '+51', '+58', '+593', '+502', '+503', '+504', '+505', '+506', '+507', '+591', '+595', '+34', '+44', '+33', '+49', '+39', '+86', '+91', '+81', '+82', '+61'];
+    // Already has + prefix
+    if (phone.startsWith('+')) {
+        return phone;
+    }
+    // Starts with 00 (international prefix)
+    if (phone.startsWith('00')) {
+        return '+' + phone.substring(2);
+    }
+    // Check if starts with a known country code (without +)
+    for (var i = 0; i < knownCodes.length; i++) {
+        var code = knownCodes[i].substring(1); // remove +
+        if (phone.startsWith(code) && phone.length > code.length + 5) {
+            return '+' + phone;
+        }
+    }
+    // No country code detected, add default
+    var prefix = (defaultCode || '+52').replace('+', '');
+    return '+' + prefix + phone;
+}
+
+function showBatchImportModal() {
+    var defaultCode = (state.user && state.user.team_country_code) || '+52';
+    showModal('Importar Numeros en Lote', 
+        '<div class="form-group">' +
+            '<label>Prefijo internacional (codigo de pais)</label>' +
+            '<select id="batch-country-code" class="form-control">' +
+                '<option value="+52"' + (defaultCode === '+52' ? ' selected' : '') + '>Mexico (+52)</option>' +
+                '<option value="+57"' + (defaultCode === '+57' ? ' selected' : '') + '>Colombia (+57)</option>' +
+                '<option value="+1">Estados Unidos (+1)</option>' +
+                '<option value="+55">Brasil (+55)</option>' +
+                '<option value="+54">Argentina (+54)</option>' +
+                '<option value="+56">Chile (+56)</option>' +
+                '<option value="+51">Peru (+51)</option>' +
+                '<option value="+34">Espana (+34)</option>' +
+            '</select>' +
+            '<small class="text-secondary">Se aplicara automaticamente a numeros sin codigo de pais</small>' +
+        '</div>' +
+        '<div class="form-group mt-3">' +
+            '<label>Archivo CSV (opcional)</label>' +
+            '<input type="file" id="batch-file" accept=".csv,.txt" class="form-control">' +
+            '<small class="text-secondary">Formato: una columna con encabezado "phone" o "telefono"</small>' +
+        '</div>' +
+        '<div class="form-group mt-3">' +
+            '<label>O pegar numeros (uno por linea o separados por coma)</label>' +
+            '<textarea id="batch-phones" rows="6" class="form-control" placeholder="+521234567890&#10;7226452713&#10;o: 7226452713, 226452714"></textarea>' +
+        '</div>' +
+        '<div class="modal-footer" style="padding:16px 0 0;">' +
+            '<button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button>' +
+            '<button type="button" class="btn btn-primary" onclick="handleBatchImport()">Importar</button>' +
+        '</div>'
+    );
+}
+
+function handleBatchImport() {
+    var fileInput = document.getElementById('batch-file');
+    var phonesText = document.getElementById('batch-phones').value.trim();
+    var countryCode = document.getElementById('batch-country-code').value;
+    var phones = [];
+    
+    // Parse text input
+    if (phonesText) {
+        var lines = phonesText.split(/[\n,;]+/);
+        lines.forEach(function(line) {
+            var phone = normalizePhone(line.trim(), countryCode);
+            if (phone && phone.length >= 10 && phones.indexOf(phone) === -1) phones.push(phone);
+        });
+    }
+    
+    // Parse file if provided
+    if (fileInput.files.length > 0) {
+        var file = fileInput.files[0];
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var text = e.target.result;
+            var lines = text.split(/\r?\n/);
+            var isHeader = true;
+            lines.forEach(function(line) {
+                if (isHeader) { isHeader = false; return; } // Skip header
+                var parts = line.split(/[,;\t]/);
+                var phone = '';
+                // Try to find phone column
+                for (var i = 0; i < parts.length; i++) {
+                    var p = parts[i].trim();
+                    if (/^[0-9\+\s\-]{7,20}$/.test(p)) {
+                        phone = p;
+                        break;
+                    }
+                }
+                phone = normalizePhone(phone, countryCode);
+                if (phone && phone.length >= 10 && phones.indexOf(phone) === -1) phones.push(phone);
+            });
+            
+            // Add to send phones
+            addBatchPhones(phones);
+        };
+        reader.readAsText(file);
+    } else {
+        addBatchPhones(phones);
+    }
+}
+
+function addBatchPhones(phones) {
+    phones.forEach(function(phone) {
+        if (state.sendPhones.indexOf(phone) === -1) {
+            state.sendPhones.push(phone);
+        }
+    });
+    renderPhoneTags();
+    hideModal();
+    showToast(phones.length + ' numeros importados', 'success');
+}
+
+function clearAllPhones() {
+    state.sendPhones = [];
+    renderPhoneTags();
 }
 
 async function handleSendSMS() {
