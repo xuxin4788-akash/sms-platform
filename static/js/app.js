@@ -1410,23 +1410,30 @@ async function handleBulkPassword(event) {
             method: 'POST',
             body: { ids: selected.map(function(u) { return u.id; }) }
         });
+        var updated = result.updated || [];
         var hasErrors = (result.errors || []).length > 0;
         resultEl.style.background = hasErrors ? '#FEF3C7' : '#ECFDF5';
         resultEl.style.color = hasErrors ? '#B45309' : 'var(--success)';
         var html = '<strong>Contrasenas actualizadas: ' + result.updated_count + '.</strong>';
-        if ((result.updated || []).length) {
+        if (updated.length) {
             html += '<div style="margin-top:8px;display:grid;gap:4px;max-height:200px;overflow:auto;">' +
-                result.updated.map(function(u) {
+                updated.map(function(u) {
                     return '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 8px;background:#fff;border:1px solid var(--border);border-radius:6px;">' +
                         '<span style="font-weight:500;">' + escapeHtml(u.username) + '</span>' +
                         '<code style="color:var(--primary-blue);font-weight:600;">' + escapeHtml(u.password) + '</code></div>';
                 }).join('') + '</div>';
+            html += '<div style="margin-top:10px;"><button type="button" class="btn btn-secondary" onclick="downloadResetPasswords()">Descargar Excel (.xlsx)</button></div>';
         }
         if (hasErrors) {
             html += '<ul style="margin:6px 0 0;padding-left:18px;max-height:180px;overflow:auto;">' +
                 result.errors.map(function(e) { return '<li>' + escapeHtml(e.username || ('ID ' + e.id)) + ': ' + escapeHtml(e.error) + '</li>'; }).join('') + '</ul>';
         }
         resultEl.innerHTML = html;
+        if (updated.length) {
+            lastResetPasswords = { ids: updated.map(function(u) { return u.id; }), passwords: updated.reduce(function(acc, u) { acc[u.id] = u.password; return acc; }, {}) };
+            // Auto-download the account+password spreadsheet for this batch
+            downloadResetPasswords();
+        }
         showToast('Contrasenas actualizadas: ' + result.updated_count, hasErrors ? 'error' : 'success');
     } catch (err) {
         resultEl.style.background = '#FEE2E2';
@@ -1436,6 +1443,36 @@ async function handleBulkPassword(event) {
     } finally {
         submitBtn.disabled = false;
         submitBtn.textContent = 'Generar Contrasenas';
+    }
+}
+
+var lastResetPasswords = null;
+
+async function downloadResetPasswords() {
+    if (!lastResetPasswords || !lastResetPasswords.ids.length) { return; }
+    try {
+        var response = await fetch('/api/users/export-passwords', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(lastResetPasswords)
+        });
+        if (!response.ok) {
+            var data = await response.json().catch(function() { return {}; });
+            throw new Error(data.error || 'Error al exportar');
+        }
+        var blob = await response.blob();
+        var url = window.URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'contrasenas_usuarios_' + new Date().toISOString().slice(0,10) + '.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        showToast('Archivo de contrasenas descargado', 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
     }
 }
 

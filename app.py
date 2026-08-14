@@ -1698,15 +1698,20 @@ def download_user_template():
 @app.route('/api/users/export', methods=['GET'])
 @login_required
 def export_users():
-    """Export the visible user list as an .xlsx file (no password column)."""
+    """Export the visible user list as an .xlsx file (no password column).
+
+    Plain-text passwords are only exported immediately after a batch password
+    reset via /api/users/export-passwords. The general user list intentionally
+    omits passwords to avoid leaking credentials.
+    """
     from io import BytesIO
     from flask import send_file
     rows = _users_for_export(g.user)
     wb = _build_users_workbook(
         rows,
-        include_passwords=True,
+        include_passwords=False,
         viewer_role=g.user['role'],
-        password_map=EXPORTABLE_PASSWORDS
+        password_map={}
     )
     buf = BytesIO()
     wb.save(buf)
