@@ -1,0 +1,60 @@
+sms-platform-app | 
+sms-platform-app | 172.18.0.4 - - [14/Aug/2026:20:25:17 +0000] "GET /api/templates HTTP/1.1" 500 265 "-" "curl/7.81.0" 9184ms
+sms-platform-app | 172.18.0.4 - - [14/Aug/2026:20:27:25 +0000] "GET / HTTP/1.1" 200 2387 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 3473ms
+sms-platform-app | [2026-08-14 20:27:25,536] ERROR in app: Exception on /api/auth/me [GET]
+sms-platform-app | Traceback (most recent call last):
+sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 1511, in wsgi_app
+sms-platform-app |     response = self.full_dispatch_request()
+sms-platform-app |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 919, in full_dispatch_request
+sms-platform-app |     rv = self.handle_user_exception(e)
+sms-platform-app |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask_cors/extension.py", line 176, in wrapped_function
+sms-platform-app |     return cors_after_request(app.make_response(f(*args, **kwargs)))
+sms-platform-app |                                                 ^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 917, in full_dispatch_request
+sms-platform-app |     rv = self.dispatch_request()
+sms-platform-app |          ^^^^^^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 902, in dispatch_request
+sms-platform-app |     return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+sms-platform-app |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/app/app.py", line 500, in decorated
+sms-platform-app |     user = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
+sms-platform-app |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/app/app.py", line 63, in execute
+sms-platform-app |     cur.execute(pg_query, params)
+sms-platform-app | psycopg2.errors.UndefinedFunction: operator does not exist: boolean = integer
+sms-platform-app | LINE 1: SELECT * FROM users WHERE id=1 AND is_active=1
+sms-platform-app |                                                     ^
+sms-platform-app | HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+sms-platform-app | 
+sms-platform-app | 172.18.0.4 - - [14/Aug/2026:20:27:25 +0000] "GET /api/auth/me HTTP/1.1" 500 265 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 8579ms
+sms-platform-app | 172.18.0.4 - - [14/Aug/2026:20:27:28 +0000] "POST /api/auth/login HTTP/1.1" 200 121 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 11819ms
+sms-platform-app | [2026-08-14 20:27:28,308] ERROR in app: Exception on /api/sms/statistics [GET]
+sms-platform-app | Traceback (most recent call last):
+sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 1511, in wsgi_app
+sms-platform-app |     response = self.full_dispatch_request()
+sms-platform-app |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 919, in full_dispatch_request
+sms-platform-app |     rv = self.handle_user_exception(e)
+sms-platform-app |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask_cors/extension.py", line 176, in wrapped_function
+sms-platform-app |     return cors_after_request(app.make_response(f(*args, **kwargs)))
+sms-platform-app |                                                 ^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 917, in full_dispatch_request
+sms-platform-app |     rv = self.dispatch_request()
+sms-platform-app |          ^^^^^^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 902, in dispatch_request
+sms-platform-app |     return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+sms-platform-app |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/app/app.py", line 500, in decorated
+sms-platform-app |     user = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
+sms-platform-app |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sms-platform-app |   File "/app/app.py", line 63, in execute
+sms-platform-app |     cur.execute(pg_query, params)
+sms-platform-app | psycopg2.errors.UndefinedFunction: operator does not exist: boolean = integer
+sms-platform-app | LINE 1: SELECT * FROM users WHERE id=1 AND is_active=1
+sms-platform-app |                                                     ^
+sms-platform-app | HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+sms-platform-app | 
+sms-platform-app | 172.18.0.4 - - [14/Aug/2026:20:27:28 +0000] "GET /api/sms/statistics HTTP/1.1" 500 265 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 8266ms
