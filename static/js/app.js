@@ -390,11 +390,24 @@ async function deleteContact(id) {
 function showImportModal() {
     api('/api/groups').then(function(data) {
         var opts = data.groups.map(function(g) { return '<option value="' + g.id + '">' + escapeHtml(g.name) + '</option>'; }).join('');
-        var headerHtml = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:12px;">' +
-            '<div><strong style="font-size:15px;">Importar Contactos (CSV)</strong></div>' +
-            '<a href="/api/contacts/template" download style="font-size:13px;color:var(--primary-blue);text-decoration:none;font-weight:600;white-space:nowrap;">Descargar plantilla (.csv)</a>' +
-            '</div>';
-        showModal('Importar Contactos (CSV)', headerHtml + '<p class="text-secondary mb-4" style="font-size:13px;">El archivo CSV debe tener las columnas: <strong>name, phone, notes, remark</strong> (o <strong>nombre, telefono, notas, nota</strong>).</p><p class="text-secondary mb-4" style="font-size:12px;">Valores de <strong>remark</strong>: No contactable | Promesa de pago | Dispuesto a pagar sin fondos | No dispuesto a pagar</p><form id="import-form" onsubmit="handleImport(event)"><div class="form-group"><label>Grupo destino (opcional)</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Archivo CSV</label><input type="file" name="file" accept=".csv" required style="padding:8px;"></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Importar</button></div></form>');
+        var templateBox = '' +
+            '<a href="/api/contacts/template" download="plantilla_contactos.csv" ' +
+            'style="display:flex;align-items:center;gap:12px;padding:12px 14px;margin-bottom:16px;' +
+            'background:#EFF6FF;border:1px solid #BFDBFE;border-radius:10px;text-decoration:none;' +
+            'transition:background .15s ease;" onmouseover="this.style.background=\'#DBEAFE\'" onmouseout="this.style.background=\'#EFF6FF\'">' +
+            '<span style="display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;' +
+            'border-radius:8px;background:#2563EB;color:#fff;flex-shrink:0;">' +
+            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>' +
+            '<polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>' +
+            '</span>' +
+            '<span style="flex:1;line-height:1.3;">' +
+            '<span style="display:block;font-size:14px;font-weight:600;color:#1E293B;">Descargar plantilla CSV</span>' +
+            '<span style="display:block;font-size:12px;color:#64748B;margin-top:2px;">Columnas: name, phone, notes, remark (con datos de ejemplo)</span>' +
+            '</span>' +
+            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><polyline points="9 18 15 12 9 6"></polyline></svg>' +
+            '</a>';
+        showModal('Importar Contactos (CSV)', templateBox + '<p class="text-secondary mb-4" style="font-size:13px;">El archivo CSV debe tener las columnas: <strong>name, phone, notes, remark</strong> (o <strong>nombre, telefono, notas, nota</strong>).</p><p class="text-secondary mb-4" style="font-size:12px;">Valores de <strong>remark</strong>: No contactable | Promesa de pago | Dispuesto a pagar sin fondos | No dispuesto a pagar</p><form id="import-form" onsubmit="handleImport(event)"><div class="form-group"><label>Grupo destino (opcional)</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Archivo CSV</label><label class="file-input-wrap"><input type="file" name="file" accept=".csv" required onchange="document.getElementById(\'import-file-name\').textContent = this.files.length ? this.files[0].name : \'Ningun archivo seleccionado\'"><span class="file-input-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Seleccionar archivo</span><span class="file-input-name" id="import-file-name">Ningun archivo seleccionado</span></label></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Importar</button></div></form>');
     });
 }
 
