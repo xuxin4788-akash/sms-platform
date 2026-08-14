@@ -1,0 +1,40 @@
+root@iZ4hf61qkifw39jjmq1s5qZ:/opt/sms-platform# cd /opt/sms-platform
+docker-compose ps
+docker-compose logs --tail=80 app
+git log --oneline -1
+            Name                         Command                State                  Ports           
+-------------------------------------------------------------------------------------------------------
+4eec05787123_sms-platform-     gunicorn -c gunicorn.conf.    Exit 0                                    
+app                            ...                                                                     
+sms-platform-db                docker-entrypoint.sh          Up (healthy)   0.0.0.0:5432-              
+                               postgres                                     >5432/tcp,:::5432->5432/tcp
+sms-platform-nginx             /docker-entrypoint.sh ngin    Up             0.0.0.0:80->80/tcp,:::80-  
+                               ...                                          >80/tcp                    
+Attaching to 4eec05787123_sms-platform-app
+4eec05787123_sms-platform-app | [2026-08-14 22:56:32 +0000] [1] [INFO] Starting gunicorn 26.0.0
+4eec05787123_sms-platform-app | [2026-08-14 22:56:32 +0000] [1] [INFO] Listening at: http://0.0.0.0:5000 (1)
+4eec05787123_sms-platform-app | [2026-08-14 22:56:32 +0000] [1] [INFO] Using worker: sync
+4eec05787123_sms-platform-app | [2026-08-14 22:56:32 +0000] [7] [INFO] Booting worker with pid: 7
+4eec05787123_sms-platform-app | [2026-08-14 22:56:32 +0000] [8] [INFO] Booting worker with pid: 8
+4eec05787123_sms-platform-app | [2026-08-14 22:56:32 +0000] [9] [INFO] Booting worker with pid: 9
+4eec05787123_sms-platform-app | [2026-08-14 22:56:32 +0000] [10] [INFO] Booting worker with pid: 10
+4eec05787123_sms-platform-app | [2026-08-14 22:56:32 +0000] [11] [INFO] Booting worker with pid: 11
+4eec05787123_sms-platform-app | [2026-08-14 22:56:33 +0000] [1] [INFO] Control socket listening at /root/.gunicorn/gunicorn.ctl
+4eec05787123_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:22:56:39 +0000] "GET / HTTP/1.1" 200 2387 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 3489ms
+4eec05787123_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:22:56:40 +0000] "GET /api/auth/me HTTP/1.1" 200 312 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 10800ms
+4eec05787123_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:22:56:40 +0000] "GET /api/sms/statistics HTTP/1.1" 200 401 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 22490ms
+4eec05787123_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:22:56:41 +0000] "GET /favicon.ico HTTP/1.1" 404 207 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 695ms
+4eec05787123_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:22:56:42 +0000] "GET /api/sms/records?page=1&per_page=20 HTTP/1.1" 200 594 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 11941ms
+4eec05787123_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:22:56:43 +0000] "GET /api/users HTTP/1.1" 200 335 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 12438ms
+4eec05787123_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:22:56:44 +0000] "GET /api/users/export HTTP/1.1" 200 5476 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 80201ms
+4eec05787123_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:22:57:15 +0000] "GET /api/users/export HTTP/1.1" 200 5476 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 60092ms
+4eec05787123_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:22:57:51 +0000] "POST /api/users/bulk-password HTTP/1.1" 200 205 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 9726ms
+4eec05787123_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:22:57:58 +0000] "GET /api/users/export HTTP/1.1" 200 5477 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 60059ms
+4eec05787123_sms-platform-app | [2026-08-14 23:06:05 +0000] [1] [INFO] Handling signal: term
+4eec05787123_sms-platform-app | [2026-08-14 23:06:05 +0000] [7] [INFO] Worker exiting (pid: 7)
+4eec05787123_sms-platform-app | [2026-08-14 23:06:05 +0000] [10] [INFO] Worker exiting (pid: 10)
+4eec05787123_sms-platform-app | [2026-08-14 23:06:05 +0000] [9] [INFO] Worker exiting (pid: 9)
+4eec05787123_sms-platform-app | [2026-08-14 23:06:05 +0000] [8] [INFO] Worker exiting (pid: 8)
+4eec05787123_sms-platform-app | [2026-08-14 23:06:05 +0000] [11] [INFO] Worker exiting (pid: 11)
+4eec05787123_sms-platform-app | [2026-08-14 23:06:05 +0000] [1] [INFO] Shutting down: Master
+17ee4e9 (HEAD -> main, origin/main) feat: 批量重置密码后导出对应账号密码
