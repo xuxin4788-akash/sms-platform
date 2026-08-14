@@ -55,11 +55,9 @@ class DBWrapper:
             # Convert SQLite placeholders to PostgreSQL
             pg_query = query.replace('?', '%s')
             pg_query = pg_query.replace("datetime('now')", "NOW()")
-            if self.conn.autocommit is False:
-                cur = self.conn.cursor()
-            else:
-                import psycopg2.extras
-                cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            # Always use RealDictCursor so rows behave like sqlite3.Row
+            import psycopg2.extras
+            cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute(pg_query, params)
             return CursorWrapper(cur, self.db_type)
         else:
@@ -85,18 +83,27 @@ class CursorWrapper:
         self.cursor = cursor
         self.db_type = db_type
 
+    @property
+    def lastrowid(self):
+        if self.db_type == 'postgres':
+            # RETURNING id was not added; query for the last inserted OID fallback
+            try:
+                self.cursor.execute("SELECT LASTVAL()")
+                row = self.cursor.fetchone()
+                return row['lastval'] if isinstance(row, dict) else row[0]
+            except Exception:
+                return None
+        return self.cursor.lastrowid
+
     def fetchone(self):
         row = self.cursor.fetchone()
         if row is None:
             return None
-        if self.db_type == 'postgres':
-            return dict(row)
+        # RealDictRow is already dict-like; sqlite3.Row supports both indexing and keys
         return row
 
     def fetchall(self):
         rows = self.cursor.fetchall()
-        if self.db_type == 'postgres':
-            return [dict(r) for r in rows]
         return rows
 
 def get_db():
@@ -131,14 +138,18 @@ def init_db():
         conn = psycopg2.connect(app.config['DATABASE_URL'])
         conn.autocommit = True
         cur = conn.cursor()
+        # Full schema matching SQLite version
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username VARCHAR(255) UNIQUE NOT NULL,
                 password_hash VARCHAR(255) NOT NULL,
                 full_name VARCHAR(255) NOT NULL DEFAULT '',
-                role VARCHAR(20) NOT NULL DEFAULT 'employee' CHECK(role IN ('admin', 'employee')),
+                role VARCHAR(20) NOT NULL DEFAULT 'team_member',
+                team_creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                daily_limit INTEGER DEFAULT 0,
+                permissions TEXT DEFAULT '',
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
@@ -155,6 +166,7 @@ def init_db():
                 name VARCHAR(255) NOT NULL,
                 phone VARCHAR(50) NOT NULL,
                 notes TEXT DEFAULT '',
+                remark TEXT DEFAULT '',
                 group_id INTEGER REFERENCES contact_groups(id) ON DELETE SET NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
@@ -183,6 +195,19 @@ def init_db():
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
+            CREATE TABLE IF NOT EXISTS sms_api_configs (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                country VARCHAR(10) NOT NULL DEFAULT '',
+                domain VARCHAR(500) DEFAULT '',
+                spid VARCHAR(255) DEFAULT '',
+                api_pwd VARCHAR(255) DEFAULT '',
+                sender_name VARCHAR(255) DEFAULT '',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
             CREATE TABLE IF NOT EXISTS sms_config (
                 id SERIAL PRIMARY KEY,
                 domain VARCHAR(500) DEFAULT '',
@@ -199,11 +224,60 @@ def init_db():
                 status VARCHAR(20) NOT NULL DEFAULT 'info',
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
+
             CREATE TABLE IF NOT EXISTS role_permissions (
                 role VARCHAR(20) PRIMARY KEY,
                 permissions TEXT NOT NULL DEFAULT ''
             );
+
+            CREATE TABLE IF NOT EXISTS team_config (
+                id SERIAL PRIMARY KEY,
+                team_admin_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+                daily_sms_limit INTEGER DEFAULT 100,
+                api_config_id INTEGER REFERENCES sms_api_configs(id) ON DELETE SET NULL
+            );
         """)
+
+        # Migrations for existing databases - add missing columns
+        def pg_column_exists(table, column):
+            cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name=%s AND column_name=%s", (table, column))
+            return cur.fetchone() is not None
+
+        def pg_table_exists(table):
+            cur.execute("SELECT 1 FROM information_schema.tables WHERE table_name=%s", (table,))
+            return cur.fetchone() is not None
+
+        # users migrations
+        if not pg_column_exists('users', 'team_creator_id'):
+            cur.execute("ALTER TABLE users ADD COLUMN team_creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        if not pg_column_exists('users', 'daily_limit'):
+            cur.execute("ALTER TABLE users ADD COLUMN daily_limit INTEGER DEFAULT 0")
+        if not pg_column_exists('users', 'permissions'):
+            cur.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT ''")
+        if not pg_column_exists('users', 'last_login_ip'):
+            cur.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT DEFAULT ''")
+        if not pg_column_exists('users', 'last_login_at'):
+            cur.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL")
+        # Update role check constraint - drop old constraint, add new one
+        try:
+            cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
+            cur.execute("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'team_admin', 'team_member'))")
+            cur.execute("UPDATE users SET role='team_member' WHERE role='employee'")
+        except Exception:
+            pass
+
+        # contacts migrations
+        if not pg_column_exists('contacts', 'remark'):
+            cur.execute("ALTER TABLE contacts ADD COLUMN remark TEXT DEFAULT ''")
+
+        # sms_records migrations
+        if not pg_column_exists('sms_records', 'msgid'):
+            cur.execute("ALTER TABLE sms_records ADD COLUMN msgid VARCHAR(255) DEFAULT ''")
+        if not pg_column_exists('sms_records', 'api_code'):
+            cur.execute("ALTER TABLE sms_records ADD COLUMN api_code INTEGER DEFAULT 0")
+        if not pg_column_exists('sms_records', 'api_msg'):
+            cur.execute("ALTER TABLE sms_records ADD COLUMN api_msg TEXT DEFAULT ''")
+
         # Create default admin
         cur.execute("SELECT id FROM users WHERE username='admin'")
         if cur.fetchone() is None:
@@ -216,12 +290,25 @@ def init_db():
         cur.execute("SELECT id FROM sms_config LIMIT 1")
         if cur.fetchone() is None:
             cur.execute("INSERT INTO sms_config (domain, spid, api_pwd, sender_name) VALUES ('', '', '', '')")
+        # Create default sms_api_configs
+        cur.execute("SELECT id FROM sms_api_configs LIMIT 1")
+        if cur.fetchone() is None:
+            # Try to migrate from sms_config
+            cur.execute("SELECT domain, spid, api_pwd, sender_name FROM sms_config LIMIT 1")
+            old = cur.fetchone()
+            if old:
+                cur.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Mexico', 'MX', %s, %s, %s, %s)",
+                            (old[0] or '', old[1] or '', old[2] or '', old[3] or ''))
+            else:
+                cur.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Mexico', 'MX', '', '', '', '')")
+            cur.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Colombia', 'CO', '', '', '', '')")
         # Create default role_permissions
         cur.execute("SELECT role FROM role_permissions LIMIT 1")
         if cur.fetchone() is None:
             cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('admin', '')")
             cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_admin', '')")
             cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_member', '')")
+
         cur.close()
         conn.close()
     else:
