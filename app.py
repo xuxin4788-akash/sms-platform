@@ -1219,38 +1219,26 @@ def delete_user(user_id):
     db.commit()
     return jsonify({'message': 'Usuario eliminado'})
 
-@app.route('/api/users/bulk', methods=['POST'])
-@manager_required
-def bulk_create_users():
-    """Bulk create users.
-    Admin -> creates team_admins (each needs api_config_id).
-    Team_admin -> creates team_members under their management.
-    Payload: { "users": [ {"username":..,"password":..,"full_name":..,"api_config_id":..}, ... ], "api_config_id": <optional default> }
+def _bulk_create_users_core(current_user, users, default_api_config_id, default_password=None):
+    """Core bulk-creation logic shared by JSON and Excel upload.
+
+    Returns (created, errors). Each created item includes the plain-text
+    password used (for the password-list export); existing/hashed passwords
+    are never returned elsewhere.
     """
-    data = request.get_json() or {}
-    users = data.get('users', [])
-    if not isinstance(users, list) or not users:
-        return jsonify({'error': 'Debe proporcionar una lista de usuarios'}), 400
-    if len(users) > 500:
-        return jsonify({'error': 'No se pueden crear mas de 500 usuarios a la vez'}), 400
-
-    current = g.user
     db = get_db()
-    default_api_config_id = data.get('api_config_id')
 
-    # Determine role and team_creator_id based on current user
-    if current['role'] == 'admin':
+    if current_user['role'] == 'admin':
         role = 'team_admin'
         team_creator_id = None
-    elif current['role'] == 'team_admin':
+    elif current_user['role'] == 'team_admin':
         role = 'team_member'
-        team_creator_id = current['id']
+        team_creator_id = current_user['id']
     else:
-        return jsonify({'error': 'Permisos insuficientes'}), 403
+        return None, None
 
     created = []
     errors = []
-    # Pre-fetch existing usernames to avoid duplicate queries per row
     existing_rows = db.execute("SELECT username FROM users").fetchall()
     existing_users = set(r['username'].lower() for r in existing_rows)
     seen_usernames = set()
@@ -1260,7 +1248,8 @@ def bulk_create_users():
             errors.append({'index': idx, 'username': '', 'error': 'Formato invalido'})
             continue
         username = (u.get('username') or '').strip()
-        password = u.get('password') or ''
+        # Per-row password, fallback to default password (common for Excel)
+        password = (u.get('password') or '').strip() or (default_password or '').strip()
         full_name = (u.get('full_name') or '').strip()
         api_config_id = u.get('api_config_id') or default_api_config_id
 
@@ -1282,7 +1271,6 @@ def bulk_create_users():
             )
             new_user_row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
             new_user_id = new_user_row['id']
-            # For team_admins, create team_config
             if role == 'team_admin':
                 if not api_config_id:
                     errors.append({'index': idx, 'username': username, 'error': 'Configuracion API (pais) requerida'})
@@ -1292,12 +1280,42 @@ def bulk_create_users():
                     "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, 100)",
                     (new_user_id, api_config_id)
                 )
-            created.append({'id': new_user_id, 'username': username, 'full_name': full_name, 'role': role})
+            created.append({
+                'id': new_user_id,
+                'username': username,
+                'full_name': full_name,
+                'role': role,
+                'password': password
+            })
             seen_usernames.add(uname_lower)
         except Exception as e:
             errors.append({'index': idx, 'username': username, 'error': 'Error al crear: ' + str(e)})
 
     db.commit()
+    return created, errors, role
+
+
+@app.route('/api/users/bulk', methods=['POST'])
+@manager_required
+def bulk_create_users():
+    """Bulk create users.
+    Admin -> creates team_admins (each needs api_config_id).
+    Team_admin -> creates team_members under their management.
+    Payload: { "users": [ {"username":..,"password":..,"full_name":..,"api_config_id":..}, ... ], "api_config_id": <optional default>, "default_password": <optional> }
+    """
+    data = request.get_json() or {}
+    users = data.get('users', [])
+    if not isinstance(users, list) or not users:
+        return jsonify({'error': 'Debe proporcionar una lista de usuarios'}), 400
+    if len(users) > 500:
+        return jsonify({'error': 'No se pueden crear mas de 500 usuarios a la vez'}), 400
+
+    default_api_config_id = data.get('api_config_id')
+    default_password = data.get('default_password')
+    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password)
+    if result[0] is None:
+        return jsonify({'error': 'Permisos insuficientes'}), 403
+    created, errors, role = result
     return jsonify({
         'message': 'Creacion masiva completada',
         'created_count': len(created),
@@ -1305,6 +1323,346 @@ def bulk_create_users():
         'created': created,
         'errors': errors
     }), 200
+
+
+def _parse_excel_users(file_storage):
+    """Parse an uploaded Excel file into a list of user dicts.
+
+    Accepts columns (case/space/accent insensitive, first row as header):
+    usuario/username, contrasena/password, nombre/full_name/nombre completo.
+    Also accepts a 3-column sheet without header (username, password, full_name).
+    """
+    from openpyxl import load_workbook
+    wb = load_workbook(filename=file_storage.stream, read_only=True, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+
+    def normalize(s):
+        if s is None:
+            return ''
+        return str(s).strip().lower().replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ü', 'u')
+
+    header_map = {
+        'usuario': 'username', 'username': 'username', 'user': 'username', 'cuenta': 'username',
+        'contrasena': 'password', 'password': 'password', 'clave': 'password', 'pass': 'password',
+        'nombre': 'full_name', 'nombre completo': 'full_name', 'fullname': 'full_name', 'name': 'full_name', 'full name': 'full_name'
+    }
+    first = rows[0]
+    first_norm = [normalize(c) for c in first]
+    has_header = any(h in header_map for h in first_norm)
+
+    users = []
+    if has_header:
+        col_index = {}
+        for ci, h in enumerate(first_norm):
+            if h in header_map:
+                col_index[header_map[h]] = ci
+        for row in rows[1:]:
+            if row is None or all(c is None or str(c).strip() == '' for c in row):
+                continue
+            def get(key):
+                ci = col_index.get(key)
+                if ci is None or ci >= len(row):
+                    return ''
+                return '' if row[ci] is None else str(row[ci])
+            users.append({
+                'username': get('username'),
+                'password': get('password'),
+                'full_name': get('full_name')
+            })
+    else:
+        # No header: treat columns as username, password, full_name in order
+        for row in rows:
+            if row is None or all(c is None or str(c).strip() == '' for c in row):
+                continue
+            users.append({
+                'username': '' if row[0] is None else str(row[0]),
+                'password': '' if len(row) < 2 or row[1] is None else str(row[1]),
+                'full_name': '' if len(row) < 3 or row[2] is None else str(row[2])
+            })
+    wb.close()
+    return users
+
+
+@app.route('/api/users/bulk-import', methods=['POST'])
+@manager_required
+def bulk_import_users():
+    """Bulk create users from an uploaded Excel file (.xlsx/.xls).
+
+    Form fields: api_config_id (required for admin), default_password (optional).
+    """
+    if 'file' not in request.files:
+        return jsonify({'error': 'No se ha enviado ningun archivo'}), 400
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'Archivo invalido'}), 400
+    if not file.filename.lower().endswith(('.xlsx', '.xls')):
+        return jsonify({'error': 'El archivo debe ser Excel (.xlsx o .xls)'}), 400
+
+    try:
+        users = _parse_excel_users(file)
+    except Exception as e:
+        return jsonify({'error': 'No se pudo leer el archivo Excel: ' + str(e)}), 400
+
+    if not users:
+        return jsonify({'error': 'El archivo no contiene usuarios validos'}), 400
+    if len(users) > 500:
+        return jsonify({'error': 'No se pueden crear mas de 500 usuarios a la vez'}), 400
+
+    default_api_config_id = request.form.get('api_config_id')
+    if default_api_config_id:
+        try:
+            default_api_config_id = int(default_api_config_id)
+        except (TypeError, ValueError):
+            default_api_config_id = None
+    default_password = request.form.get('default_password')
+
+    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password)
+    if result[0] is None:
+        return jsonify({'error': 'Permisos insuficientes'}), 403
+    created, errors, role = result
+    return jsonify({
+        'message': 'Importacion completada',
+        'created_count': len(created),
+        'error_count': len(errors),
+        'created': created,
+        'errors': errors
+    }), 200
+
+
+@app.route('/api/users/bulk-password', methods=['POST'])
+@manager_required
+def bulk_update_passwords():
+    """Bulk reset passwords for users.
+
+    Admin can reset team_admins/team_members (not other admins).
+    Team_admin can reset only their own team_members.
+    Payload: { "items": [ {"id":1,"password":"nueva123"}, ... ] }
+    Each password must be at least 6 chars. Cannot change own password here.
+    """
+    data = request.get_json() or {}
+    items = data.get('items', [])
+    if not isinstance(items, list) or not items:
+        return jsonify({'error': 'Debe proporcionar una lista de usuarios'}), 400
+    if len(items) > 500:
+        return jsonify({'error': 'No se pueden actualizar mas de 500 usuarios a la vez'}), 400
+
+    db = get_db()
+    current = g.user
+    updated = []
+    errors = []
+
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append({'index': idx, 'error': 'Formato invalido'})
+            continue
+        uid = item.get('id')
+        new_password = (item.get('password') or '').strip()
+        if not uid:
+            errors.append({'index': idx, 'error': 'ID de usuario requerido'})
+            continue
+        if not new_password or len(new_password) < 6:
+            errors.append({'index': idx, 'id': uid, 'error': 'Contrasena minimo 6 caracteres'})
+            continue
+
+        row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if not row:
+            errors.append({'index': idx, 'id': uid, 'error': 'Usuario no encontrado'})
+            continue
+        if int(uid) == int(current['id']):
+            errors.append({'index': idx, 'id': uid, 'username': row['username'], 'error': 'Use "Mi Cuenta" para cambiar su propia contrasena'})
+            continue
+        if current['role'] == 'team_admin':
+            if row['role'] != 'team_member' or (row['team_creator_id'] is not None and int(row['team_creator_id']) != int(current['id'])):
+                errors.append({'index': idx, 'id': uid, 'username': row['username'], 'error': 'Solo puede restablecer miembros de su equipo'})
+                continue
+        elif current['role'] == 'admin':
+            if row['role'] == 'admin':
+                errors.append({'index': idx, 'id': uid, 'username': row['username'], 'error': 'No puede modificar a otro administrador del sistema'})
+                continue
+
+        try:
+            db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(new_password), uid))
+            updated.append({'id': uid, 'username': row['username'], 'password': new_password})
+        except Exception as e:
+            errors.append({'index': idx, 'id': uid, 'username': row['username'], 'error': 'Error al actualizar: ' + str(e)})
+
+    db.commit()
+    return jsonify({
+        'message': 'Contrasenas actualizadas',
+        'updated_count': len(updated),
+        'error_count': len(errors),
+        'updated': updated,
+        'errors': errors
+    }), 200
+
+
+def _users_for_export(current_user):
+    """Return the list of users visible to the current user, with joined fields."""
+    db = get_db()
+    if current_user['role'] == 'admin':
+        rows = db.execute("""
+            SELECT u.id, u.username, u.full_name, u.role, u.is_active, u.created_at,
+                   u.team_creator_id, u.last_login_ip, u.last_login_at,
+                   c.username as creator_username,
+                   tc.api_config_id, sac.name as config_name, sac.country as config_country
+            FROM users u
+            LEFT JOIN users c ON u.team_creator_id = c.id
+            LEFT JOIN team_config tc ON u.id = tc.team_admin_id
+            LEFT JOIN sms_api_configs sac ON tc.api_config_id = sac.id
+            ORDER BY u.id
+        """).fetchall()
+    elif current_user['role'] == 'team_admin':
+        rows = db.execute("""
+            SELECT u.id, u.username, u.full_name, u.role, u.is_active, u.created_at,
+                   u.team_creator_id, u.last_login_ip, u.last_login_at
+            FROM users u
+            WHERE u.id=? OR u.team_creator_id=?
+            ORDER BY u.id
+        """, (current_user['id'], current_user['id'])).fetchall()
+    else:
+        rows = db.execute("""
+            SELECT u.id, u.username, u.full_name, u.role, u.is_active, u.created_at,
+                   u.last_login_ip, u.last_login_at
+            FROM users u WHERE u.id=?
+        """, (current_user['id'],)).fetchall()
+    return rows
+
+
+def _build_users_workbook(rows, include_passwords=False, password_map=None, viewer_role='admin'):
+    """Build an openpyxl Workbook for user export.
+
+    include_passwords=True adds a 'Contrasena' column using password_map {id: plain},
+    intended only for freshly created/reset passwords. Existing accounts show
+    'Configurada (no visible)'.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Usuarios'
+
+    role_labels = {
+        'admin': 'Administrador del Sistema',
+        'team_admin': 'Administrador de Equipo',
+        'team_member': 'Miembro de Equipo'
+    }
+
+    headers = ['ID', 'Usuario', 'Nombre Completo', 'Rol', 'Equipo/Admin', 'Pais/Config API', 'Estado', 'Creado', 'Ultimo Login IP', 'Ultimo Login']
+    if include_passwords:
+        headers.append('Contrasena')
+
+    header_font = Font(bold=True, color='FFFFFF')
+    header_fill = PatternFill(start_color='2563EB', end_color='2563EB', fill_type='solid')
+    for ci, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=ci, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center')
+
+    password_map = password_map or {}
+    for ri, r in enumerate(rows, start=2):
+        creator = r.get('creator_username') if viewer_role == 'admin' else None
+        config_name = r.get('config_name') if viewer_role == 'admin' else None
+        config_country = r.get('config_country') if viewer_role == 'admin' else None
+        team_field = creator if creator else ('Si' if r['role'] == 'team_admin' else '-')
+        config_field = ''
+        if config_name:
+            config_field = f"{config_name} ({config_country})" if config_country else config_name
+        elif r['role'] == 'team_admin':
+            config_field = '-'
+        is_active = r['is_active']
+        if hasattr(is_active, 'real'):
+            is_active = bool(is_active)
+        values = [
+            r['id'],
+            r['username'],
+            r['full_name'] or '',
+            role_labels.get(r['role'], r['role']),
+            team_field,
+            config_field,
+            'Activo' if is_active else 'Inactivo',
+            str(r['created_at']) if r['created_at'] else '',
+            r.get('last_login_ip') or '',
+            str(r['last_login_at']) if r.get('last_login_at') else ''
+        ]
+        if include_passwords:
+            values.append(password_map.get(r['id'], 'Configurada (no visible)'))
+        for ci, v in enumerate(values, start=1):
+            ws.cell(row=ri, column=ci, value=v)
+
+    # Auto-ish column widths
+    widths = [6, 18, 24, 26, 18, 20, 10, 22, 18, 22]
+    if include_passwords:
+        widths.append(18)
+    for ci, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64 + ci) if ci <= 26 else 'A' + chr(64 + ci - 26)].width = w
+
+    return wb
+
+
+@app.route('/api/users/export', methods=['GET'])
+@login_required
+def export_users():
+    """Export the visible user list as an .xlsx file (no password column)."""
+    from io import BytesIO
+    from flask import send_file
+    rows = _users_for_export(g.user)
+    wb = _build_users_workbook(rows, include_passwords=False, viewer_role=g.user['role'])
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name='usuarios.xlsx',
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+
+
+@app.route('/api/users/export-passwords', methods=['POST'])
+@manager_required
+def export_passwords():
+    """Export an .xlsx that includes plain-text passwords for the given ids.
+
+    Only ids present in `ids` AND freshly known via `passwords` map (created/reset
+    in the same operation) get their plain text. Others are marked as not visible.
+    Payload: { "ids": [1,2], "passwords": {"1": "plain123"} }
+    """
+    from io import BytesIO
+    from flask import send_file
+    data = request.get_json() or {}
+    ids = data.get('ids') or []
+    passwords = data.get('passwords') or {}
+    # Normalize keys to int
+    try:
+        id_set = set(int(i) for i in ids)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Lista de IDs invalida'}), 400
+    password_map = {}
+    for k, v in passwords.items():
+        try:
+            password_map[int(k)] = v
+        except (TypeError, ValueError):
+            continue
+
+    rows = _users_for_export(g.user)
+    # If ids provided, restrict to those; otherwise export all visible with known pw
+    if id_set:
+        rows = [r for r in rows if r['id'] in id_set]
+    wb = _build_users_workbook(rows, include_passwords=True, password_map=password_map, viewer_role=g.user['role'])
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name='contrasenas_usuarios.xlsx',
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+
 
 @app.route('/api/users/bulk-delete', methods=['POST'])
 @manager_required

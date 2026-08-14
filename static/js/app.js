@@ -947,7 +947,7 @@ async function renderUsers(container) {
             roleOptions += '<option value="team_member">Miembro de Equipo</option>';
         }
 
-        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="showBulkCreateModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg> Creacion Masiva</button><button class="btn btn-danger btn-sm" id="bulk-delete-btn" onclick="bulkDeleteUsers()" disabled style="opacity:0.5;cursor:not-allowed;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Eliminar (<span id="bulk-selected-count">0</span>)</button><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div></div><div id="bulk-action-bar" class="card mb-3" style="display:none;padding:10px 16px;background:var(--light-blue);border-color:var(--primary);"></div><div class="card mb-3"><div style="display:flex;gap:12px;align-items:center;padding:12px 16px;flex-wrap:wrap;"><div style="flex:1;min-width:200px;position:relative;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input type="text" id="user-search" class="form-control" placeholder="Buscar por usuario o nombre..." value="' + escapeHtml(searchVal) + '" style="padding-left:36px;" oninput="debounceRenderUsers()"></div><select id="user-role-filter" class="form-control" style="width:auto;min-width:180px;" onchange="renderUsers(document.getElementById(\'page-content\'))">' + roleOptions + '</select></div></div><div class="card"><div class="table-container"><table><thead><tr><th style="width:40px;"><input type="checkbox" id="user-select-all" onchange="toggleAllUsers(this)" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;"></th><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Equipo</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
+        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="showBulkCreateModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg> Creacion Masiva</button><button class="btn btn-secondary btn-sm" onclick="showBulkPasswordModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg> Clave Masiva</button><button class="btn btn-secondary btn-sm" onclick="exportUsers()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Exportar</button><button class="btn btn-danger btn-sm" id="bulk-delete-btn" onclick="bulkDeleteUsers()" disabled style="opacity:0.5;cursor:not-allowed;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Eliminar (<span id="bulk-selected-count">0</span>)</button><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div></div><div id="bulk-action-bar" class="card mb-3" style="display:none;padding:10px 16px;background:var(--light-blue);border-color:var(--primary);"></div><div class="card mb-3"><div style="display:flex;gap:12px;align-items:center;padding:12px 16px;flex-wrap:wrap;"><div style="flex:1;min-width:200px;position:relative;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input type="text" id="user-search" class="form-control" placeholder="Buscar por usuario o nombre..." value="' + escapeHtml(searchVal) + '" style="padding-left:36px;" oninput="debounceRenderUsers()"></div><select id="user-role-filter" class="form-control" style="width:auto;min-width:180px;" onchange="renderUsers(document.getElementById(\'page-content\'))">' + roleOptions + '</select></div></div><div class="card"><div class="table-container"><table><thead><tr><th style="width:40px;"><input type="checkbox" id="user-select-all" onchange="toggleAllUsers(this)" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;"></th><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Equipo</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
         window._users = data.users;
         // Restore role filter selection
         if (roleFilterVal) { var sel = document.getElementById('user-role-filter'); if (sel) sel.value = roleFilterVal; }
@@ -1256,6 +1256,179 @@ async function handleBulkCreate(event) {
     } finally {
         submitBtn.disabled = false;
         submitBtn.textContent = 'Crear Usuarios';
+    }
+}
+
+async function showBulkImportModal() {
+    var myRole = state.user.role;
+    if (myRole !== 'admin' && myRole !== 'team_admin') { showToast('Permisos insuficientes', 'error'); return; }
+    var apiConfigHtml = '';
+    if (myRole === 'admin') {
+        try {
+            var configsData = await api('/api/config/sms');
+            var configs = configsData.configs || [];
+            var options = configs.map(function(c) {
+                return '<option value="' + c.id + '">' + escapeHtml(c.name) + ' (' + escapeHtml(c.country) + ')</option>';
+            }).join('');
+            apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais) *</label><select name="api_config_id" id="bulk-import-api-config" required><option value="">Seleccionar pais...</option>' + options + '</select><small class="text-secondary">Se crearan Administradores de Equipo asociados a este pais.</small></div>';
+        } catch (e) {
+            apiConfigHtml = '<div class="form-group"><label>Configuracion API</label><p class="text-secondary">No hay configuraciones API disponibles</p></div>';
+        }
+    }
+
+    showModal('Importar Usuarios desde Excel',
+        '<form onsubmit="handleBulkImport(event)" enctype="multipart/form-data">' +
+            '<div class="form-group"><label>Archivo Excel (.xlsx) *</label>' +
+                '<input type="file" name="users_file" id="bulk-import-file" accept=".xlsx" required style="padding:8px;border:1px solid var(--border);border-radius:8px;width:100%;">' +
+                '<small class="text-secondary">Columnas esperadas: <strong>usuario, contrasena, nombre_completo</strong>. La primera fila se usa como encabezado. Maximo 500 usuarios.</small>' +
+            '</div>' +
+            '<div class="form-group"><label>Contrasena por defecto (opcional)</label>' +
+                '<input type="text" name="default_password" id="bulk-import-default-pwd" minlength="6" placeholder="Se usa cuando la fila no trae contrasena">' +
+            '</div>' +
+            apiConfigHtml +
+            '<div id="bulk-import-result" style="display:none;margin-bottom:12px;"></div>' +
+            '<div class="modal-footer" style="padding:16px 0 0;">' +
+                '<button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button>' +
+                '<button type="submit" class="btn btn-primary" id="bulk-import-submit">Importar</button>' +
+            '</div>' +
+        '</form>'
+    );
+}
+
+async function handleBulkImport(event) {
+    event.preventDefault();
+    var fileInput = document.getElementById('bulk-import-file');
+    if (!fileInput.files || !fileInput.files.length) { showToast('Selecciona un archivo Excel', 'error'); return; }
+    var formData = new FormData();
+    formData.append('users_file', fileInput.files[0]);
+    var defaultPwd = document.getElementById('bulk-import-default-pwd').value.trim();
+    if (defaultPwd) formData.append('default_password', defaultPwd);
+    var apiConfig = document.getElementById('bulk-import-api-config');
+    if (apiConfig && apiConfig.value) formData.append('api_config_id', apiConfig.value);
+
+    var resultEl = document.getElementById('bulk-import-result');
+    var submitBtn = document.getElementById('bulk-import-submit');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Importando...';
+    resultEl.style.display = 'block';
+    resultEl.style.padding = '10px 12px';
+    resultEl.style.borderRadius = '8px';
+    resultEl.style.fontSize = '13px';
+    resultEl.style.background = '#EFF6FF';
+    resultEl.style.color = 'var(--text-secondary)';
+    resultEl.textContent = 'Procesando archivo...';
+
+    try {
+        var response = await fetch('/api/users/bulk/import', {
+            method: 'POST',
+            credentials: 'include',
+            body: formData
+        });
+        var data = await response.json().catch(function() { return { error: 'Respuesta invalida del servidor' }; });
+        if (!response.ok) throw new Error(data.error || 'Error al importar');
+        var hasErrors = (data.errors || []).length > 0;
+        resultEl.style.background = hasErrors ? '#FEF3C7' : '#ECFDF5';
+        resultEl.style.color = hasErrors ? '#B45309' : 'var(--success)';
+        var html = '<strong>Importacion completada.</strong> Creados: ' + data.created_count + '. Errores: ' + data.error_count + '.';
+        if (hasErrors) {
+            html += '<ul style="margin:6px 0 0;padding-left:18px;max-height:180px;overflow:auto;">' +
+                data.errors.map(function(e) { return '<li>Fila ' + e.row + (e.username ? ' (' + escapeHtml(e.username) + ')' : '') + ': ' + escapeHtml(e.error) + '</li>'; }).join('') + '</ul>';
+        }
+        resultEl.innerHTML = html;
+        showToast('Usuarios creados: ' + data.created_count, hasErrors ? 'error' : 'success');
+        if (data.created_count > 0) setTimeout(function() { renderUsers(document.getElementById('page-content')); }, 800);
+    } catch (err) {
+        resultEl.style.background = '#FEE2E2';
+        resultEl.style.color = 'var(--danger)';
+        resultEl.textContent = 'Error: ' + err.message;
+        showToast(err.message, 'error');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Importar';
+    }
+}
+
+async function showBulkPasswordModal() {
+    var selected = getSelectedUsers();
+    if (!selected.length) { showToast('Selecciona al menos un usuario', 'error'); return; }
+    showModal('Cambio Masivo de Contrasena',
+        '<form onsubmit="handleBulkPassword(event)">' +
+            '<div class="form-group"><label>Usuarios seleccionados: ' + selected.length + '</label>' +
+                '<div style="max-height:120px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;font-size:13px;">' +
+                selected.map(function(u) { return escapeHtml(u.username); }).join('<br>') + '</div>' +
+            '</div>' +
+            '<div class="form-group"><label>Nueva contrasena *</label>' +
+                '<input type="password" name="password" id="bulk-password" minlength="6" required placeholder="Minimo 6 caracteres">' +
+            '</div>' +
+            '<div id="bulk-password-result" style="display:none;margin-bottom:12px;"></div>' +
+            '<div class="modal-footer" style="padding:16px 0 0;">' +
+                '<button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button>' +
+                '<button type="submit" class="btn btn-primary" id="bulk-password-submit">Cambiar Contrasenas</button>' +
+            '</div>' +
+        '</form>'
+    );
+}
+
+async function handleBulkPassword(event) {
+    event.preventDefault();
+    var selected = getSelectedUsers();
+    var password = document.getElementById('bulk-password').value;
+    if (password.length < 6) { showToast('La contrasena debe tener minimo 6 caracteres', 'error'); return; }
+    var submitBtn = document.getElementById('bulk-password-submit');
+    var resultEl = document.getElementById('bulk-password-result');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Cambiando...';
+    resultEl.style.display = 'block';
+    resultEl.style.padding = '10px 12px';
+    resultEl.style.borderRadius = '8px';
+    resultEl.style.fontSize = '13px';
+    resultEl.style.background = '#EFF6FF';
+    resultEl.textContent = 'Aplicando cambios...';
+    try {
+        var result = await api('/api/users/bulk-password', {
+            method: 'POST',
+            body: { ids: selected.map(function(u) { return u.id; }), password: password }
+        });
+        var hasErrors = (result.errors || []).length > 0;
+        resultEl.style.background = hasErrors ? '#FEF3C7' : '#ECFDF5';
+        resultEl.style.color = hasErrors ? '#B45309' : 'var(--success)';
+        var html = '<strong>Contrasenas actualizadas: ' + result.updated_count + '.</strong>';
+        if (hasErrors) {
+            html += '<ul style="margin:6px 0 0;padding-left:18px;max-height:180px;overflow:auto;">' +
+                result.errors.map(function(e) { return '<li>' + escapeHtml(e.username || ('ID ' + e.id)) + ': ' + escapeHtml(e.error) + '</li>'; }).join('') + '</ul>';
+        }
+        resultEl.innerHTML = html;
+        showToast('Contrasenas actualizadas: ' + result.updated_count, hasErrors ? 'error' : 'success');
+    } catch (err) {
+        resultEl.style.background = '#FEE2E2';
+        resultEl.style.color = 'var(--danger)';
+        resultEl.textContent = 'Error: ' + err.message;
+        showToast(err.message, 'error');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Cambiar Contrasenas';
+    }
+}
+
+async function exportUsers() {
+    try {
+        var response = await fetch('/api/users/export', { credentials: 'include' });
+        if (!response.ok) {
+            var data = await response.json().catch(function() { return {}; });
+            throw new Error(data.error || 'Error al exportar');
+        }
+        var blob = await response.blob();
+        var url = window.URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'usuarios_' + new Date().toISOString().slice(0,10) + '.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        showToast('Exportacion completada', 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
     }
 }
 
