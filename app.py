@@ -971,11 +971,17 @@ def get_me():
             # Get permissions from role_permissions table
             row = db.execute("SELECT permissions FROM role_permissions WHERE role = %s" if db.db_type == 'postgresql' else "SELECT permissions FROM role_permissions WHERE role = ?", (role,)).fetchone()
             if row:
-                perms_raw = row['permissions'] if db.db_type == 'postgresql' else row[0]
-                perms_raw = perms_raw or ''
-                import json as _json
-                permissions = _json.loads(perms_raw) if perms_raw else []
-    except Exception:
+                perms_raw = row['permissions']
+                if isinstance(perms_raw, (list, dict)):
+                    # PostgreSQL JSON/JSONB column already parsed by psycopg2
+                    permissions = perms_raw if isinstance(perms_raw, list) else []
+                else:
+                    perms_raw = perms_raw or ''
+                    import json as _json
+                    permissions = _json.loads(perms_raw) if perms_raw else []
+    except Exception as e:
+        import traceback
+        app.logger.error(f"Error loading permissions for role {g.user.get('role')}: {e}\n{traceback.format_exc()}")
         permissions = []
 
     # Get team country code
@@ -994,8 +1000,8 @@ def get_me():
                     cfg = db.execute("SELECT country FROM sms_api_configs WHERE id = ?", (tc['api_config_id'],)).fetchone()
                     if cfg:
                         team_country = cfg['country'] or ''
-    except Exception:
-        pass
+    except Exception as e:
+        app.logger.error(f"Error loading team country: {e}")
 
     country_codes = {'MX': '+52', 'CO': '+57', 'US': '+1', 'BR': '+55'}
     team_country_code = country_codes.get(team_country, '+52')
