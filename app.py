@@ -1461,18 +1461,23 @@ def bulk_import_users():
 @app.route('/api/users/bulk-password', methods=['POST'])
 @manager_required
 def bulk_update_passwords():
-    """Bulk reset passwords for users.
+    """Bulk reset passwords for users, generating a random password per user.
 
     Admin can reset team_admins/team_members (not other admins).
     Team_admin can reset only their own team_members.
-    Payload: { "items": [ {"id":1,"password":"nueva123"}, ... ] }
-    Each password must be at least 6 chars. Cannot change own password here.
+    Payload: { "ids": [1, 2, 3] } (each gets a unique random 10-char password).
+    Cannot change own password here.
     """
     data = request.get_json() or {}
-    items = data.get('items', [])
-    if not isinstance(items, list) or not items:
+    ids = data.get('ids')
+    # Backwards compatibility: accept { "items": [{"id":1}, ...] } as well
+    if ids is None:
+        items = data.get('items', [])
+        if isinstance(items, list):
+            ids = [it.get('id') for it in items if isinstance(it, dict)]
+    if not isinstance(ids, list) or not ids:
         return jsonify({'error': 'Debe proporcionar una lista de usuarios'}), 400
-    if len(items) > 500:
+    if len(ids) > 500:
         return jsonify({'error': 'No se pueden actualizar mas de 500 usuarios a la vez'}), 400
 
     db = get_db()
@@ -1480,18 +1485,11 @@ def bulk_update_passwords():
     updated = []
     errors = []
 
-    for idx, item in enumerate(items):
-        if not isinstance(item, dict):
-            errors.append({'index': idx, 'error': 'Formato invalido'})
-            continue
-        uid = item.get('id')
-        new_password = (item.get('password') or '').strip()
+    for idx, uid in enumerate(ids):
         if not uid:
             errors.append({'index': idx, 'error': 'ID de usuario requerido'})
             continue
-        if not new_password or len(new_password) < 6:
-            errors.append({'index': idx, 'id': uid, 'error': 'Contrasena minimo 6 caracteres'})
-            continue
+        new_password = generate_password(10)
 
         row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
         if not row:

@@ -1380,13 +1380,13 @@ async function showBulkPasswordModal() {
                 '<div style="max-height:120px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;font-size:13px;">' +
                 selected.map(function(u) { return escapeHtml(u.username); }).join('<br>') + '</div>' +
             '</div>' +
-            '<div class="form-group"><label>Nueva contrasena *</label>' +
-                '<input type="password" name="password" id="bulk-password" minlength="6" required placeholder="Minimo 6 caracteres">' +
+            '<div class="form-group" style="background:var(--light-blue-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--text-secondary);">' +
+                'Se generara automaticamente una contrasena aleatoria de 10 caracteres (letras y numeros) para cada usuario seleccionado. Podras verla y exportarla en el resultado.' +
             '</div>' +
             '<div id="bulk-password-result" style="display:none;margin-bottom:12px;"></div>' +
             '<div class="modal-footer" style="padding:16px 0 0;">' +
                 '<button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button>' +
-                '<button type="submit" class="btn btn-primary" id="bulk-password-submit">Cambiar Contrasenas</button>' +
+                '<button type="submit" class="btn btn-primary" id="bulk-password-submit">Generar Contrasenas</button>' +
             '</div>' +
         '</form>'
     );
@@ -1395,12 +1395,10 @@ async function showBulkPasswordModal() {
 async function handleBulkPassword(event) {
     event.preventDefault();
     var selected = getSelectedUsers();
-    var password = document.getElementById('bulk-password').value;
-    if (password.length < 6) { showToast('La contrasena debe tener minimo 6 caracteres', 'error'); return; }
     var submitBtn = document.getElementById('bulk-password-submit');
     var resultEl = document.getElementById('bulk-password-result');
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Cambiando...';
+    submitBtn.textContent = 'Generando...';
     resultEl.style.display = 'block';
     resultEl.style.padding = '10px 12px';
     resultEl.style.borderRadius = '8px';
@@ -1410,12 +1408,20 @@ async function handleBulkPassword(event) {
     try {
         var result = await api('/api/users/bulk-password', {
             method: 'POST',
-            body: { ids: selected.map(function(u) { return u.id; }), password: password }
+            body: { ids: selected.map(function(u) { return u.id; }) }
         });
         var hasErrors = (result.errors || []).length > 0;
         resultEl.style.background = hasErrors ? '#FEF3C7' : '#ECFDF5';
         resultEl.style.color = hasErrors ? '#B45309' : 'var(--success)';
         var html = '<strong>Contrasenas actualizadas: ' + result.updated_count + '.</strong>';
+        if ((result.updated || []).length) {
+            html += '<div style="margin-top:8px;display:grid;gap:4px;max-height:200px;overflow:auto;">' +
+                result.updated.map(function(u) {
+                    return '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 8px;background:#fff;border:1px solid var(--border);border-radius:6px;">' +
+                        '<span style="font-weight:500;">' + escapeHtml(u.username) + '</span>' +
+                        '<code style="color:var(--primary-blue);font-weight:600;">' + escapeHtml(u.password) + '</code></div>';
+                }).join('') + '</div>';
+        }
         if (hasErrors) {
             html += '<ul style="margin:6px 0 0;padding-left:18px;max-height:180px;overflow:auto;">' +
                 result.errors.map(function(e) { return '<li>' + escapeHtml(e.username || ('ID ' + e.id)) + ': ' + escapeHtml(e.error) + '</li>'; }).join('') + '</ul>';
@@ -1429,7 +1435,7 @@ async function handleBulkPassword(event) {
         showToast(err.message, 'error');
     } finally {
         submitBtn.disabled = false;
-        submitBtn.textContent = 'Cambiar Contrasenas';
+        submitBtn.textContent = 'Generar Contrasenas';
     }
 }
 
