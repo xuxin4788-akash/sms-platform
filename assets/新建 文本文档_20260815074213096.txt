@@ -1,0 +1,75 @@
+root@iZ4hf61qkifw39jjmq1s5qZ:/opt/sms-platform# cd /opt/sms-platform
+docker rm -f f49463ed5699_sms-platform-app
+docker-compose up -d --no-deps app
+sleep 8
+docker-compose ps
+curl -s -o /dev/null -w "HTTP:%{http_code} 耗时:%{time_total}s\n" http://localhost/
+docker inspect sms-platform-app --format 'RestartPolicy={{.HostConfig.RestartPolicy.Name}} Status={{.State.Status}}'
+f49463ed5699_sms-platform-app
+Creating sms-platform-app ... done
+       Name                     Command                  State                     Ports               
+-------------------------------------------------------------------------------------------------------
+sms-platform-app     gunicorn -c gunicorn.conf. ...   Up             5000/tcp                          
+sms-platform-db      docker-entrypoint.sh postgres    Up (healthy)   0.0.0.0:5432->5432/tcp,:::5432-   
+                                                                     >5432/tcp                         
+sms-platform-nginx   /docker-entrypoint.sh ngin ...   Up             0.0.0.0:80->80/tcp,:::80->80/tcp  
+HTTP:200 耗时:0.006759s
+RestartPolicy=unless-stopped Status=running
+root@iZ4hf61qkifw39jjmq1s5qZ:/opt/sms-platform# # 1. 服务器负载和 CPU（重点看 load average 和 %us）
+uptime
+top -bn1 | head -15
+
+# 2. 内存
+free -h
+
+# 3. 磁盘 IO / 空间（磁盘满或 IO 卡顿会让 PostgreSQL 奇慢）
+df -h
+docker stats --no-stream
+
+# 4. 直接在服务器本机测 app 响应（绕过 nginx）
+time curl -s -o /dev/null -w "直连app HTTP:%{http_code} 耗时:%{time_total}s\n" http://localhost:5000/
+
+# 5. 测一个需要查库的接口（登录后）
+curl -s -c /tmp/c.txt -X POST http://localhost/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' \
+  -o /dev/null -w "login HTTP:%{http_code} 耗时:%{time_total}s\n"
+ 07:41:34 up 1 day, 18:47,  1 user,  load average: 0.32, 0.07, 0.02
+top - 07:41:34 up 1 day, 18:47,  1 user,  load average: 0.32, 0.07, 0.02
+Tasks: 130 total,   1 running, 129 sleeping,   0 stopped,   0 zombie
+%Cpu(s): 21.9 us, 18.8 sy,  0.0 ni, 59.4 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st
+MiB Mem :   3495.1 total,    194.1 free,    677.5 used,   2623.5 buff/cache
+MiB Swap:      0.0 total,      0.0 free,      0.0 used.   2510.5 avail Mem 
+
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   1278 root      20   0  150152  32880  12680 S   6.2   0.9   7:20.24 AliYunDunMonito
+      1 root      20   0  167712  13124   8176 S   0.0   0.4   0:11.93 systemd
+      2 root      20   0       0      0      0 S   0.0   0.0   0:00.01 kthreadd
+      3 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 rcu_gp
+      4 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 rcu_par_gp
+      5 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 slub_flushwq
+      6 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 netns
+      8 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker/0:0H-events_highpri
+               total        used        free      shared  buff/cache   available
+Mem:           3.4Gi       677Mi       194Mi        18Mi       2.6Gi       2.5Gi
+Swap:             0B          0B          0B
+Filesystem      Size  Used Avail Use% Mounted on
+tmpfs           350M  1.4M  349M   1% /run
+/dev/nvme0n1p3   40G   14G   24G  37% /
+tmpfs           1.8G     0  1.8G   0% /dev/shm
+tmpfs           5.0M     0  5.0M   0% /run/lock
+/dev/nvme0n1p2  197M  6.1M  191M   4% /boot/efi
+tmpfs           350M  4.0K  350M   1% /run/user/0
+overlay          40G   14G   24G  37% /var/lib/docker/rootfs/overlayfs/073dd857138bfd0f3976f128357c88cee451740462c8ba8bb5d4cfbbeaca74d2
+overlay          40G   14G   24G  37% /var/lib/docker/rootfs/overlayfs/2637da6a5a4455af92a49fc06f03ce461af87115ad2f11a6b74c488425d60598
+overlay          40G   14G   24G  37% /var/lib/docker/rootfs/overlayfs/54b00596d9697737ceecb0ca746f34753f868d870fdbb197a73cbb3170c89406
+CONTAINER ID   NAME                 CPU %     MEM USAGE / LIMIT   MEM %     NET I/O           BLOCK I/O         PIDS
+54b00596d969   sms-platform-app     0.01%     133.4MiB / 2GiB     6.51%     37.7kB / 60.1kB   1.39MB / 1.06MB   7
+2637da6a5a44   sms-platform-db      0.00%     22.87MiB / 1GiB     2.23%     134kB / 126kB     2.08MB / 868kB    6
+073dd857138b   sms-platform-nginx   0.00%     3.621MiB / 256MiB   1.41%     146kB / 294kB     319kB / 4.1kB     3
+直连app HTTP:000 耗时:0.000200s
+
+real    0m0.005s
+user    0m0.005s
+sys     0m0.000s
+login HTTP:200 耗时:0.015876s
