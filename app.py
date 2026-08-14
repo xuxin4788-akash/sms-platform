@@ -63,17 +63,14 @@ class DBWrapper:
             if isinstance(params, (list, tuple)):
                 params = list(params)
                 # Detect is_active=? in the ORIGINAL query to map corresponding param
-                placeholder_idxs = [m.start() for m in re.finditer(r'is_active\s*=\s*\?', query, flags=re.IGNORECASE)]
-                for idx_pos in placeholder_idxs:
-                    # Count number of '?' before this position to get param index
-                    placeholders = [m.start() for m in re.finditer(r'\?', query[:idx_pos])]
-                    if placeholders:
-                        p_idx = placeholders[-1]
-                        p_count = query[:p_idx].count('?')
-                        if p_count < len(params):
-                            v = params[p_count]
-                            if isinstance(v, int):
-                                params[p_count] = bool(v)
+                for m in re.finditer(r'is_active\s*=\s*\?', query, flags=re.IGNORECASE):
+                    # The '?' is at m.end()-1. Count '?' before it = zero-based param index.
+                    qmark_pos = m.end() - 1
+                    p_idx = query[:qmark_pos].count('?')
+                    if p_idx < len(params):
+                        v = params[p_idx]
+                        if isinstance(v, int) and not isinstance(v, bool):
+                            params[p_idx] = bool(v)
                 params = tuple(params)
             # Always use RealDictCursor so rows behave like sqlite3.Row
             import psycopg2.extras
