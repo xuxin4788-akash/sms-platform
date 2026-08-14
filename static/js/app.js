@@ -1291,9 +1291,16 @@ async function showBulkImportModal() {
 
     showModal('Importar Usuarios desde Excel',
         '<form onsubmit="handleBulkImport(event)" enctype="multipart/form-data">' +
-            '<div class="form-group"><label>Archivo Excel (.xlsx) *</label>' +
+            '<div class="form-group">' +
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
+                    '<label style="margin:0;">Archivo Excel (.xlsx) *</label>' +
+                    '<a href="/api/users/template" download="plantilla_usuarios.xlsx" style="font-size:12px;font-weight:500;color:var(--primary);text-decoration:none;display:inline-flex;align-items:center;gap:4px;">' +
+                        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+                        'Descargar plantilla' +
+                    '</a>' +
+                '</div>' +
                 '<input type="file" name="users_file" id="bulk-import-file" accept=".xlsx" required style="padding:8px;border:1px solid var(--border);border-radius:8px;width:100%;">' +
-                '<small class="text-secondary">Columnas esperadas: <strong>usuario, contrasena, nombre_completo</strong>. La primera fila se usa como encabezado. Maximo 500 usuarios.</small>' +
+                '<small class="text-secondary">Columnas esperadas: <strong>usuario</strong> (obligatorio), <strong>contrasena</strong> (opcional, se genera automaticamente si se omite), <strong>nombre_completo</strong> (opcional). La primera fila se usa como encabezado. Maximo 500 usuarios.</small>' +
             '</div>' +
             '<div class="form-group"><label>Contrasena por defecto (opcional)</label>' +
                 '<input type="text" name="default_password" id="bulk-import-default-pwd" minlength="6" placeholder="Se usa cuando la fila no trae contrasena">' +

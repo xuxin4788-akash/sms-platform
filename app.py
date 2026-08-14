@@ -1630,6 +1630,65 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
     return wb
 
 
+@app.route('/api/users/template', methods=['GET'])
+@login_required
+def download_user_template():
+    """Download an Excel template for bulk user creation."""
+    from io import BytesIO
+    from flask import send_file
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.comments import Comment
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Usuarios'
+
+    headers = ['usuario', 'contrasena', 'nombre_completo']
+    header_fill = PatternFill(start_color='2563EB', end_color='2563EB', fill_type='solid')
+    header_font = Font(bold=True, color='FFFFFF')
+
+    for col, name in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=name)
+        cell.fill = header_fill
+        cell.font = header_font
+
+    # Usage hints as comments on the header cells
+    ws.cell(row=1, column=1).comment = Comment(
+        'OBLIGATORIO. Nombre de usuario (unico, sin espacios).', 'SMS Platform'
+    )
+    ws.cell(row=1, column=2).comment = Comment(
+        'OPCIONAL. Minimo 6 caracteres. Si se deja vacio, el sistema generara automaticamente una clave de 10 caracteres (letras y numeros).',
+        'SMS Platform'
+    )
+    ws.cell(row=1, column=3).comment = Comment(
+        'OPCIONAL. Nombre completo del usuario.', 'SMS Platform'
+    )
+
+    # Example rows
+    examples = [
+        ['juan.perez', 'Clave1234', 'Juan Perez'],
+        ['maria.lopez', '', 'Maria Lopez'],
+        ['carlos.ruiz', '', ''],
+    ]
+    for row in examples:
+        ws.append(row)
+
+    ws.column_dimensions['A'].width = 22
+    ws.column_dimensions['B'].width = 18
+    ws.column_dimensions['C'].width = 28
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name='plantilla_usuarios.xlsx',
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+
+
 @app.route('/api/users/export', methods=['GET'])
 @login_required
 def export_users():
