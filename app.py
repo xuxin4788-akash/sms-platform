@@ -2,6 +2,7 @@ import os
 import sqlite3
 import hashlib
 import secrets
+import string
 import csv
 import io
 import json
@@ -604,6 +605,15 @@ def init_db():
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+def generate_password(length=10):
+    alphabet = string.ascii_letters + string.digits
+    while True:
+        pwd = ''.join(secrets.choice(alphabet) for _ in range(length))
+        # Asegurar que contenga al menos una mayuscula, una minuscula y un digito
+        if (any(c.islower() for c in pwd) and any(c.isupper() for c in pwd)
+                and any(c.isdigit() for c in pwd)):
+            return pwd
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -1093,11 +1103,16 @@ def create_user():
     data = request.get_json()
     current = g.user
     username = data.get('username', '').strip()
-    password = data.get('password', '')
-    full_name = data.get('full_name', '').strip()
+    password = (data.get('password') or '').strip()
+    full_name = (data.get('full_name') or '').strip()
     role = data.get('role', 'team_member')
-    if not username or not password:
-        return jsonify({'error': 'Usuario y contrasena son requeridos'}), 400
+    if not username:
+        return jsonify({'error': 'El usuario es requerido'}), 400
+    generated_password = None
+    if not password:
+        # Auto-generate a 10-character alphanumeric password if not provided
+        password = generate_password(10)
+        generated_password = password
     if len(password) < 6:
         return jsonify({'error': 'La contrasena debe tener minimo 6 caracteres'}), 400
     # Role assignment rules
@@ -1131,7 +1146,10 @@ def create_user():
             (new_user_id, api_config_id if api_config_id else None)
         )
     db.commit()
-    return jsonify({'message': 'Usuario creado exitosamente'}), 201
+    response = {'message': 'Usuario creado exitosamente'}
+    if generated_password:
+        response['generated_password'] = generated_password
+    return jsonify(response), 201
 
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
 @manager_required
@@ -1248,17 +1266,24 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
             errors.append({'index': idx, 'username': '', 'error': 'Formato invalido'})
             continue
         username = (u.get('username') or '').strip()
-        # Per-row password, fallback to default password (common for Excel)
-        password = (u.get('password') or '').strip() or (default_password or '').strip()
         full_name = (u.get('full_name') or '').strip()
         api_config_id = u.get('api_config_id') or default_api_config_id
 
         if not username:
             errors.append({'index': idx, 'username': username, 'error': 'Usuario requerido'})
             continue
-        if not password or len(password) < 6:
+
+        # Solo el usuario es obligatorio. Si no hay contrasena (ni por fila ni por defecto),
+        # se genera una combinacion irregular de 10 caracteres alfanumericos.
+        password = (u.get('password') or '').strip() or (default_password or '').strip()
+        generated_password = False
+        if not password:
+            password = generate_password(10)
+            generated_password = True
+        elif len(password) < 6:
             errors.append({'index': idx, 'username': username, 'error': 'Contrasena minimo 6 caracteres'})
             continue
+
         uname_lower = username.lower()
         if uname_lower in existing_users or uname_lower in seen_usernames:
             errors.append({'index': idx, 'username': username, 'error': 'El nombre de usuario ya existe'})
@@ -1285,7 +1310,8 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
                 'username': username,
                 'full_name': full_name,
                 'role': role,
-                'password': password
+                'password': password,
+                'generated': generated_password
             })
             seen_usernames.add(uname_lower)
         except Exception as e:
