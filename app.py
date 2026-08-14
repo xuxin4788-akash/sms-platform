@@ -139,10 +139,11 @@ def _get_pg_pool():
     global _pg_pool
     if _pg_pool is None:
         import psycopg2.pool
-        # minconn kept at 1 so the first request after a worker boots pays the
-        # connection cost once; maxconn allows limited concurrency per worker.
+        # sync worker handles one request at a time, so minconn=1 reuses a single
+        # warm connection; maxconn=2 leaves small headroom. Each worker keeps its
+        # own process-level pool, so total PG connections ≈ workers × maxconn.
         _pg_pool = psycopg2.pool.SimpleConnectionPool(
-            1, 10, app.config['DATABASE_URL']
+            1, 2, app.config['DATABASE_URL']
         )
     return _pg_pool
 
