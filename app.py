@@ -577,7 +577,7 @@ def init_db():
 
         # Migration: add last_login_ip and last_login_at to users
         try:
-            if db.db_type == 'postgresql':
+            if db_type == 'postgresql':
                 cursor = db.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'users'")
                 cols = [row[0] for row in cursor.fetchall()]
                 if 'last_login_ip' not in cols:
