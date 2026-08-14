@@ -1,0 +1,23 @@
+root@iZ4hf61qkifw39jjmq1s5qZ:/opt/sms-platform# curl -b /tmp/cookies.txt -c /tmp/cookies.txt -X POST http://localhost/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}'
+
+curl -b /tmp/cookies.txt http://localhost/api/sms/statistics
+curl -b /tmp/cookies.txt http://localhost/api/contacts
+curl -b /tmp/cookies.txt http://localhost/api/templates
+{"user":{"full_name":"Administrador","id":1,"role":"admin","role_label":"Administrador del Sistema","username":"admin"}}
+<!doctype html>
+<html lang=en>
+<title>500 Internal Server Error</title>
+<h1>Internal Server Error</h1>
+<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>
+<!doctype html>
+<html lang=en>
+<title>500 Internal Server Error</title>
+<h1>Internal Server Error</h1>
+<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>
+<!doctype html>
+<html lang=en>
+<title>500 Internal Server Error</title>
+<h1>Internal Server Error</h1>
+<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>
