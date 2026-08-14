@@ -55,6 +55,26 @@ class DBWrapper:
             # Convert SQLite placeholders to PostgreSQL
             pg_query = query.replace('?', '%s')
             pg_query = pg_query.replace("datetime('now')", "NOW()")
+            # PostgreSQL BOOLEAN columns: SQLite uses 1/0 integers, PG needs TRUE/FALSE
+            import re
+            pg_query = re.sub(r'\bis_active\s*=\s*1\b', 'is_active = TRUE', pg_query, flags=re.IGNORECASE)
+            pg_query = re.sub(r'\bis_active\s*=\s*0\b', 'is_active = FALSE', pg_query, flags=re.IGNORECASE)
+            # Convert params: if query touches is_active via placeholder, coerce int to bool
+            if isinstance(params, (list, tuple)):
+                params = list(params)
+                # Detect is_active=? in the ORIGINAL query to map corresponding param
+                placeholder_idxs = [m.start() for m in re.finditer(r'is_active\s*=\s*\?', query, flags=re.IGNORECASE)]
+                for idx_pos in placeholder_idxs:
+                    # Count number of '?' before this position to get param index
+                    placeholders = [m.start() for m in re.finditer(r'\?', query[:idx_pos])]
+                    if placeholders:
+                        p_idx = placeholders[-1]
+                        p_count = query[:p_idx].count('?')
+                        if p_count < len(params):
+                            v = params[p_count]
+                            if isinstance(v, int):
+                                params[p_count] = bool(v)
+                params = tuple(params)
             # Always use RealDictCursor so rows behave like sqlite3.Row
             import psycopg2.extras
             cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
