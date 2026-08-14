@@ -473,15 +473,23 @@ def init_db():
 
         # Migration: add last_login_ip and last_login_at to users
         try:
-            cursor = db.execute("PRAGMA table_info(users)")
-            cols = [row[1] for row in cursor.fetchall()]
-            if 'last_login_ip' not in cols:
-                db.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT DEFAULT ''")
-            if 'last_login_at' not in cols:
-                db.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL")
+            if db.db_type == 'postgresql':
+                cursor = db.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'users'")
+                cols = [row[0] for row in cursor.fetchall()]
+                if 'last_login_ip' not in cols:
+                    db.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT DEFAULT ''")
+                if 'last_login_at' not in cols:
+                    db.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL")
+            else:
+                cursor = db.execute("PRAGMA table_info(users)")
+                cols = [row[1] for row in cursor.fetchall()]
+                if 'last_login_ip' not in cols:
+                    db.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT DEFAULT ''")
+                if 'last_login_at' not in cols:
+                    db.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL")
             db.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Migration error: {e}")
 
         db.close()
 
