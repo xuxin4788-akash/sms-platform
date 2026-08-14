@@ -1167,10 +1167,13 @@ async function showBulkCreateModal() {
 
     showModal('Creacion Masiva de Usuarios',
         '<form onsubmit="handleBulkCreate(event)">' +
+            '<div style="margin-bottom:12px;">' +
+                '<a href="/api/users/template" download="plantilla_usuarios.xlsx" class="btn btn-secondary" style="font-size:13px;padding:6px 12px;">⬇ Descargar plantilla Excel</a>' +
+            '</div>' +
             '<div class="form-group"><label>Lista de usuarios *</label>' +
                 '<textarea name="users_text" id="bulk-users-text" rows="10" style="width:100%;font-family:monospace;font-size:13px;" placeholder="usuario,contrasena,nombre_completo&#10;jperez,,Juan Perez&#10;mlopez,,Maria Lopez&#10;garcia,," required></textarea>' +
                 '<small class="text-secondary">Formato: <strong>usuario,contrasena,nombre_completo</strong> (una linea por usuario). Solo el <strong>usuario es obligatorio</strong>; contrasena y nombre son opcionales. Si omite la contrasena se genera automaticamente una clave de 10 caracteres alfanumericos.' +
-                '<br>Tambien puede pegar datos desde Excel/CSV (use coma como separador).</small>' +
+                '<br>Descargue la plantilla Excel o pegue datos desde Excel/CSV (use coma como separador).</small>' +
             '</div>' +
             '<div class="form-group"><label>Contrasena por defecto (opcional)</label>' +
                 '<input type="text" name="default_password" id="bulk-default-pwd" placeholder="Se usa cuando la linea no trae contrasena" minlength="6">' +
