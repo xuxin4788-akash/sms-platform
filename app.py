@@ -1209,6 +1209,151 @@ def delete_user(user_id):
     db.commit()
     return jsonify({'message': 'Usuario eliminado'})
 
+@app.route('/api/users/bulk', methods=['POST'])
+@manager_required
+def bulk_create_users():
+    """Bulk create users.
+    Admin -> creates team_admins (each needs api_config_id).
+    Team_admin -> creates team_members under their management.
+    Payload: { "users": [ {"username":..,"password":..,"full_name":..,"api_config_id":..}, ... ], "api_config_id": <optional default> }
+    """
+    data = request.get_json() or {}
+    users = data.get('users', [])
+    if not isinstance(users, list) or not users:
+        return jsonify({'error': 'Debe proporcionar una lista de usuarios'}), 400
+    if len(users) > 500:
+        return jsonify({'error': 'No se pueden crear mas de 500 usuarios a la vez'}), 400
+
+    current = g.user
+    db = get_db()
+    default_api_config_id = data.get('api_config_id')
+
+    # Determine role and team_creator_id based on current user
+    if current['role'] == 'admin':
+        role = 'team_admin'
+        team_creator_id = None
+    elif current['role'] == 'team_admin':
+        role = 'team_member'
+        team_creator_id = current['id']
+    else:
+        return jsonify({'error': 'Permisos insuficientes'}), 403
+
+    created = []
+    errors = []
+    # Pre-fetch existing usernames to avoid duplicate queries per row
+    existing_rows = db.execute("SELECT username FROM users").fetchall()
+    existing_users = set(r['username'].lower() for r in existing_rows)
+    seen_usernames = set()
+
+    for idx, u in enumerate(users):
+        if not isinstance(u, dict):
+            errors.append({'index': idx, 'username': '', 'error': 'Formato invalido'})
+            continue
+        username = (u.get('username') or '').strip()
+        password = u.get('password') or ''
+        full_name = (u.get('full_name') or '').strip()
+        api_config_id = u.get('api_config_id') or default_api_config_id
+
+        if not username:
+            errors.append({'index': idx, 'username': username, 'error': 'Usuario requerido'})
+            continue
+        if not password or len(password) < 6:
+            errors.append({'index': idx, 'username': username, 'error': 'Contrasena minimo 6 caracteres'})
+            continue
+        uname_lower = username.lower()
+        if uname_lower in existing_users or uname_lower in seen_usernames:
+            errors.append({'index': idx, 'username': username, 'error': 'El nombre de usuario ya existe'})
+            continue
+
+        try:
+            db.execute(
+                "INSERT INTO users (username, password_hash, full_name, role, team_creator_id) VALUES (?, ?, ?, ?, ?)",
+                (username, hash_password(password), full_name, role, team_creator_id)
+            )
+            new_user_row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+            new_user_id = new_user_row['id']
+            # For team_admins, create team_config
+            if role == 'team_admin':
+                if not api_config_id:
+                    errors.append({'index': idx, 'username': username, 'error': 'Configuracion API (pais) requerida'})
+                    db.execute("DELETE FROM users WHERE id=?", (new_user_id,))
+                    continue
+                db.execute(
+                    "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, 100)",
+                    (new_user_id, api_config_id)
+                )
+            created.append({'id': new_user_id, 'username': username, 'full_name': full_name, 'role': role})
+            seen_usernames.add(uname_lower)
+        except Exception as e:
+            errors.append({'index': idx, 'username': username, 'error': 'Error al crear: ' + str(e)})
+
+    db.commit()
+    return jsonify({
+        'message': 'Creacion masiva completada',
+        'created_count': len(created),
+        'error_count': len(errors),
+        'created': created,
+        'errors': errors
+    }), 200
+
+@app.route('/api/users/bulk-delete', methods=['POST'])
+@manager_required
+def bulk_delete_users():
+    """Bulk delete users. Payload: { "ids": [1,2,3] }
+    Enforces the same permission rules as single delete.
+    """
+    data = request.get_json() or {}
+    ids = data.get('ids', [])
+    if not isinstance(ids, list) or not ids:
+        return jsonify({'error': 'Debe proporcionar una lista de IDs'}), 400
+    if len(ids) > 500:
+        return jsonify({'error': 'No se pueden eliminar mas de 500 usuarios a la vez'}), 400
+
+    current = g.user
+    db = get_db()
+
+    deleted = []
+    errors = []
+    for uid in ids:
+        try:
+            uid = int(uid)
+        except (TypeError, ValueError):
+            errors.append({'id': uid, 'error': 'ID invalido'})
+            continue
+        if uid == current['id']:
+            errors.append({'id': uid, 'error': 'No puede eliminar su propia cuenta'})
+            continue
+        user = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if not user:
+            errors.append({'id': uid, 'error': 'Usuario no encontrado'})
+            continue
+        # Permission checks (same rules as single delete)
+        if current['role'] == 'admin':
+            if user['role'] == 'admin':
+                errors.append({'id': uid, 'username': user['username'], 'error': 'No puede eliminar a otro Administrador del Sistema'})
+                continue
+        elif current['role'] == 'team_admin':
+            if user['team_creator_id'] != current['id']:
+                errors.append({'id': uid, 'username': user['username'], 'error': 'No es miembro de su equipo'})
+                continue
+            if user['role'] != 'team_member':
+                errors.append({'id': uid, 'username': user['username'], 'error': 'Solo puede eliminar Miembros de Equipo'})
+                continue
+        else:
+            errors.append({'id': uid, 'error': 'Permisos insuficientes'})
+            continue
+        db.execute("DELETE FROM users WHERE id=?", (uid,))
+        deleted.append({'id': uid, 'username': user['username']})
+
+    db.commit()
+    return jsonify({
+        'message': 'Eliminacion masiva completada',
+        'deleted_count': len(deleted),
+        'error_count': len(errors),
+        'deleted': deleted,
+        'errors': errors
+    }), 200
+
 # ============================================================
 # Permissions API (admin manages menu access for each user)
 # ============================================================

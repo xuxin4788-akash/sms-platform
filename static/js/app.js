@@ -929,11 +929,14 @@ async function renderUsers(container) {
             var canEdit = false;
             if (myRole === 'admin') canEdit = u.id !== state.user.id;
             else if (myRole === 'team_admin') canEdit = u.role === 'team_member' && u.team_creator_id === state.user.id;
+            // Bulk-deletable: same rule as delete button
+            var bulkDeletable = canEdit;
+            var checkbox = bulkDeletable ? '<input type="checkbox" class="user-row-check" data-id="' + u.id + '" data-username="' + escapeHtml(u.username) + '" onchange="onBulkUserSelect()" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;">' : '';
             var editBtn = canEdit ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="showEditUserModal(' + u.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>' : '';
             var roleBtn = (myRole === 'admin' && u.role !== 'admin') ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="showRoleModal(' + u.id + ', \'' + u.role + '\')" title="Cambiar Rol" style="color:var(--primary);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg></button>' : '';
             var deleteBtn = canEdit ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="deleteUser(' + u.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>' : '';
             var teamCell = u.team_affiliation ? '<span class="text-sm">' + escapeHtml(u.team_affiliation) + '</span>' : '<span class="text-sm text-secondary">-</span>';
-            return '<tr><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + roleBtn + deleteBtn + '</td></tr>';
+            return '<tr><td style="width:40px;">' + checkbox + '</td><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + roleBtn + deleteBtn + '</td></tr>';
         }).join('');
 
         // Role filter options based on current user role
@@ -944,7 +947,7 @@ async function renderUsers(container) {
             roleOptions += '<option value="team_member">Miembro de Equipo</option>';
         }
 
-        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div><div class="card mb-3"><div style="display:flex;gap:12px;align-items:center;padding:12px 16px;flex-wrap:wrap;"><div style="flex:1;min-width:200px;position:relative;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input type="text" id="user-search" class="form-control" placeholder="Buscar por usuario o nombre..." value="' + escapeHtml(searchVal) + '" style="padding-left:36px;" oninput="debounceRenderUsers()"></div><select id="user-role-filter" class="form-control" style="width:auto;min-width:180px;" onchange="renderUsers(document.getElementById(\'page-content\'))">' + roleOptions + '</select></div></div><div class="card"><div class="table-container"><table><thead><tr><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Equipo</th><th>IP Login</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
+        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="showBulkCreateModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg> Creacion Masiva</button><button class="btn btn-danger btn-sm" id="bulk-delete-btn" onclick="bulkDeleteUsers()" disabled style="opacity:0.5;cursor:not-allowed;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Eliminar (<span id="bulk-selected-count">0</span>)</button><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div></div><div id="bulk-action-bar" class="card mb-3" style="display:none;padding:10px 16px;background:var(--light-blue);border-color:var(--primary);"></div><div class="card mb-3"><div style="display:flex;gap:12px;align-items:center;padding:12px 16px;flex-wrap:wrap;"><div style="flex:1;min-width:200px;position:relative;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input type="text" id="user-search" class="form-control" placeholder="Buscar por usuario o nombre..." value="' + escapeHtml(searchVal) + '" style="padding-left:36px;" oninput="debounceRenderUsers()"></div><select id="user-role-filter" class="form-control" style="width:auto;min-width:180px;" onchange="renderUsers(document.getElementById(\'page-content\'))">' + roleOptions + '</select></div></div><div class="card"><div class="table-container"><table><thead><tr><th style="width:40px;"><input type="checkbox" id="user-select-all" onchange="toggleAllUsers(this)" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;"></th><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Equipo</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
         window._users = data.users;
         // Restore role filter selection
         if (roleFilterVal) { var sel = document.getElementById('user-role-filter'); if (sel) sel.value = roleFilterVal; }
@@ -1065,6 +1068,195 @@ async function deleteUser(id) {
     if (!confirm('Esta seguro de eliminar este usuario?')) return;
     try { await api('/api/users/' + id, { method: 'DELETE' }); showToast('Usuario eliminado', 'success'); renderUsers(document.getElementById('page-content')); }
     catch (err) { showToast(err.message, 'error'); }
+}
+
+// ============================================================
+// Bulk user operations
+// ============================================================
+function getSelectedUsers() {
+    var checks = document.querySelectorAll('.user-row-check:checked');
+    return Array.prototype.map.call(checks, function(cb) {
+        return { id: parseInt(cb.getAttribute('data-id')), username: cb.getAttribute('data-username') };
+    });
+}
+
+function onBulkUserSelect() {
+    updateBulkSelectionUI();
+}
+
+function toggleAllUsers(master) {
+    document.querySelectorAll('.user-row-check').forEach(function(cb) { cb.checked = master.checked; });
+    updateBulkSelectionUI();
+}
+
+function updateBulkSelectionUI() {
+    var selected = getSelectedUsers();
+    var countEl = document.getElementById('bulk-selected-count');
+    var btn = document.getElementById('bulk-delete-btn');
+    if (countEl) countEl.textContent = selected.length;
+    if (btn) {
+        if (selected.length > 0) {
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.style.cursor = 'pointer';
+        } else {
+            btn.disabled = true;
+            btn.style.opacity = '0.5';
+            btn.style.cursor = 'not-allowed';
+        }
+    }
+    // Sync master checkbox state
+    var all = document.querySelectorAll('.user-row-check');
+    var master = document.getElementById('user-select-all');
+    if (master && all.length) {
+        master.checked = selected.length === all.length;
+    }
+}
+
+async function bulkDeleteUsers() {
+    var selected = getSelectedUsers();
+    if (!selected.length) { showToast('Selecciona al menos un usuario', 'error'); return; }
+    if (!confirm('Esta seguro de eliminar ' + selected.length + ' usuario(s)? Esta accion no se puede deshacer.')) return;
+    var ids = selected.map(function(u) { return u.id; });
+    try {
+        var result = await api('/api/users/bulk-delete', { method: 'POST', body: { ids: ids } });
+        var msg = 'Eliminados: ' + result.deleted_count;
+        if (result.error_count > 0) msg += '. Errores: ' + result.error_count;
+        showToast(msg, result.error_count > 0 ? 'error' : 'success');
+        renderUsers(document.getElementById('page-content'));
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function showBulkCreateModal() {
+    var myRole = state.user.role;
+    if (myRole !== 'admin' && myRole !== 'team_admin') { showToast('Permisos insuficientes', 'error'); return; }
+
+    // For admin, fetch API configs (country selection)
+    var apiConfigHtml = '';
+    if (myRole === 'admin') {
+        try {
+            var configsData = await api('/api/config/sms');
+            var configs = configsData.configs || [];
+            var configOptions = configs.map(function(c) {
+                return '<option value="' + c.id + '">' + escapeHtml(c.name) + ' (' + escapeHtml(c.country) + ')</option>';
+            }).join('');
+            apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais) para todos los nuevos equipos *</label><select name="api_config_id" id="bulk-api-config" required><option value="">Seleccionar pais...</option>' + configOptions + '</select><small class="text-secondary">El Administrador del Sistema crea Administradores de Equipo. Cada equipo se asocia a la API de un pais.</small></div>';
+        } catch (e) {
+            apiConfigHtml = '<div class="form-group"><label>Configuracion API</label><p class="text-secondary">No hay configuraciones API disponibles</p></div>';
+        }
+    }
+
+    var defaultPwdMsg = myRole === 'admin'
+        ? 'Se crearan Administradores de Equipo.'
+        : 'Se crearan Miembros de Equipo bajo tu gestion.';
+
+    showModal('Creacion Masiva de Usuarios',
+        '<form onsubmit="handleBulkCreate(event)">' +
+            '<div class="form-group"><label>Lista de usuarios *</label>' +
+                '<textarea name="users_text" id="bulk-users-text" rows="10" style="width:100%;font-family:monospace;font-size:13px;" placeholder="usuario,contrasena,nombre_completo&#10;jperez,Pass1234,Juan Perez&#10;mlopez,Clave2024,Mar\u00eda Lopez&#10;garcia,Seguro789," required></textarea>' +
+                '<small class="text-secondary">Formato: <strong>usuario,contrasena,nombre_completo</strong> (una linea por usuario). La contrasena debe tener minimo 6 caracteres. El nombre completo es opcional.' +
+                '<br>Tambien puede pegar datos desde Excel/CSV (use coma como separador).</small>' +
+            '</div>' +
+            '<div class="form-group"><label>Contrasena por defecto (opcional)</label>' +
+                '<input type="text" name="default_password" id="bulk-default-pwd" placeholder="Se usa cuando la linea no trae contrasena" minlength="6">' +
+                '<small class="text-secondary">Si una linea solo tiene usuario (o usuario,nombre), se asignara esta contrasena.</small>' +
+            '</div>' +
+            apiConfigHtml +
+            '<div style="background:var(--light-blue);padding:10px 12px;border-radius:8px;font-size:13px;color:var(--text-secondary);margin-bottom:12px;">' + defaultPwdMsg + ' Maximo 500 usuarios por carga.</div>' +
+            '<div id="bulk-result" style="display:none;margin-bottom:12px;"></div>' +
+            '<div class="modal-footer" style="padding:16px 0 0;">' +
+                '<button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button>' +
+                '<button type="submit" class="btn btn-primary" id="bulk-create-submit">Crear Usuarios</button>' +
+            '</div>' +
+        '</form>'
+    );
+}
+
+function parseBulkUsersText(text, defaultPassword) {
+    var users = [];
+    var errors = [];
+    var lines = text.split(/\r?\n/);
+    lines.forEach(function(line, idx) {
+        var trimmed = line.trim();
+        if (!trimmed) return;
+        // Support comma or tab or semicolon separated
+        var parts = trimmed.split(/[,;\t]/).map(function(p) { return p.trim(); });
+        var username = parts[0] || '';
+        var password = parts[1] || defaultPassword || '';
+        var full_name = parts.slice(2).join(', ').trim();
+        if (!username) {
+            errors.push({ line: idx + 1, error: 'Usuario vacio' });
+            return;
+        }
+        if (!password || password.length < 6) {
+            errors.push({ line: idx + 1, username: username, error: 'Contrasena minima de 6 caracteres' });
+            return;
+        }
+        users.push({ username: username, password: password, full_name: full_name });
+    });
+    return { users: users, errors: errors };
+}
+
+async function handleBulkCreate(event) {
+    event.preventDefault();
+    var form = event.target;
+    var text = document.getElementById('bulk-users-text').value;
+    var defaultPassword = document.getElementById('bulk-default-pwd').value.trim();
+    var apiConfigSelect = document.getElementById('bulk-api-config');
+    var apiConfigId = apiConfigSelect ? parseInt(apiConfigSelect.value) : null;
+
+    var parsed = parseBulkUsersText(text, defaultPassword);
+
+    var resultEl = document.getElementById('bulk-result');
+    function showResult(html, type) {
+        resultEl.style.display = 'block';
+        resultEl.style.padding = '10px 12px';
+        resultEl.style.borderRadius = '8px';
+        resultEl.style.fontSize = '13px';
+        resultEl.style.background = type === 'error' ? '#FEE2E2' : '#ECFDF5';
+        resultEl.style.color = type === 'error' ? 'var(--danger)' : 'var(--success)';
+        resultEl.innerHTML = html;
+    }
+
+    if (parsed.errors.length) {
+        var errHtml = '<strong>Errores en el formato:</strong><ul style="margin:6px 0 0;padding-left:18px;">' +
+            parsed.errors.map(function(e) { return '<li>Linea ' + e.line + (e.username ? ' (' + escapeHtml(e.username) + ')' : '') + ': ' + escapeHtml(e.error) + '</li>'; }).join('') +
+            '</ul>';
+        showResult(errHtml, 'error');
+        return;
+    }
+    if (!parsed.users.length) {
+        showResult('No se encontraron usuarios validos.', 'error');
+        return;
+    }
+
+    var submitBtn = document.getElementById('bulk-create-submit');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creando...';
+
+    try {
+        var body = { users: parsed.users };
+        if (apiConfigId) body.api_config_id = apiConfigId;
+        var result = await api('/api/users/bulk', { method: 'POST', body: body });
+        var html = '<strong>Creacion completada.</strong> Creados: ' + result.created_count + '.';
+        if (result.error_count > 0) {
+            html += ' Errores: ' + result.error_count + '<ul style="margin:6px 0 0;padding-left:18px;">' +
+                result.errors.map(function(e) { return '<li>' + escapeHtml(e.username || ('#' + e.index)) + ': ' + escapeHtml(e.error) + '</li>'; }).join('') + '</ul>';
+        }
+        showResult(html, result.error_count > 0 ? 'error' : 'success');
+        showToast('Usuarios creados: ' + result.created_count, result.error_count > 0 ? 'error' : 'success');
+        if (result.created_count > 0) {
+            // Refresh user list in background after a short delay
+            setTimeout(function() { renderUsers(document.getElementById('page-content')); }, 800);
+        }
+    } catch (err) {
+        showResult('Error: ' + escapeHtml(err.message), 'error');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Crear Usuarios';
+    }
 }
 
 // ============================================================
