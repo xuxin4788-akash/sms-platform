@@ -687,7 +687,19 @@ def get_sms_api_config(config_id=None):
     if config_id:
         config = db.execute("SELECT * FROM sms_api_configs WHERE id = ?", (config_id,)).fetchone()
     else:
-        config = db.execute("SELECT * FROM sms_api_configs WHERE is_active = 1 LIMIT 1").fetchone()
+        # Prefer a fully-configured active record (domain/spid/api_pwd all present)
+        config = db.execute(
+            "SELECT * FROM sms_api_configs WHERE is_active = 1 "
+            "AND domain IS NOT NULL AND domain != '' "
+            "AND spid IS NOT NULL AND spid != '' "
+            "AND api_pwd IS NOT NULL AND api_pwd != '' "
+            "ORDER BY id LIMIT 1"
+        ).fetchone()
+        # Fallback: if no fully-configured record, return the first active one
+        if not config:
+            config = db.execute(
+                "SELECT * FROM sms_api_configs WHERE is_active = 1 ORDER BY id LIMIT 1"
+            ).fetchone()
     if not config:
         return None
     return {
