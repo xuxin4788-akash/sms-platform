@@ -2078,6 +2078,46 @@ def delete_contact(contact_id):
     db.commit()
     return jsonify({'message': 'Contacto eliminado'})
 
+@app.route('/api/contacts/template', methods=['GET'])
+@login_required
+def download_contact_template():
+    """Download a CSV template for bulk contact import."""
+    import io as _io
+    from flask import send_file
+
+    buf = _io.StringIO()
+    # Write UTF-8 BOM so Excel opens the file with correct encoding
+    buf.write('\ufeff')
+    writer = csv.writer(buf)
+    writer.writerow(['name', 'phone', 'notes', 'remark'])
+    writer.writerow([
+        'Juan Perez',
+        '5215512345678',
+        'Cliente interesado en promo MXN',
+        'Dispuesto a pagar sin fondos',
+    ])
+    writer.writerow([
+        'Maria Lopez',
+        '5215587654321',
+        'No molestar despues de las 20h',
+        'No contactable',
+    ])
+    writer.writerow([
+        'Carlos Ruiz',
+        '5215511223344',
+        '',
+        'Promesa de pago',
+    ])
+
+    data = buf.getvalue().encode('utf-8')
+    return send_file(
+        _io.BytesIO(data),
+        as_attachment=True,
+        download_name='plantilla_contactos.csv',
+        mimetype='text/csv; charset=utf-8',
+    )
+
+
 @app.route('/api/contacts/import', methods=['POST'])
 @login_required
 def import_contacts():
