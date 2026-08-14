@@ -21,6 +21,12 @@ app.config['DATABASE'] = os.path.join(app.instance_path, 'sms_platform.db')
 app.config['DATABASE_URL'] = os.environ.get('DATABASE_URL', '')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 
+# Cache for recently generated plaintext passwords.
+# The database only stores bcrypt hashes; existing passwords cannot be recovered.
+# This map keeps plaintext only for passwords generated/reset in the current
+# process so they can be included in the next user export, then it is cleared.
+EXPORTABLE_PASSWORDS = {}
+
 # Enable Gzip compression
 Compress(app)
 app.config['COMPRESS_MIMETYPES'] = ['text/html', 'text/css', 'text/xml', 'application/json', 'application/javascript', 'text/javascript']
@@ -1133,14 +1139,14 @@ def create_user():
     if existing:
         return jsonify({'error': 'El nombre de usuario ya existe'}), 409
     api_config_id = data.get('api_config_id')
-    db.execute(
+    cur = db.execute(
         "INSERT INTO users (username, password_hash, full_name, role, team_creator_id) VALUES (?, ?, ?, ?, ?)",
         (username, hash_password(password), full_name, role, team_creator_id)
     )
+    new_user_id = cur.lastrowid
+    EXPORTABLE_PASSWORDS[int(new_user_id)] = password
     # If creating a team_admin, create team_config with api_config_id
     if role == 'team_admin':
-        new_user_row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
-        new_user_id = new_user_row['id']
         db.execute(
             "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, 100)",
             (new_user_id, api_config_id if api_config_id else None)
@@ -1305,6 +1311,7 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
                     "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, 100)",
                     (new_user_id, api_config_id)
                 )
+            EXPORTABLE_PASSWORDS[int(new_user_id)] = password
             created.append({
                 'id': new_user_id,
                 'username': username,
@@ -1510,6 +1517,7 @@ def bulk_update_passwords():
         try:
             db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(new_password), uid))
             updated.append({'id': uid, 'username': row['username'], 'password': new_password})
+            EXPORTABLE_PASSWORDS[int(uid)] = new_password
         except Exception as e:
             errors.append({'index': idx, 'id': uid, 'username': row['username'], 'error': 'Error al actualizar: ' + str(e)})
 
@@ -1694,7 +1702,12 @@ def export_users():
     from io import BytesIO
     from flask import send_file
     rows = _users_for_export(g.user)
-    wb = _build_users_workbook(rows, include_passwords=False, viewer_role=g.user['role'])
+    wb = _build_users_workbook(
+        rows,
+        include_passwords=True,
+        viewer_role=g.user['role'],
+        password_map=EXPORTABLE_PASSWORDS
+    )
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
