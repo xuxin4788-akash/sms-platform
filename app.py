@@ -1205,6 +1205,16 @@ def delete_user(user_id):
             return jsonify({'error': 'Solo puede eliminar Miembros de Equipo'}), 403
     else:
         return jsonify({'error': 'Permisos insuficientes'}), 403
+    # Protection: cannot delete a team_admin who still has members under them
+    if user['role'] == 'team_admin':
+        member_count = db.execute(
+            "SELECT COUNT(*) as cnt FROM users WHERE team_creator_id=?",
+            (user_id,)
+        ).fetchone()
+        if member_count and member_count['cnt'] > 0:
+            return jsonify({
+                'error': f"Este Administrador de Equipo tiene {member_count['cnt']} miembro(s) a cargo. Elimine o reasigne los miembros primero."
+            }), 400
     db.execute("DELETE FROM users WHERE id=?", (user_id,))
     db.commit()
     return jsonify({'message': 'Usuario eliminado'})
@@ -1342,6 +1352,19 @@ def bulk_delete_users():
         else:
             errors.append({'id': uid, 'error': 'Permisos insuficientes'})
             continue
+        # Protection: cannot delete a team_admin who still has members under them
+        if user['role'] == 'team_admin':
+            member_count = db.execute(
+                "SELECT COUNT(*) as cnt FROM users WHERE team_creator_id=?",
+                (uid,)
+            ).fetchone()
+            if member_count and member_count['cnt'] > 0:
+                errors.append({
+                    'id': uid,
+                    'username': user['username'],
+                    'error': f"Tiene {member_count['cnt']} miembro(s) a cargo. Elimínelos o reasígnelos primero."
+                })
+                continue
         db.execute("DELETE FROM users WHERE id=?", (uid,))
         deleted.append({'id': uid, 'username': user['username']})
 
