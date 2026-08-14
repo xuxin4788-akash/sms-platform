@@ -960,6 +960,7 @@ def logout():
 @app.route('/api/auth/me', methods=['GET'])
 @login_required
 def get_me():
+    db = get_db()
     # Get permissions from role_permissions table
     permissions = []
     try:
