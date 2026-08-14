@@ -1,0 +1,140 @@
+Recreating 38cbb33a25a9_sms-platform-app ... 
+
+ERROR: for 38cbb33a25a9_sms-platform-app  'ContainerConfig'
+
+ERROR: for app  'ContainerConfig'
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/docker/api/client.py", line 268, in _raise_for_status
+    response.raise_for_status()
+  File "/usr/lib/python3/dist-packages/requests/models.py", line 943, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: http+docker://localhost/v1.55/images/sha256:d43451d1fd7dbf62fe3a1d9a2fe9bf644e89a000d872a60e7546d8ff06b8fe3c/json
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/compose/cli/main.py", line 1186, in up
+    to_attach = up(False)
+  File "/usr/lib/python3/dist-packages/compose/cli/main.py", line 1166, in up
+    return self.project.up(
+  File "/usr/lib/python3/dist-packages/compose/project.py", line 697, in up
+    results, errors = parallel.parallel_execute(
+  File "/usr/lib/python3/dist-packages/compose/parallel.py", line 108, in parallel_execute
+    raise error_to_reraise
+  File "/usr/lib/python3/dist-packages/compose/parallel.py", line 206, in producer
+    result = func(obj)
+  File "/usr/lib/python3/dist-packages/compose/project.py", line 679, in do
+    return service.execute_convergence_plan(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 579, in execute_convergence_plan
+    return self._execute_convergence_recreate(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 499, in _execute_convergence_recreate
+    containers, errors = parallel_execute(
+  File "/usr/lib/python3/dist-packages/compose/parallel.py", line 108, in parallel_execute
+    raise error_to_reraise
+  File "/usr/lib/python3/dist-packages/compose/parallel.py", line 206, in producer
+    result = func(obj)
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 494, in recreate
+    return self.recreate_container(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 612, in recreate_container
+    new_container = self.create_container(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 330, in create_container
+    container_options = self._get_container_create_options(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 921, in _get_container_create_options
+    container_options, override_options = self._build_container_volume_options(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 960, in _build_container_volume_options
+    binds, affinity = merge_volume_bindings(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 1548, in merge_volume_bindings
+    old_volumes, old_mounts = get_container_data_volumes(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 1579, in get_container_data_volumes
+    container.image_config['ContainerConfig'].get('Volumes') or {}
+  File "/usr/lib/python3/dist-packages/compose/container.py", line 61, in image_config
+    return self.client.inspect_image(self.image)
+  File "/usr/lib/python3/dist-packages/docker/utils/decorators.py", line 19, in wrapped
+    return f(self, resource_id, *args, **kwargs)
+  File "/usr/lib/python3/dist-packages/docker/api/image.py", line 251, in inspect_image
+    return self._result(
+  File "/usr/lib/python3/dist-packages/docker/api/client.py", line 274, in _result
+    self._raise_for_status(response)
+  File "/usr/lib/python3/dist-packages/docker/api/client.py", line 270, in _raise_for_status
+    raise create_api_error_from_http_exception(e)
+  File "/usr/lib/python3/dist-packages/docker/errors.py", line 31, in create_api_error_from_http_exception
+    raise cls(e, response=response, explanation=explanation)
+docker.errors.ImageNotFound: 404 Client Error for http+docker://localhost/v1.55/images/sha256:d43451d1fd7dbf62fe3a1d9a2fe9bf644e89a000d872a60e7546d8ff06b8fe3c/json: Not Found ("No such image: sha256:d43451d1fd7dbf62fe3a1d9a2fe9bf644e89a000d872a60e7546d8ff06b8fe3c")
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/bin/docker-compose", line 33, in <module>
+    sys.exit(load_entry_point('docker-compose==1.29.2', 'console_scripts', 'docker-compose')())
+  File "/usr/lib/python3/dist-packages/compose/cli/main.py", line 81, in main
+    command_func()
+  File "/usr/lib/python3/dist-packages/compose/cli/main.py", line 203, in perform_command
+    handler(command, command_options)
+  File "/usr/lib/python3/dist-packages/compose/metrics/decorator.py", line 18, in wrapper
+    result = fn(*args, **kwargs)
+  File "/usr/lib/python3/dist-packages/compose/cli/main.py", line 1197, in up
+    to_attach = up(True)
+  File "/usr/lib/python3/dist-packages/compose/cli/main.py", line 1166, in up
+    return self.project.up(
+  File "/usr/lib/python3/dist-packages/compose/project.py", line 697, in up
+    results, errors = parallel.parallel_execute(
+  File "/usr/lib/python3/dist-packages/compose/parallel.py", line 108, in parallel_execute
+    raise error_to_reraise
+  File "/usr/lib/python3/dist-packages/compose/parallel.py", line 206, in producer
+    result = func(obj)
+  File "/usr/lib/python3/dist-packages/compose/project.py", line 679, in do
+    return service.execute_convergence_plan(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 579, in execute_convergence_plan
+    return self._execute_convergence_recreate(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 499, in _execute_convergence_recreate
+    containers, errors = parallel_execute(
+  File "/usr/lib/python3/dist-packages/compose/parallel.py", line 108, in parallel_execute
+    raise error_to_reraise
+  File "/usr/lib/python3/dist-packages/compose/parallel.py", line 206, in producer
+    result = func(obj)
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 494, in recreate
+    return self.recreate_container(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 612, in recreate_container
+    new_container = self.create_container(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 330, in create_container
+    container_options = self._get_container_create_options(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 921, in _get_container_create_options
+    container_options, override_options = self._build_container_volume_options(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 960, in _build_container_volume_options
+    binds, affinity = merge_volume_bindings(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 1548, in merge_volume_bindings
+    old_volumes, old_mounts = get_container_data_volumes(
+  File "/usr/lib/python3/dist-packages/compose/service.py", line 1579, in get_container_data_volumes
+    container.image_config['ContainerConfig'].get('Volumes') or {}
+KeyError: 'ContainerConfig'
+Attaching to 38cbb33a25a9_sms-platform-app
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:38:42 +0000] "GET /login.jsp HTTP/1.1" 404 207 "-" "Mozilla/5.0 (compatible; GenomeCrawlerd/1.0; +https://www.nokia.com/genomecrawler)" 369ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:38:43 +0000] "GET /login HTTP/1.1" 404 207 "-" "Mozilla/5.0 (compatible; GenomeCrawlerd/1.0; +https://www.nokia.com/genomecrawler)" 482ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:38:43 +0000] "GET /doc/index.html HTTP/1.1" 404 207 "-" "Mozilla/5.0 (compatible; GenomeCrawlerd/1.0; +https://www.nokia.com/genomecrawler)" 466ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:38:43 +0000] "GET /remote/login HTTP/1.1" 404 207 "-" "Mozilla/5.0 (compatible; GenomeCrawlerd/1.0; +https://www.nokia.com/genomecrawler)" 473ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:38:43 +0000] "GET /admin/login.asp HTTP/1.1" 404 207 "-" "Mozilla/5.0 (compatible; GenomeCrawlerd/1.0; +https://www.nokia.com/genomecrawler)" 455ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:38:43 +0000] "GET /web/ HTTP/1.1" 404 207 "-" "Mozilla/5.0 (compatible; GenomeCrawlerd/1.0; +https://www.nokia.com/genomecrawler)" 450ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:38:43 +0000] "GET /webpages/login.html HTTP/1.1" 404 207 "-" "Mozilla/5.0 (compatible; GenomeCrawlerd/1.0; +https://www.nokia.com/genomecrawler)" 739ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:38:44 +0000] "GET /favicon.ico HTTP/1.1" 404 207 "-" "Mozilla/5.0 (compatible; GenomeCrawlerd/1.0; +https://www.nokia.com/genomecrawler)" 525ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:59:15 +0000] "GET / HTTP/1.1" 200 2387 "-" "Mozilla/5.0 (compatible; CensysInspect/1.1; +https://about.censys.io/)" 792ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:59:16 +0000] "GET /favicon.ico HTTP/1.1" 404 207 "-" "Mozilla/5.0 (compatible; CensysInspect/1.1; +https://about.censys.io/)" 691ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:05:59:46 +0000] "GET /wiki HTTP/1.1" 404 207 "-" "Mozilla/5.0 (compatible; CensysInspect/1.1; +https://about.censys.io/)" 547ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:06:12:05 +0000] "GET / HTTP/1.1" 200 2387 "-" "Mozilla/5.0 (compatible; CyberConvoyScout/1.0; +https://scout.cyberconvoy.co)" 770ms
+38cbb33a25a9_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:06:18:37 +0000] "GET / HTTP/1.1" 200 2387 "-" "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1" 793ms
+38cbb33a25a9_sms-platform-app | [2026-08-14 06:21:27 +0000] [1] [INFO] Handling signal: term
+38cbb33a25a9_sms-platform-app | [2026-08-14 06:21:27 +0000] [6] [INFO] Worker exiting (pid: 6)
+38cbb33a25a9_sms-platform-app | [2026-08-14 06:21:27 +0000] [7] [INFO] Worker exiting (pid: 7)
+38cbb33a25a9_sms-platform-app | [2026-08-14 06:21:27 +0000] [8] [INFO] Worker exiting (pid: 8)
+38cbb33a25a9_sms-platform-app | [2026-08-14 06:21:27 +0000] [9] [INFO] Worker exiting (pid: 9)
+38cbb33a25a9_sms-platform-app | [2026-08-14 06:21:27 +0000] [10] [INFO] Worker exiting (pid: 10)
+38cbb33a25a9_sms-platform-app | [2026-08-14 06:21:28 +0000] [1] [INFO] Shutting down: Master
+root@iZ4hf61qkifw39jjmq1s5qZ:/opt/sms-platform# curl -X POST http://localhost/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}'
+<html>
+<head><title>502 Bad Gateway</title></head>
+<body>
+<center><h1>502 Bad Gateway</h1></center>
+<hr><center>nginx/1.31.3</center>
+</body>
+</html>
