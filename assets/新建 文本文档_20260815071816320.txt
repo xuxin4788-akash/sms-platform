@@ -1,0 +1,8 @@
+root@iZ4hf61qkifw39jjmq1s5qZ:/opt/sms-platform# docker inspect 4eec05787123_sms-platform-app --format 'ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}}'
+dmesg -T 2>/dev/null | grep -iE "out of memory|killed process" | tail -10
+free -h
+ExitCode=0 OOMKilled=false
+               total        used        free      shared  buff/cache   available
+Mem:           3.4Gi       516Mi       319Mi        17Mi       2.6Gi       2.6Gi
+Swap:             0B          0B          0B
+
