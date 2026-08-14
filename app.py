@@ -130,28 +130,71 @@ class CursorWrapper:
         rows = self.cursor.fetchall()
         return rows
 
+# Per-process PostgreSQL connection pool. Each gunicorn worker is its own
+# process, so a module-level pool is safe and avoids opening a fresh TCP
+# connection (DNS + handshake + backend startup) on every request.
+_pg_pool = None
+
+def _get_pg_pool():
+    global _pg_pool
+    if _pg_pool is None:
+        import psycopg2.pool
+        # minconn kept at 1 so the first request after a worker boots pays the
+        # connection cost once; maxconn allows limited concurrency per worker.
+        _pg_pool = psycopg2.pool.SimpleConnectionPool(
+            1, 10, app.config['DATABASE_URL']
+        )
+    return _pg_pool
+
 def get_db():
     if 'db' not in g:
         db_type = get_db_type()
         if db_type == 'postgres':
-            import psycopg2
-            import psycopg2.extras
-            conn = psycopg2.connect(app.config['DATABASE_URL'])
+            pool = _get_pg_pool()
+            conn = pool.getconn()
+            # Discard any aborted transaction left by a previous request so a
+            # pooled connection starts clean.
+            try:
+                if conn.closed:
+                    pool.putconn(conn, close=True)
+                    conn = pool.getconn()
+                conn.rollback()
+            except Exception:
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                conn = pool.getconn()
+                conn.rollback()
             conn.autocommit = False
             g.db = DBWrapper(conn, db_type)
+            g._db_from_pool = True
         else:
             conn = sqlite3.connect(app.config['DATABASE'])
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             g.db = DBWrapper(conn, db_type)
+            g._db_from_pool = False
     return g.db
 
 @app.teardown_appcontext
 def close_db(exception):
     db = g.pop('db', None)
     if db is not None:
-        db.close()
+        if g.pop('_db_from_pool', False) and get_db_type() == 'postgres':
+            # Return the connection to the pool instead of closing it. Roll back
+            # any uncommitted work so the next borrower gets a clean session.
+            try:
+                db.conn.rollback()
+                _get_pg_pool().putconn(db.conn)
+            except Exception:
+                try:
+                    _get_pg_pool().putconn(db.conn, close=True)
+                except Exception:
+                    pass
+        else:
+            db.close()
 
 def init_db():
     """Initialize database schema. Supports both SQLite and PostgreSQL."""
