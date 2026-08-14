@@ -1,0 +1,59 @@
+         Name                         Command                State                  Ports           
+-------------------------------------------------------------------------------------------------------
+f62b52754b90_sms-platform-     gunicorn -c gunicorn.conf.    Exit 0                                    
+app                            ...                                                                     
+sms-platform-db                docker-entrypoint.sh          Up (healthy)   0.0.0.0:5432-              
+                               postgres                                     >5432/tcp,:::5432->5432/tcp
+sms-platform-nginx             /docker-entrypoint.sh ngin    Up             0.0.0.0:80->80/tcp,:::80-  
+                               ...                                          >80/tcp                    
+Attaching to f62b52754b90_sms-platform-app
+f62b52754b90_sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 902, in dispatch_request
+f62b52754b90_sms-platform-app |     return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+f62b52754b90_sms-platform-app |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+f62b52754b90_sms-platform-app |   File "/app/app.py", line 500, in decorated
+f62b52754b90_sms-platform-app |     user = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
+f62b52754b90_sms-platform-app |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+f62b52754b90_sms-platform-app |   File "/app/app.py", line 63, in execute
+f62b52754b90_sms-platform-app |     cur.execute(pg_query, params)
+f62b52754b90_sms-platform-app | psycopg2.errors.UndefinedFunction: operator does not exist: boolean = integer
+f62b52754b90_sms-platform-app | LINE 1: SELECT * FROM users WHERE id=1 AND is_active=1
+f62b52754b90_sms-platform-app |                                                     ^
+f62b52754b90_sms-platform-app | HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+f62b52754b90_sms-platform-app | 
+f62b52754b90_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:20:27:25 +0000] "GET /api/auth/me HTTP/1.1" 500 265 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 8579ms
+f62b52754b90_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:20:27:28 +0000] "POST /api/auth/login HTTP/1.1" 200 121 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 11819ms
+f62b52754b90_sms-platform-app | [2026-08-14 20:27:28,308] ERROR in app: Exception on /api/sms/statistics [GET]
+f62b52754b90_sms-platform-app | Traceback (most recent call last):
+f62b52754b90_sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 1511, in wsgi_app
+f62b52754b90_sms-platform-app |     response = self.full_dispatch_request()
+f62b52754b90_sms-platform-app |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+f62b52754b90_sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 919, in full_dispatch_request
+f62b52754b90_sms-platform-app |     rv = self.handle_user_exception(e)
+f62b52754b90_sms-platform-app |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+f62b52754b90_sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask_cors/extension.py", line 176, in wrapped_function
+f62b52754b90_sms-platform-app |     return cors_after_request(app.make_response(f(*args, **kwargs)))
+f62b52754b90_sms-platform-app |                                                 ^^^^^^^^^^^^^^^^^^
+f62b52754b90_sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 917, in full_dispatch_request
+f62b52754b90_sms-platform-app |     rv = self.dispatch_request()
+f62b52754b90_sms-platform-app |          ^^^^^^^^^^^^^^^^^^^^^^^
+f62b52754b90_sms-platform-app |   File "/usr/local/lib/python3.12/site-packages/flask/app.py", line 902, in dispatch_request
+f62b52754b90_sms-platform-app |     return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+f62b52754b90_sms-platform-app |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+f62b52754b90_sms-platform-app |   File "/app/app.py", line 500, in decorated
+f62b52754b90_sms-platform-app |     user = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
+f62b52754b90_sms-platform-app |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+f62b52754b90_sms-platform-app |   File "/app/app.py", line 63, in execute
+f62b52754b90_sms-platform-app |     cur.execute(pg_query, params)
+f62b52754b90_sms-platform-app | psycopg2.errors.UndefinedFunction: operator does not exist: boolean = integer
+f62b52754b90_sms-platform-app | LINE 1: SELECT * FROM users WHERE id=1 AND is_active=1
+f62b52754b90_sms-platform-app |                                                     ^
+f62b52754b90_sms-platform-app | HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+f62b52754b90_sms-platform-app | 
+f62b52754b90_sms-platform-app | 172.18.0.4 - - [14/Aug/2026:20:27:28 +0000] "GET /api/sms/statistics HTTP/1.1" 500 265 "http://47.87.38.52/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" 8266ms
+f62b52754b90_sms-platform-app | [2026-08-14 20:31:56 +0000] [1] [INFO] Handling signal: term
+f62b52754b90_sms-platform-app | [2026-08-14 20:31:56 +0000] [8] [INFO] Worker exiting (pid: 8)
+f62b52754b90_sms-platform-app | [2026-08-14 20:31:56 +0000] [7] [INFO] Worker exiting (pid: 7)
+f62b52754b90_sms-platform-app | [2026-08-14 20:31:56 +0000] [10] [INFO] Worker exiting (pid: 10)
+f62b52754b90_sms-platform-app | [2026-08-14 20:31:56 +0000] [9] [INFO] Worker exiting (pid: 9)
+f62b52754b90_sms-platform-app | [2026-08-14 20:31:56 +0000] [11] [INFO] Worker exiting (pid: 11)
+f62b52754b90_sms-platform-app | [2026-08-14 20:31:57 +0000] [1] [INFO] Shutting down: Master
