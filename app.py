@@ -1347,7 +1347,7 @@ def _parse_excel_users(file_storage):
     header_map = {
         'usuario': 'username', 'username': 'username', 'user': 'username', 'cuenta': 'username',
         'contrasena': 'password', 'password': 'password', 'clave': 'password', 'pass': 'password',
-        'nombre': 'full_name', 'nombre completo': 'full_name', 'fullname': 'full_name', 'name': 'full_name', 'full name': 'full_name'
+        'nombre': 'full_name', 'nombre completo': 'full_name', 'nombre_completo': 'full_name', 'fullname': 'full_name', 'name': 'full_name', 'full name': 'full_name'
     }
     first = rows[0]
     first_norm = [normalize(c) for c in first]
@@ -1549,6 +1549,7 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
         'team_admin': 'Administrador de Equipo',
         'team_member': 'Miembro de Equipo'
     }
+    rows = [dict(r) for r in rows]
 
     headers = ['ID', 'Usuario', 'Nombre Completo', 'Rol', 'Equipo/Admin', 'Pais/Config API', 'Estado', 'Creado', 'Ultimo Login IP', 'Ultimo Login']
     if include_passwords:
@@ -1564,9 +1565,9 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
 
     password_map = password_map or {}
     for ri, r in enumerate(rows, start=2):
-        creator = r.get('creator_username') if viewer_role == 'admin' else None
-        config_name = r.get('config_name') if viewer_role == 'admin' else None
-        config_country = r.get('config_country') if viewer_role == 'admin' else None
+        creator = r['creator_username'] if viewer_role == 'admin' else None
+        config_name = r['config_name'] if viewer_role == 'admin' else None
+        config_country = r['config_country'] if viewer_role == 'admin' else None
         team_field = creator if creator else ('Si' if r['role'] == 'team_admin' else '-')
         config_field = ''
         if config_name:
@@ -1585,8 +1586,8 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
             config_field,
             'Activo' if is_active else 'Inactivo',
             str(r['created_at']) if r['created_at'] else '',
-            r.get('last_login_ip') or '',
-            str(r['last_login_at']) if r.get('last_login_at') else ''
+            r['last_login_ip'] or '',
+            str(r['last_login_at']) if r['last_login_at'] else ''
         ]
         if include_passwords:
             values.append(password_map.get(r['id'], 'Configurada (no visible)'))
