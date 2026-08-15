@@ -27,6 +27,8 @@
       "main.js",
       "preload.js",
       "config.html",
+      "config.js",
+      "config.css",
       "assets/**/*",
       "package.json"
     ],
