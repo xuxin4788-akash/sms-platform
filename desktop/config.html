@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+<title>Configurar servidor</title>
+<style>
+  :root {
+    --primary: #2563EB;
+    --primary-hover: #1D4ED8;
+    --border: #E2E8F0;
+    --text: #1E293B;
+    --muted: #64748B;
+    --bg: #F8FAFC;
+    --success: #10B981;
+    --danger: #EF4444;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    -webkit-user-select: none; user-select: none;
+  }
+  .wrap {
+    display: flex; flex-direction: column; height: 100%;
+    padding: 28px 28px 20px;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 6px;
+  }
+  .logo .dot {
+    width: 40px; height: 40px; border-radius: 10px;
+    background: var(--primary);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 700; font-size: 18px;
+  }
+  .logo h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .logo p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+  .divider { height: 1px; background: var(--border); margin: 18px 0; }
+  label { font-size: 13px; font-weight: 500; display: block; margin-bottom: 8px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+  input[type="text"] {
+    width: 100%; padding: 11px 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    font-size: 14px; color: var(--text); outline: none;
+    transition: border-color .15s, box-shadow .15s;
+    -webkit-user-select: text; user-select: text;
+  }
+  input[type="text"]:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
+  }
+  .actions { display: flex; gap: 10px; margin-top: 22px; }
+  button {
+    flex: 1; padding: 11px 14px; border-radius: 8px;
+    border: 1px solid var(--border); background: #fff;
+    font-size: 14px; font-weight: 500; color: var(--text);
+    cursor: pointer; transition: background .15s, border-color .15s;
+  }
+  button.primary {
+    background: var(--primary); border-color: var(--primary); color: #fff;
+  }
+  button.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+  button:disabled { opacity: .6; cursor: not-allowed; }
+  .status {
+    margin-top: 16px; padding: 10px 12px; border-radius: 8px;
+    font-size: 13px; display: none; line-height: 1.4;
+  }
+  .status.show { display: block; }
+  .status.ok { background: #ECFDF5; color: #047857; border: 1px solid #A7F3D0; }
+  .status.err { background: #FEF2F2; color: #B91C1C; border: 1px solid #FECACA; }
+  .status.info { background: #EFF6FF; color: #1D4ED8; border: 1px solid #BFDBFE; }
+  .footer {
+    margin-top: auto; font-size: 11px; color: var(--muted); text-align: center;
+  }
+  .spinner {
+    display: inline-block; width: 13px; height: 13px;
+    border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
+    border-radius: 50%; animation: spin .7s linear infinite;
+    vertical-align: -2px; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">
+    <div class="dot">SMS</div>
+    <div>
+      <h1>Plataforma de Marketing SMS</h1>
+      <p>Cliente de escritorio</p>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <label for="server">Direccion del servidor</label>
+  <input id="server" type="text" placeholder="http://47.87.38.52" autocomplete="off" spellcheck="false" />
+  <div class="hint">
+    Introduce la direccion de tu servidor (IP o dominio). Ejemplos:<br />
+    <code>http://47.87.38.52</code> &nbsp;o&nbsp; <code>https://sms.tuempresa.com</code><br />
+    La conexion se comprueba automaticamente antes de guardar.
+  </div>
+
+  <div id="status" class="status"></div>
+
+  <div class="actions">
+    <button id="testBtn">Probar conexion</button>
+    <button id="saveBtn" class="primary">Guardar y continuar</button>
+  </div>
+
+  <div class="footer">
+    Los datos se almacenan en el servidor central. Esta aplicacion es un cliente de acceso.
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const input = $('server');
+  const testBtn = $('testBtn');
+  const saveBtn = $('saveBtn');
+  const status = $('status');
+
+  function setStatus(type, html) {
+    status.className = 'status show ' + type;
+    status.innerHTML = html;
+  }
+  function clearStatus() { status.className = 'status'; status.innerHTML = ''; }
+
+  function norm(u) {
+    u = (u || '').trim();
+    if (!u) return '';
+    if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
+    return u.replace(/\/+$/, '');
+  }
+
+  window.desktopAPI.getInitial((data) => {
+    if (data && data.url) input.value = data.url;
+    setTimeout(() => input.focus(), 50);
+  });
+
+  testBtn.addEventListener('click', async () => {
+    const url = norm(input.value);
+    if (!url) { setStatus('err', 'Introduce una direccion valida.'); return; }
+    testBtn.disabled = true;
+    setStatus('info', 'Probando conexion...');
+    const res = await window.desktopAPI.testServer(url);
+    testBtn.disabled = false;
+    if (res.ok) setStatus('ok', 'Conexion correcta. ' + res.message);
+    else setStatus('err', res.message);
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    const url = norm(input.value);
+    if (!url) { setStatus('err', 'Introduce una direccion valida.'); return; }
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<span class="spinner"></span>Conectando...';
+    const res = await window.desktopAPI.saveServer(url);
+    if (!res.ok) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Guardar y continuar';
+      setStatus('err', res.message);
+    }
+    // si ok, la ventana se cierra desde el proceso principal
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveBtn.click();
+  });
+</script>
+</body>
+</html>
