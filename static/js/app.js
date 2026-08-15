@@ -188,6 +188,25 @@ function showToast(message, type = 'info') {
 }
 
 // ============================================================
+// Mobile helpers
+// ============================================================
+function applyMobileTableLabels(root) {
+    if (window.innerWidth > 640) return;
+    const scope = root || document;
+    scope.querySelectorAll('table.data-table').forEach(table => {
+        const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+        if (!headers.length) return;
+        table.querySelectorAll('tbody tr').forEach(row => {
+            Array.from(row.children).forEach((cell, idx) => {
+                if (!cell.getAttribute('data-label') && headers[idx]) {
+                    cell.setAttribute('data-label', headers[idx]);
+                }
+            });
+        });
+    });
+}
+
+// ============================================================
 // Modal
 // ============================================================
 function showModal(title, bodyHtml) {
@@ -272,9 +291,20 @@ async function logout() {
     showLogin();
 }
 
-function toggleSidebar() {
-    document.getElementById('sidebar').classList.toggle('open');
+function toggleSidebar(forceClose) {
+    var sidebar = document.getElementById('sidebar');
+    var backdrop = document.getElementById('sidebar-backdrop');
+    var open = typeof forceClose === 'boolean' ? !forceClose : !sidebar.classList.contains('open');
+    sidebar.classList.toggle('open', open);
+    if (backdrop) backdrop.classList.toggle('show', open);
 }
+
+function closeSidebar() { toggleSidebar(true); }
+
+document.addEventListener('click', function(e) {
+    var backdrop = e.target.closest && e.target.closest('#sidebar-backdrop');
+    if (backdrop) closeSidebar();
+});
 
 // ============================================================
 // Router
@@ -285,6 +315,8 @@ function navigateTo(page) {
         el.classList.toggle('active', el.dataset.page === page);
     });
     document.getElementById('sidebar').classList.remove('open');
+    var backdrop = document.getElementById('sidebar-backdrop');
+    if (backdrop) backdrop.classList.remove('show');
     var content = document.getElementById('page-content');
     switch (page) {
         case 'dashboard': renderDashboard(content); break;
@@ -306,6 +338,8 @@ function navigateTo(page) {
             break;
         default: renderDashboard(content);
     }
+    closeSidebar();
+    setTimeout(function() { applyMobileTableLabels(content); }, 0);
 }
 
 window.addEventListener('hashchange', function() {
@@ -470,16 +504,97 @@ function showImportModal() {
             '</span>' +
             '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><polyline points="9 18 15 12 9 6"></polyline></svg>' +
             '</a>';
-        showModal('Importar Contactos (CSV)', templateBox + '<p class="text-secondary mb-4" style="font-size:13px;">El archivo CSV debe tener las columnas: <strong>name, phone, notes, remark</strong> (o <strong>nombre, telefono, notas, nota</strong>).</p><p class="text-secondary mb-4" style="font-size:12px;">Valores de <strong>remark</strong>: No contactable | Promesa de pago | Dispuesto a pagar sin fondos | No dispuesto a pagar</p><form id="import-form" onsubmit="handleImport(event)"><div class="form-group"><label>Grupo destino (opcional)</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Archivo CSV</label><label class="file-input-wrap"><input type="file" name="file" accept=".csv" required onchange="document.getElementById(\'import-file-name\').textContent = this.files.length ? this.files[0].name : \'Ningun archivo seleccionado\'"><span class="file-input-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Seleccionar archivo</span><span class="file-input-name" id="import-file-name">Ningun archivo seleccionado</span></label></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Importar</button></div></form>');
+        var deviceContactsBox = '';
+        if (isContactPickerSupported()) {
+            deviceContactsBox =
+                '<button type="button" onclick="importDeviceContacts()" ' +
+                'style="display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:12px;' +
+                'background:#ECFDF5;border:1px solid #A7F3D0;border-radius:10px;cursor:pointer;text-align:left;' +
+                'transition:background .15s ease;" onmouseover="this.style.background=\'#D1FAE5\'" onmouseout="this.style.background=\'#ECFDF5\'">' +
+                '<span style="display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;' +
+                'border-radius:8px;background:#10B981;color:#fff;flex-shrink:0;">' +
+                '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+                '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>' +
+                '</span>' +
+                '<span style="flex:1;line-height:1.3;">' +
+                '<span style="display:block;font-size:14px;font-weight:600;color:#065F46;">Importar contactos del telefono</span>' +
+                '<span style="display:block;font-size:12px;color:#047857;margin-top:2px;">Selecciona contactos de tu agenda</span>' +
+                '</span>' +
+                '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><polyline points="9 18 15 12 9 6"></polyline></svg>' +
+                '</button>';
+        }
+        showModal('Importar Contactos', deviceContactsBox + templateBox + '<p class="text-secondary mb-4" style="font-size:13px;">El archivo CSV debe tener las columnas: <strong>name, phone, notes, remark</strong> (o <strong>nombre, telefono, notas, nota</strong>).</p><p class="text-secondary mb-4" style="font-size:12px;">Valores de <strong>remark</strong>: No contactable | Promesa de pago | Dispuesto a pagar sin fondos | No dispuesto a pagar</p><form id="import-form" onsubmit="handleImport(event)"><div class="form-group"><label>Grupo destino (opcional)</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Archivo CSV</label><label class="file-input-wrap"><input type="file" name="file" accept=".csv" required onchange="document.getElementById(\'import-file-name\').textContent = this.files.length ? this.files[0].name : \'Ningun archivo seleccionado\'"><span class="file-input-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Seleccionar archivo</span><span class="file-input-name" id="import-file-name">Ningun archivo seleccionado</span></label></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Importar</button></div></form>');
     });
+}
+
+// ============================================================
+// Device contacts (Web Contact Picker / Capacitor native bridge)
+// ============================================================
+function isContactPickerSupported() {
+    return !!(
+        window.MobileNative ||
+        (navigator.contacts && navigator.contacts.select)
+    );
+}
+
+async function pickDeviceContacts() {
+    if (window.MobileNative && typeof window.MobileNative.getContacts === 'function') {
+        return await window.MobileNative.getContacts();
+    }
+    var props = ['name', 'tel'];
+    if (navigator.contacts && navigator.contacts.getProperties) {
+        var available = navigator.contacts.getProperties();
+        props = available.filter(function(p) { return ['name','tel'].indexOf(p) !== -1; });
+    }
+    var selected = await navigator.contacts.select(props, { multiple: true });
+    return selected.map(function(c) {
+        var name = Array.isArray(c.name) ? (c.name[0] || '') : (c.name || '');
+        var tels = Array.isArray(c.tel) ? c.tel : (c.tel ? [c.tel] : []);
+        var phone = (tels.find(function(t) {
+            return t && t.replace(/\D/g,'').length >= 7;
+        }) || tels[0] || '').replace(/[\s\-()]/g,'');
+        return { name: name, phone: phone, notes: '' };
+    }).filter(function(r) { return r.name && r.phone; });
+}
+async function importDeviceContacts() {
+    try {
+        var contacts = await pickDeviceContacts();
+        if (!contacts || !contacts.length) return;
+        var rows = contacts.map(function(c) {
+            var name = Array.isArray(c.name) ? (c.name[0] || '') : (c.name || '');
+            var tels = Array.isArray(c.phones) ? c.phones : (c.phone ? [c.phone] : []);
+            var phone = (tels.find(function(t) {
+                return String(t).replace(/\D/g,'').length >= 7;
+            }) || tels[0] || '').toString().replace(/[\s\-()]/g,'');
+            return {
+                name: String(name || c.displayName || phone).trim(),
+                phone: phone,
+                notes: c.notes || ''
+            };
+        }).filter(function(r) { return r.name && r.phone; });
+        if (!rows.length) { showToast('No se obtuvieron contactos con nombre y telefono validos', 'error'); return; }
+        var groupEl = document.getElementById('import-form') && document.getElementById('import-form').group_id;
+        var groupId = groupEl ? groupEl.value : '';
+        if (!confirm('Se importaran ' + rows.length + ' contacto(s) del telefono. Continuar?')) return;
+        var result = await api('/api/contacts/import-device', {
+            method: 'POST',
+            body: { contacts: rows, group_id: groupId || null, remark: 'Contacto del telefono' }
+        });
+        hideModal();
+        var created = result.created || 0;
+        var skipped = result.skipped || 0;
+        showToast(created + ' contacto(s) importado(s)' + (skipped ? ', ' + skipped + ' omitido(s)' : ''), created ? 'success' : 'warning');
+        renderContacts(document.getElementById('page-content'));
+    } catch (err) {
+        if (err && (err.name === 'SecurityError' || /denegad|cancel|cancelled/i.test(err.message || ''))) return;
+        showToast('No se pudo acceder a los contactos: ' + (err && err.message ? err.message : 'error'), 'error');
+    }
 }
 
 async function handleImport(event) {
     event.preventDefault();
     var form = event.target;
-    var formData = new FormData();
-    formData.append('file', form.file.files[0]);
-    formData.append('group_id', form.group_id.value || '');
+    var formData = new FormData(form);
     try {
         var data = await api('/api/contacts/import', { method: 'POST', body: formData });
         hideModal();

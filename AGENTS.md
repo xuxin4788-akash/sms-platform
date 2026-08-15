@@ -28,9 +28,17 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 │   └── nginx.conf         # Nginx reverse proxy config
 ├── static/
 │   ├── css/style.css      # Application styles
-│   └── js/app.js          # SPA frontend logic
+│   └── js/
+│       ├── app.js         # SPA frontend logic
+│       └── mobile.js      # Capacitor/Web Contact Picker native bridge
 ├── templates/
 │   └── index.html         # Main HTML template
+├── mobile/                # Capacitor Android project
+│   ├── capacitor.config.ts
+│   ├── package.json
+│   ├── scripts/sync-web.js
+│   ├── scripts/patch-android.py
+│   └── www/               # Generated web assets (not committed)
 └── instance/              # SQLite database directory (dev mode only)
     └── sms_platform.db    # Database file (auto-created)
 ```
@@ -41,6 +49,8 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 - **Run production (Gunicorn)**: `gunicorn -c gunicorn.conf.py app:app`
 - **Docker build**: `docker build -t sms-platform .`
 - **Docker run (full stack)**: `docker-compose up -d` (PostgreSQL + Gunicorn + Nginx)
+- **Sync Android web assets**: `cd mobile && pnpm install && pnpm run sync:web`
+- **Build Android APK**: set `SMS_SERVER_URL`, then `pnpm --dir mobile exec cap sync android && cd mobile/android && ./gradlew assembleDebug`
 
 ## API Endpoints
 | Method | Path | Auth | Description |
@@ -53,6 +63,7 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET/POST | /api/contacts | User | List/Create contacts (team: all, member: own) |
 | PUT/DELETE | /api/contacts/<id> | User | Update/Delete contact (team: all, member: own) |
 | POST | /api/contacts/import | User | Import CSV contacts |
+| POST | /api/contacts/import-device | User | Batch-import contacts selected from Android address book |
 | GET/POST | /api/groups | User | List/Create groups (team: all, member: own) |
 | PUT/DELETE | /api/groups/<id> | User | Update/Delete group (team: all, member: own) |
 | GET/POST | /api/templates | User | List/Create templates (shared across all users) |
@@ -125,3 +136,5 @@ docker-compose up -d
 - No build step required
 - Session-based auth with cookies
 - Responsive design (mobile + desktop)
+- Mobile CSS: drawer sidebar, card-style tables under 640px, bottom-sheet modals under 480px
+- Android packaging: Capacitor 6 loads the production site through `server.url`; `static/js/mobile.js` exposes `window.MobileNative.getContacts()` backed by `@capacitor-community/contacts`, with Web Contact Picker API fallback

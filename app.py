@@ -42,7 +42,13 @@ app.config['COMPRESS_MIMETYPES'] = ['text/html', 'text/css', 'text/xml', 'applic
 app.config['COMPRESS_LEVEL'] = 6
 app.config['COMPRESS_MIN_SIZE'] = 500
 
-CORS(app, supports_credentials=True)
+CORS(app, supports_credentials=True, origins=[
+    r"^https?://localhost(:\d+)?$",
+    r"^https?://127\.0\.0\.1(:\d+)?$",
+    r"^capacitor://localhost$",
+    r"^http://localhost$",
+    r"^https?://.*$",
+])
 
 # Ensure instance folder exists
 os.makedirs(app.instance_path, exist_ok=True)
@@ -2240,25 +2246,88 @@ def list_contacts():
 @app.route('/api/contacts', methods=['POST'])
 @login_required
 def create_contact():
-    data = request.get_json()
-    name = data.get('name', '').strip()
-    phone = data.get('phone', '').strip()
-    notes = data.get('notes', '').strip()
-    remark = data.get('remark', '').strip()
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    phone = (data.get('phone') or '').strip()
+    notes = (data.get('notes') or '').strip()
+    remark = (data.get('remark') or '').strip()
     group_id = data.get('group_id', None)
     if not name or not phone:
         return jsonify({'error': 'Nombre y telefono son requeridos'}), 400
+    db = get_db()
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    if group_id:
+        if user_role == 'team_member':
+            group = db.execute(
+                "SELECT id FROM contact_groups WHERE id=? AND (created_by=? OR created_by IS NULL)",
+                (int(group_id), user_id),
+            ).fetchone()
+        else:
+            group = db.execute("SELECT id FROM contact_groups WHERE id=?", (int(group_id),)).fetchone()
+        if not group:
+            group_id = None
+    db.execute(
+        "INSERT INTO contacts (name, phone, notes, remark, group_id, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+        (name, phone, notes, remark, group_id, session.get('user_id'))
+    )
+    db.commit()
+    return jsonify({'message': 'Contacto creado'}), 201
+
+
+@app.route('/api/contacts/import-device', methods=['POST'])
+@login_required
+def import_device_contacts():
+    """Bulk import contacts selected from the device address book."""
+    payload = request.get_json(silent=True) or {}
+    contacts = payload.get('contacts')
+    group_id = payload.get('group_id')
+
+    if not isinstance(contacts, list) or not contacts:
+        return jsonify({'error': 'No se recibieron contactos validos'}), 400
+    if len(contacts) > 2000:
+        return jsonify({'error': 'Maximo 2000 contactos por importacion'}), 400
+
     db = get_db()
     if group_id:
         group = db.execute("SELECT id FROM contact_groups WHERE id=?", (int(group_id),)).fetchone()
         if not group:
             group_id = None
-    db.execute(
-        "INSERT INTO contacts (name, phone, notes, remark, group_id) VALUES (?, ?, ?, ?, ?)",
-        (name, phone, notes, remark, group_id)
-    )
+
+    created = 0
+    skipped = 0
+    seen = set()
+    for item in contacts:
+        if not isinstance(item, dict):
+            skipped += 1
+            continue
+        name = (str(item.get('name') or '').strip())[:100]
+        phone = (str(item.get('phone') or '').strip())[:30]
+        notes = (str(item.get('notes') or '').strip())[:255]
+        if not name:
+            name = phone or 'Sin nombre'
+        if not phone:
+            skipped += 1
+            continue
+        key = phone.lstrip('+').replace(' ', '').replace('-', '')
+        if key in seen:
+            skipped += 1
+            continue
+        seen.add(key)
+        existing = db.execute(
+            "SELECT id FROM contacts WHERE REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', '') = ? LIMIT 1",
+            (key.lstrip('+'),)
+        ).fetchone()
+        if existing:
+            skipped += 1
+            continue
+        db.execute(
+            "INSERT INTO contacts (name, phone, notes, remark, group_id, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, phone, notes, payload.get('remark', 'Contacto del dispositivo'), group_id, session.get('user_id'))
+        )
+        created += 1
     db.commit()
-    return jsonify({'message': 'Contacto creado'}), 201
+    return jsonify({'message': 'Contactos importados', 'created': created, 'skipped': skipped}), 201
 
 @app.route('/api/contacts/<int:contact_id>', methods=['PUT'])
 @login_required

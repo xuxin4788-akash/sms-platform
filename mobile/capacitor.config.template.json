@@ -1,0 +1,16 @@
+{
+  "appId": "com.smsmarketing.app",
+  "appName": "SMS Marketing",
+  "webDir": "www",
+  "server": {
+    "cleartext": true,
+    "androidScheme": "http",
+    "url": "__SMS_SERVER_URL__"
+  },
+  "android": {
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "Contacts": {}
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "sms-marketing-mobile",
+  "version": "1.0.0",
+  "description": "SMS Marketing Android client",
+  "private": true,
+  "scripts": {
+    "config": "node scripts/write-capacitor-config.js",
+    "sync:web": "node scripts/sync-web.js",
+    "add:android": "pnpm exec cap add android",
+    "sync:android": "pnpm run config && pnpm exec cap sync android",
+    "build:android": "pnpm run sync:android && pnpm exec cap build android --no-open"
+  },
+  "dependencies": {
+    "@capacitor-community/contacts": "^6.1.1",
+    "@capacitor/android": "^6.2.1",
+    "@capacitor/app": "^6.0.3",
+    "@capacitor/core": "^6.2.1",
+    "@capacitor/preferences": "^6.0.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.1"
+  }
+}

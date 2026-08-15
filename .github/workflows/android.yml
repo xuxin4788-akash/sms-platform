@@ -1,0 +1,78 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: 'Server URL (e.g. http://47.87.38.52 or https://your-domain)'
+        required: false
+        default: 'http://47.87.38.52'
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - 'templates/**'
+      - 'static/**'
+      - '.github/workflows/android.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SMS_SERVER_URL: ${{ github.event.inputs.server_url || 'http://47.87.38.52' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: mobile/pnpm-lock.yaml
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Sync web assets into Capacitor
+        working-directory: mobile
+        run: pnpm run sync:web
+
+      - name: Write Capacitor config
+        working-directory: mobile
+        run: pnpm run config
+
+      - name: Add Android platform
+        working-directory: mobile
+        run: pnpm run add:android || true
+
+      - name: Patch Android manifest
+        working-directory: mobile
+        run: python3 scripts/patch-android.py
+
+      - name: Sync Capacitor (plugins + config)
+        working-directory: mobile
+        run: pnpm run sync:android
+
+      - name: Build debug APK
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sms-marketing-android-debug
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
