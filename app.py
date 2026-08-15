@@ -3410,82 +3410,116 @@ def get_unified_stats():
                 'last_activity': last_activity,
                 'rate': round((team_stats['sent'] / team_stats['total'] * 100), 1) if team_stats['total'] > 0 else 0
             }
-    # 3. All Teams stats (admin only)
+    # 3. All Teams stats (admin only).
+    #
+    # The page lists one row per "team unit": every team_admin becomes a team
+    # (the row aggregates that admin plus all members they created). The system
+    # admin itself is NOT a separate team -- any SMS the admin sends is counted
+    # under their own "Administrador" row in the detail table, so the summary
+    # cards always equal the sum of all rows below (including the admin row).
     all_teams_data = None
     all_teams_list = []
     if role == 'admin':
-        # Overall stats: only team users (team_admin + team_member),
-        # excluding the system admin so the summary matches the per-team breakdown.
-        overall = db.execute(f"""
-            SELECT
-                COUNT(DISTINCT u.id) as member_count,
-                COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
-                COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
-                COALESCE(COUNT(r.id), 0) as total
-            FROM users u
-            LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
-            WHERE u.role IN ('team_admin', 'team_member')
-        """, date_params).fetchone()
+        unit_price = get_sms_unit_price(db)
 
-        # Today's total SMS (team users only, same scope as the summary)
-        today_total_row = db.execute("""
-            SELECT COUNT(*) as cnt FROM sms_records
-            WHERE date(created_at) = date('now')
-              AND created_by IN (SELECT id FROM users WHERE role IN ('team_admin','team_member'))
-        """).fetchone()
-        today_total = today_total_row['cnt'] if today_total_row else 0
-
-        if overall:
-            all_teams_data = {
-                'member_count': overall['member_count'],
-                'total': overall['total'],
-                'sent': overall['sent'],
-                'failed': overall['failed'],
-                'today': today_total,
-                'rate': round((overall['sent'] / overall['total'] * 100), 1) if overall['total'] > 0 else 0
+        def _build_unit_row(name, label, user_ids, unit_role='team_admin'):
+            """Build one summary/detail row for a set of user ids."""
+            if not user_ids:
+                return {
+                    'unit_role': unit_role,
+                    'team_name': name, 'admin_name': name, 'team_admin': label,
+                    'admin_username': label, 'team_admin_username': label,
+                    'member_count': 0, 'total': 0, 'sent': 0, 'failed': 0,
+                    'today': 0, 'rate': 0,
+                    'total_cost': 0, 'sent_cost': 0, 'failed_cost': 0,
+                    'cost_total': 0, 'cost_sent': 0, 'cost_failed': 0,
+                }
+            placeholders = ','.join(['?'] * len(user_ids))
+            row = db.execute(f"""
+                SELECT
+                    COALESCE(SUM(CASE WHEN r.status='sent'   THEN 1 ELSE 0 END), 0) AS sent,
+                    COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) AS failed,
+                    COALESCE(COUNT(r.id), 0) AS total
+                FROM users u
+                LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
+                WHERE u.id IN ({placeholders})
+            """, list(date_params) + user_ids).fetchone()
+            t_total = row['total'] or 0
+            t_sent = row['sent'] or 0
+            t_failed = row['failed'] or 0
+            today_row = db.execute(f"""
+                SELECT COUNT(*) AS cnt FROM sms_records
+                WHERE date(created_at) = date('now')
+                  AND created_by IN ({placeholders})
+            """, user_ids).fetchone()
+            t_today = (today_row['cnt'] if today_row else 0) or 0
+            t_rate = round((t_sent / t_total * 100), 1) if t_total > 0 else 0
+            t_cost = round(t_total * unit_price, 4)
+            s_cost = round(t_sent * unit_price, 4)
+            f_cost = round(t_failed * unit_price, 4)
+            return {
+                'unit_role': unit_role,
+                'team_name': name,
+                'admin_name': name,
+                'admin_username': label,
+                'team_admin_username': label,
+                'team_admin': label,
+                'member_count': len(user_ids),
+                'total': t_total,
+                'sent': t_sent,
+                'failed': t_failed,
+                'today': t_today,
+                'rate': t_rate,
+                'total_cost': t_cost,
+                'sent_cost': s_cost,
+                'failed_cost': f_cost,
+                'cost_total': t_cost,
+                'cost_sent': s_cost,
+                'cost_failed': f_cost,
             }
 
-        # Per-team breakdown
-        team_rows = db.execute(f"""
-            SELECT
-                ta.id as team_admin_id,
-                ta.username as team_admin_username,
-                ta.full_name as team_admin_name,
-                COUNT(DISTINCT m.id) + 1 as member_count,
-                COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
-                COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
-                COALESCE(COUNT(r.id), 0) as total
-            FROM users ta
-            LEFT JOIN users m ON m.team_creator_id = ta.id
-            LEFT JOIN sms_records r ON (r.created_by = ta.id OR r.created_by = m.id) {date_filter_r}
-            WHERE ta.role = 'team_admin'
-            GROUP BY ta.id
-            ORDER BY total DESC
-        """, date_params).fetchall()
+        # (a) One row per team_admin (admin + their members).
+        team_admins = db.execute(
+            "SELECT id, username, full_name FROM users WHERE role='team_admin' ORDER BY id"
+        ).fetchall()
+        for ta in team_admins:
+            member_ids = [r['id'] for r in db.execute(
+                "SELECT id FROM users WHERE id = ? OR team_creator_id = ?",
+                (ta['id'], ta['id'])
+            ).fetchall()]
+            all_teams_list.append(_build_unit_row(
+                ta['full_name'] or ta['username'], ta['username'], member_ids
+            ))
 
-        for tr in team_rows:
-            team_total = tr['total'] or 0
-            team_sent = tr['sent'] or 0
-            team_failed = tr['failed'] or 0
-            team_rate = round((team_sent / team_total * 100), 1) if team_total > 0 else 0
-            # Get today's count for this team
-            team_today_row = db.execute("""
-                SELECT COUNT(*) as cnt FROM sms_records
-                WHERE created_by IN (
-                    SELECT id FROM users WHERE id = ? OR team_creator_id = ?
-                ) AND date(created_at) = date('now')
-            """, (tr['team_admin_id'], tr['team_admin_id'])).fetchone()
-            team_today = team_today_row['cnt'] if team_today_row else 0
-            all_teams_list.append({
-                'team_name': tr['team_admin_name'] or tr['team_admin_username'],
-                'team_admin': tr['team_admin_username'],
-                'member_count': tr['member_count'],
-                'total': team_total,
-                'sent': team_sent,
-                'failed': team_failed,
-                'today': team_today,
-                'rate': team_rate
-            })
+        # (b) System admin as its own team unit (only the admin itself).
+        admin_row = db.execute(
+            "SELECT id, username, full_name FROM users WHERE role='admin' ORDER BY id LIMIT 1"
+        ).fetchone()
+        if admin_row:
+            all_teams_list.append(_build_unit_row(
+                admin_row['full_name'] or 'Administrador',
+                admin_row['username'], [admin_row['id']]
+            ))
+
+        # Sort the combined list by total SMS desc so the biggest team is on top.
+        all_teams_list.sort(key=lambda x: x['total'], reverse=True)
+
+        # Summary cards = sum of every row above (teams + admin).
+        all_teams_data = {
+            'member_count': sum(t['member_count'] for t in all_teams_list),
+            'total': sum(t['total'] for t in all_teams_list),
+            'sent': sum(t['sent'] for t in all_teams_list),
+            'failed': sum(t['failed'] for t in all_teams_list),
+            'today': sum(t['today'] for t in all_teams_list),
+            'unit_price': unit_price,
+            'total_cost': round(sum(t['total_cost'] for t in all_teams_list), 4),
+        }
+        all_teams_data['rate'] = round(
+            (all_teams_data['sent'] / all_teams_data['total'] * 100), 1
+        ) if all_teams_data['total'] > 0 else 0
+        # The number of "teams" shown in the badge is the number of team_admin
+        # groups (the admin row is not counted as a team).
+        all_teams_data['team_count'] = len(team_admins)
 
     # Get users list for filter dropdown
     users_list = []
@@ -3513,15 +3547,8 @@ def get_unified_stats():
         my_team_data['sent_cost'] = calc_cost(my_team_data.get('sent'), unit_price)
         my_team_data['failed_cost'] = calc_cost(my_team_data.get('failed'), unit_price)
 
-    # Costes globales y por equipo (admin).
-    if all_teams_data:
-        all_teams_data['total_cost'] = calc_cost(all_teams_data.get('total'), unit_price)
-        all_teams_data['sent_cost'] = calc_cost(all_teams_data.get('sent'), unit_price)
-        all_teams_data['failed_cost'] = calc_cost(all_teams_data.get('failed'), unit_price)
-    for team in all_teams_list:
-        team['total_cost'] = calc_cost(team.get('total'), unit_price)
-        team['sent_cost'] = calc_cost(team.get('sent'), unit_price)
-        team['failed_cost'] = calc_cost(team.get('failed'), unit_price)
+    # Cost fields are computed inside _build_unit_row for all_teams_list and
+    # all_teams_data already includes the summed total_cost. Nothing extra to do.
 
     return jsonify({
         'my_account': my_account_data,
@@ -3557,34 +3584,22 @@ def export_teams_stats():
     if not OPENPYXL_AVAILABLE:
         return jsonify({'error': 'openpyxl no esta instalado en el servidor'}), 500
 
-    wb = Workbook()
-
-    # Resumen global
-    overall = db.execute(f"""
-        SELECT
-            COUNT(DISTINCT u.id) as member_count,
-            COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
-            COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
-            COALESCE(COUNT(r.id), 0) as total
-        FROM users u
-        LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
-    """, date_params).fetchone()
-
-    # Desglose por equipo
+    # Desglose por equipo (team_admin groups + admin as its own unit).
     team_rows = db.execute(f"""
         SELECT
-            ta.id as team_admin_id,
-            ta.username as team_admin_username,
-            ta.full_name as team_admin_name,
+            u.id as unit_id,
+            u.username as unit_username,
+            u.full_name as unit_name,
+            u.role as unit_role,
             COUNT(DISTINCT m.id) + 1 as member_count,
             COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
             COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
             COALESCE(COUNT(r.id), 0) as total
-        FROM users ta
-        LEFT JOIN users m ON m.team_creator_id = ta.id
-        LEFT JOIN sms_records r ON (r.created_by = ta.id OR r.created_by = m.id) {date_filter_r}
-        WHERE ta.role = 'team_admin'
-        GROUP BY ta.id
+        FROM users u
+        LEFT JOIN users m ON (u.role='team_admin' AND m.team_creator_id = u.id)
+        LEFT JOIN sms_records r ON (r.created_by = u.id OR r.created_by = m.id) {date_filter_r}
+        WHERE u.role IN ('team_admin','admin')
+        GROUP BY u.id
         ORDER BY total DESC
     """, date_params).fetchall()
 
@@ -3613,42 +3628,30 @@ def export_teams_stats():
         team_sent = tr['sent'] or 0
         team_failed = tr['failed'] or 0
         team_rate = round((team_sent / team_total * 100), 1) if team_total > 0 else 0
+        unit_id = tr['unit_id']
         today_row = db.execute(f"""
             SELECT COUNT(*) as cnt FROM sms_records
-            WHERE created_by IN (SELECT id FROM users WHERE id = ? OR team_creator_id = ?)
+            WHERE created_by IN (
+                SELECT id FROM users WHERE id = ?
+                UNION
+                SELECT id FROM users WHERE team_creator_id = ?
+            )
             AND date(created_at) = {today_expr}
-        """, (tr['team_admin_id'], tr['team_admin_id'])).fetchone()
+        """, (unit_id, unit_id)).fetchone()
         team_today = today_row['cnt'] if today_row else 0
+        if tr['unit_role'] == 'admin':
+            display_name = "Administrador"
+            label = "Cuenta admin"
+        else:
+            display_name = tr['unit_name'] or tr['unit_username']
+            label = tr['unit_username']
         ws.append([
-            tr['team_admin_name'] or tr['team_admin_username'],
-            tr['team_admin_username'],
-            tr['member_count'],
-            team_total,
-            team_sent,
-            team_failed,
-            calc_cost(team_total, unit_price),
-            team_today,
-            f"{team_rate}%",
+            display_name, label, tr['member_count'], team_total,
+            team_sent, team_failed, calc_cost(team_total, unit_price),
+            team_today, f"{team_rate}%",
             calc_cost(team_sent, unit_price),
-            calc_cost(team_failed, unit_price),
-            unit_price
+            calc_cost(team_failed, unit_price), unit_price
         ])
-
-    # Fila de totales
-    total_total = overall['total'] if overall else 0
-    total_sent = overall['sent'] if overall else 0
-    total_failed = overall['failed'] if overall else 0
-    total_members = overall['member_count'] if overall else 0
-    total_rate = round((total_sent / total_total * 100), 1) if total_total > 0 else 0
-    ws.append([
-        "TODOS LOS EQUIPOS", "", total_members, total_total, total_sent,
-        total_failed, calc_cost(total_total, unit_price), "", f"{total_rate}%",
-        calc_cost(total_sent, unit_price), calc_cost(total_failed, unit_price), unit_price
-    ])
-    total_fill = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="solid")
-    for col in range(1, len(headers) + 1):
-        ws.cell(row=ws.max_row, column=col).fill = total_fill
-        ws.cell(row=ws.max_row, column=col).font = Font(bold=True)
 
     widths = [22, 20, 12, 12, 12, 12, 12, 10, 10, 14, 14, 14]
     for i, w in enumerate(widths, 1):

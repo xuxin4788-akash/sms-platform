@@ -1867,7 +1867,6 @@ async function renderAllTeams(container) {
         if (dateTo) params.set('date_to', dateTo);
 
         var data = await api('/api/admin/unified-stats?' + params.toString());
-        var allTeams = data.all_teams || {};
         var allTeamsList = data.all_teams_list || [];
 
         function statCard(label, value, color) {
@@ -1877,20 +1876,16 @@ async function renderAllTeams(container) {
         var filterHtml = '<div class="page-header page-filter mb-4"><h1 style="font-size:22px;font-weight:700;">Todos los Equipos</h1><div class="filter-row filter-row-multi"><input type="date" id="stats-date-from" class="form-control" value="' + dateFrom + '"><span class="text-secondary filter-sep">a</span><input type="date" id="stats-date-to" class="form-control" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderAllTeams(document.getElementById(\'page-content\'))">Filtrar</button><button class="btn btn-secondary btn-sm" onclick="exportAllTeamsStats()">Exportar</button></div></div>';
 
         var html = filterHtml;
-        if (allTeams && allTeams.member_count !== undefined) {
-            var allRate = allTeams.total > 0 ? (allTeams.sent / allTeams.total * 100).toFixed(1) : '0.0';
-            var teamCount = allTeamsList ? allTeamsList.length : 0;
-            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen Global</h3><span class="badge header-badge" style="background:var(--primary);color:#fff;">' + teamCount + ' equipos</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Total Equipos', teamCount) + statCard('Total Miembros', allTeams.member_count || 0) + statCard('Total SMS', allTeams.total || 0) + statCard('Costo Total', formatMoney(allTeams.total || 0, data.unit_price), 'var(--primary)') + statCard('Enviados Hoy', allTeams.today || 0, 'var(--success)') + '</div>';
-
-            if (allTeamsList && allTeamsList.length > 0) {
-                var teamRows = allTeamsList.map(function(t) {
-                    var r = t.total > 0 ? (t.sent / t.total * 100).toFixed(1) : '0.0';
-                    var rateClass = r >= 90 ? 'badge-success' : r >= 70 ? 'badge-warning' : 'badge-danger';
-                    return '<tr><td><strong>' + escapeHtml(t.team_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.team_admin || '-') + '</small></td><td style="text-align:center;">' + t.member_count + '</td><td style="text-align:right;font-weight:600;">' + t.total + '</td><td style="text-align:right;color:var(--success);">' + t.sent + '</td><td style="text-align:right;color:var(--danger);">' + t.failed + '</td><td style="text-align:right;color:var(--primary);font-weight:600;">' + formatMoney(t.total || 0, data.unit_price) + '</td><td style="text-align:right;color:var(--primary);">' + (t.today || 0) + '</td><td style="text-align:right;"><span class="badge ' + rateClass + '">' + r + '%</span></td></tr>';
-                }).join('');
-                html += '<div class="table-container" style="margin-top:16px;"><table><thead><tr><th>Equipo</th><th style="text-align:center;">Miembros</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Hoy</th><th style="text-align:right;">Exito</th></tr></thead><tbody>' + teamRows + '</tbody></table></div>';
-            }
-            html += '</div></div>';
+        if (allTeamsList && allTeamsList.length > 0) {
+            var teamRows = allTeamsList.map(function(t) {
+                var r = t.total > 0 ? (t.sent / t.total * 100).toFixed(1) : '0.0';
+                var rateClass = r >= 90 ? 'badge-success' : r >= 70 ? 'badge-warning' : 'badge-danger';
+                var displayName = t.unit_role === 'admin' ? ('Administrador' + (state.user && state.user.username ? ' (' + state.user.username + ')' : '')) : (t.team_name || t.team_admin_username || 'Equipo');
+                var subName = t.unit_role === 'admin' ? 'Cuenta propia' : (t.team_admin_username || '-');
+                var nameCell = '<strong>' + escapeHtml(displayName) + '</strong><br><small class="text-secondary">' + escapeHtml(subName) + '</small>';
+                return '<tr><td>' + nameCell + '</td><td style="text-align:center;">' + t.member_count + '</td><td style="text-align:right;font-weight:600;">' + t.total + '</td><td style="text-align:right;color:var(--success);">' + t.sent + '</td><td style="text-align:right;color:var(--danger);">' + t.failed + '</td><td style="text-align:right;color:var(--primary);font-weight:600;">' + formatMoney(t.total || 0, data.unit_price) + '</td><td style="text-align:right;color:var(--primary);">' + (t.today || 0) + '</td><td style="text-align:right;"><span class="badge ' + rateClass + '">' + r + '%</span></td></tr>';
+            }).join('');
+            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Equipos</h3><span class="badge header-badge" style="background:var(--primary);color:#fff;">' + allTeamsList.length + ' equipos</span></div><div class="card-body"><div class="table-container"><table><thead><tr><th>Equipo</th><th style="text-align:center;">Miembros</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Hoy</th><th style="text-align:right;">Exito</th></tr></thead><tbody>' + teamRows + '</tbody></table></div></div></div>';
         } else {
             html += '<div class="card mb-4"><div class="card-body"><div class="empty-state"><h3>Sin datos</h3><p>No hay datos de equipos disponibles.</p></div></div></div>';
         }
