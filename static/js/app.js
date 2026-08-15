@@ -98,6 +98,34 @@ function formatMoney(value, unitPrice) {
     return formatCost((Number(value) || 0) * (isFinite(p) ? p : 0));
 }
 
+async function exportAllTeamsStats() {
+    try {
+        var params = new URLSearchParams();
+        var fromEl = document.getElementById('stats-date-from');
+        var toEl = document.getElementById('stats-date-to');
+        if (fromEl && fromEl.value) params.set('date_from', fromEl.value);
+        if (toEl && toEl.value) params.set('date_to', toEl.value);
+        var qs = params.toString();
+        var response = await fetch('/api/admin/export-teams' + (qs ? '?' + qs : ''), { credentials: 'include' });
+        if (!response.ok) {
+            var data = await response.json().catch(function() { return {}; });
+            throw new Error(data.error || 'Error al exportar');
+        }
+        var blob = await response.blob();
+        var url = window.URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'equipos_' + new Date().toISOString().slice(0,10) + '.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        showToast('Exportacion completada', 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
 function timeAgo(dateStr) {
     var d = parseAppDate(dateStr);
     if (!d) return '-';
@@ -1687,7 +1715,7 @@ async function renderAllTeams(container) {
             return '<div class="stat-card"><div class="stat-value" style="' + (color ? 'color:' + color : '') + '">' + value + '</div><div class="stat-label">' + label + '</div></div>';
         }
 
-        var filterHtml = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Todos los Equipos</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="stats-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="stats-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderAllTeams(document.getElementById(\'page-content\'))">Filtrar</button></div></div>';
+        var filterHtml = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Todos los Equipos</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="stats-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="stats-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderAllTeams(document.getElementById(\'page-content\'))">Filtrar</button><button class="btn btn-secondary btn-sm" onclick="exportAllTeamsStats()">Exportar</button></div></div>';
 
         var html = filterHtml;
         if (allTeams && allTeams.member_count !== undefined) {

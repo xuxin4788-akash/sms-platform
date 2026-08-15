@@ -10,10 +10,19 @@ import time
 import requests as http_requests
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, session, g, send_from_directory
+from flask import Flask, request, jsonify, render_template, session, g, send_from_directory, send_file
 from flask_cors import CORS
 from flask_compress import Compress
 from werkzeug.utils import secure_filename
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    OPENPYXL_AVAILABLE = True
+except ImportError:
+    Workbook = None
+    Font = PatternFill = Alignment = get_column_letter = None
+    OPENPYXL_AVAILABLE = False
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
@@ -1774,6 +1783,8 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
     """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
     wb = Workbook()
     ws = wb.active
     ws.title = 'Usuarios'
@@ -3343,6 +3354,143 @@ def get_unified_stats():
         'users': users_dicts,
         'unit_price': unit_price
     })
+
+@app.route('/api/admin/export-teams', methods=['GET'])
+@login_required
+def export_teams_stats():
+    """Exporta la estadistica por equipos a Excel (solo administrador)."""
+    if session.get('role') != 'admin':
+        return jsonify({'error': 'No autorizado'}), 403
+
+    db = get_db()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    is_pg = db.db_type == 'postgres'
+
+    date_filter_r = ''
+    date_params = []
+    if date_from:
+        date_filter_r += " AND date(r.created_at) >= ?"
+        date_params.append(date_from)
+    if date_to:
+        date_filter_r += " AND date(r.created_at) <= ?"
+        date_params.append(date_to)
+
+    unit_price = get_sms_unit_price(db)
+    if not OPENPYXL_AVAILABLE:
+        return jsonify({'error': 'openpyxl no esta instalado en el servidor'}), 500
+
+    wb = Workbook()
+
+    # Resumen global
+    overall = db.execute(f"""
+        SELECT
+            COUNT(DISTINCT u.id) as member_count,
+            COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
+            COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
+            COALESCE(COUNT(r.id), 0) as total
+        FROM users u
+        LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
+    """, date_params).fetchone()
+
+    # Desglose por equipo
+    team_rows = db.execute(f"""
+        SELECT
+            ta.id as team_admin_id,
+            ta.username as team_admin_username,
+            ta.full_name as team_admin_name,
+            COUNT(DISTINCT m.id) + 1 as member_count,
+            COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
+            COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
+            COALESCE(COUNT(r.id), 0) as total
+        FROM users ta
+        LEFT JOIN users m ON m.team_creator_id = ta.id
+        LEFT JOIN sms_records r ON (r.created_by = ta.id OR r.created_by = m.id) {date_filter_r}
+        WHERE ta.role = 'team_admin'
+        GROUP BY ta.id
+        ORDER BY total DESC
+    """, date_params).fetchall()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Equipos"
+
+    headers = [
+        "Equipo", "Administrador", "Miembros", "Total SMS",
+        "Enviados", "Fallidos", "Costo", "Hoy", "Exito %",
+        "Costo enviados", "Costo fallidos", "Precio unitario"
+    ]
+    ws.append(headers)
+    header_fill = PatternFill(start_color="2563EB", end_color="2563EB", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+    for col in range(1, len(headers) + 1):
+        c = ws.cell(row=1, column=col)
+        c.fill = header_fill
+        c.font = header_font
+        c.alignment = Alignment(horizontal="center")
+
+    today_expr = "date('now')" if not is_pg else "CURRENT_DATE"
+
+    for tr in team_rows:
+        team_total = tr['total'] or 0
+        team_sent = tr['sent'] or 0
+        team_failed = tr['failed'] or 0
+        team_rate = round((team_sent / team_total * 100), 1) if team_total > 0 else 0
+        today_row = db.execute(f"""
+            SELECT COUNT(*) as cnt FROM sms_records
+            WHERE created_by IN (SELECT id FROM users WHERE id = ? OR team_creator_id = ?)
+            AND date(created_at) = {today_expr}
+        """, (tr['team_admin_id'], tr['team_admin_id'])).fetchone()
+        team_today = today_row['cnt'] if today_row else 0
+        ws.append([
+            tr['team_admin_name'] or tr['team_admin_username'],
+            tr['team_admin_username'],
+            tr['member_count'],
+            team_total,
+            team_sent,
+            team_failed,
+            calc_cost(team_total, unit_price),
+            team_today,
+            f"{team_rate}%",
+            calc_cost(team_sent, unit_price),
+            calc_cost(team_failed, unit_price),
+            unit_price
+        ])
+
+    # Fila de totales
+    total_total = overall['total'] if overall else 0
+    total_sent = overall['sent'] if overall else 0
+    total_failed = overall['failed'] if overall else 0
+    total_members = overall['member_count'] if overall else 0
+    total_rate = round((total_sent / total_total * 100), 1) if total_total > 0 else 0
+    ws.append([
+        "TODOS LOS EQUIPOS", "", total_members, total_total, total_sent,
+        total_failed, calc_cost(total_total, unit_price), "", f"{total_rate}%",
+        calc_cost(total_sent, unit_price), calc_cost(total_failed, unit_price), unit_price
+    ])
+    total_fill = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="solid")
+    for col in range(1, len(headers) + 1):
+        ws.cell(row=ws.max_row, column=col).fill = total_fill
+        ws.cell(row=ws.max_row, column=col).font = Font(bold=True)
+
+    widths = [22, 20, 12, 12, 12, 12, 12, 10, 10, 14, 14, 14]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    period = ""
+    if date_from or date_to:
+        period = f"_{date_from or 'inicio'}_{date_to or 'fin'}"
+    filename = f"estadisticas_equipos{period}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
 
 @app.route('/api/admin/team-daily-stats', methods=['GET'])
 @login_required
