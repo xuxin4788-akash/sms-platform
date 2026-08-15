@@ -263,6 +263,12 @@ def init_db():
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
+            CREATE TABLE IF NOT EXISTS system_settings (
+                key VARCHAR(100) PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
             CREATE TABLE IF NOT EXISTS sms_api_configs (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(255) NOT NULL UNIQUE,
@@ -474,6 +480,12 @@ def init_db():
                 created_by INTEGER,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS system_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS sms_api_configs (
@@ -738,6 +750,55 @@ def generate_password(length=10):
         if (any(c.islower() for c in pwd) and any(c.isupper() for c in pwd)
                 and any(c.isdigit() for c in pwd)):
             return pwd
+
+# ---------- Configuracion de facturacion ----------
+# Coste por SMS enviado (se cobra por intento/envio, exitoso o fallido).
+BILLING_PRICE_KEY = 'sms_unit_price'
+# Precio por defecto si el administrador aun no lo configura.
+DEFAULT_SMS_UNIT_PRICE = 0.0
+
+def get_sms_unit_price(db=None):
+    """Devuelve el precio por SMS configurado por el administrador (float)."""
+    own = db is None
+    if own:
+        db = get_db()
+    try:
+        row = db.execute(
+            "SELECT value FROM system_settings WHERE key=?", (BILLING_PRICE_KEY,)
+        ).fetchone()
+        if row and row['value'] not in (None, ''):
+            return round(float(row['value']), 6)
+    except (ValueError, TypeError):
+        pass
+    return DEFAULT_SMS_UNIT_PRICE
+
+def set_sms_unit_price(price, db=None):
+    own = db is None
+    if own:
+        db = get_db()
+    is_pg = getattr(db, 'db_type', 'sqlite') == 'postgres'
+    ts = "CURRENT_TIMESTAMP" if is_pg else "datetime('now')"
+    if is_pg:
+        db.execute(
+            "INSERT INTO system_settings(key, value, updated_at) VALUES(%s, %s, CURRENT_TIMESTAMP) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP",
+            (BILLING_PRICE_KEY, str(price))
+        )
+    else:
+        db.execute(
+            "INSERT INTO system_settings(key, value, updated_at) VALUES(?, ?, datetime('now')) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime('now')",
+            (BILLING_PRICE_KEY, str(price))
+        )
+    if own:
+        db.commit()
+
+def calc_cost(count, price):
+    """Calcula el coste total redondeado a 2 decimales."""
+    try:
+        return round(float(count or 0) * float(price or 0), 2)
+    except (ValueError, TypeError):
+        return 0.0
 
 def login_required(f):
     @wraps(f)
@@ -2831,6 +2892,36 @@ def test_sms_config():
         db.commit()
         return jsonify({'error': f'Error de conexion (codigo {api_code}): {error_msg}'}), 400
 
+# ---------- Configuracion de facturacion ----------
+@app.route('/api/settings/billing', methods=['GET'])
+@login_required
+def get_billing_settings():
+    """Precio por SMS (configurado por el admin). Cualquier usuario puede leerlo."""
+    db = get_db()
+    return jsonify({'sms_unit_price': get_sms_unit_price(db)})
+
+@app.route('/api/settings/billing', methods=['PUT'])
+@admin_required
+def update_billing_settings():
+    """El administrador define el coste por SMS enviado (se cobra por intento)."""
+    db = get_db()
+    data = request.get_json() or {}
+    raw = data.get('sms_unit_price')
+    try:
+        price = float(raw)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'El precio por SMS debe ser un numero valido'}), 400
+    if price < 0:
+        return jsonify({'error': 'El precio por SMS no puede ser negativo'}), 400
+    price = round(price, 6)
+    set_sms_unit_price(price, db)
+    db.execute(
+        "INSERT INTO send_logs (action, details, status) VALUES (?, ?, ?)",
+        ('billing_update', json.dumps({'sms_unit_price': price}, ensure_ascii=False), 'success')
+    )
+    db.commit()
+    return jsonify({'message': 'Precio por SMS actualizado', 'sms_unit_price': price})
+
 @app.route('/api/admin/user-usage', methods=['GET'])
 @manager_required
 def get_user_usage():
@@ -3134,7 +3225,6 @@ def get_unified_stats():
                 'last_activity': last_activity,
                 'rate': round((team_stats['sent'] / team_stats['total'] * 100), 1) if team_stats['total'] > 0 else 0
             }
-
     # 3. All Teams stats (admin only)
     all_teams_data = None
     all_teams_list = []
@@ -3221,12 +3311,37 @@ def get_unified_stats():
     # Convert to dicts
     users_dicts = [{'id': u['id'], 'username': u['username'], 'full_name': u['full_name']} for u in users_list]
 
+    # Precio unitario configurado por el administrador (coste por SMS enviado).
+    unit_price = get_sms_unit_price(db)
+
+    # Costes a nivel de cuenta personal.
+    my_account_data['total_cost'] = calc_cost(my_account_data.get('total'), unit_price)
+    my_account_data['sent_cost'] = calc_cost(my_account_data.get('sent'), unit_price)
+    my_account_data['failed_cost'] = calc_cost(my_account_data.get('failed'), unit_price)
+
+    # Costes del equipo del team_admin.
+    if my_team_data:
+        my_team_data['total_cost'] = calc_cost(my_team_data.get('total'), unit_price)
+        my_team_data['sent_cost'] = calc_cost(my_team_data.get('sent'), unit_price)
+        my_team_data['failed_cost'] = calc_cost(my_team_data.get('failed'), unit_price)
+
+    # Costes globales y por equipo (admin).
+    if all_teams_data:
+        all_teams_data['total_cost'] = calc_cost(all_teams_data.get('total'), unit_price)
+        all_teams_data['sent_cost'] = calc_cost(all_teams_data.get('sent'), unit_price)
+        all_teams_data['failed_cost'] = calc_cost(all_teams_data.get('failed'), unit_price)
+    for team in all_teams_list:
+        team['total_cost'] = calc_cost(team.get('total'), unit_price)
+        team['sent_cost'] = calc_cost(team.get('sent'), unit_price)
+        team['failed_cost'] = calc_cost(team.get('failed'), unit_price)
+
     return jsonify({
         'my_account': my_account_data,
         'my_team': my_team_data,
         'all_teams': all_teams_data,
         'all_teams_list': all_teams_list,
-        'users': users_dicts
+        'users': users_dicts,
+        'unit_price': unit_price
     })
 
 @app.route('/api/admin/team-daily-stats', methods=['GET'])

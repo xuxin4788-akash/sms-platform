@@ -82,6 +82,22 @@ function formatDate(dateStr) {
     } catch { return dateStr; }
 }
 
+function formatCost(value) {
+    const n = Number(value);
+    const safe = isFinite(n) ? n : 0;
+    return safe.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatPrice(value) {
+    const n = Number(value);
+    return isFinite(n) ? n.toFixed(4) : '0.0000';
+}
+
+function formatMoney(value, unitPrice) {
+    const p = Number(unitPrice);
+    return formatCost((Number(value) || 0) * (isFinite(p) ? p : 0));
+}
+
 function timeAgo(dateStr) {
     var d = parseAppDate(dateStr);
     if (!d) return '-';
@@ -342,7 +358,7 @@ async function renderContacts(container) {
                 return '<tr><td><strong>' + escapeHtml(c.name) + '</strong></td><td>' + escapeHtml(c.phone) + '</td><td>' + (c.group_name ? '<span class="badge badge-blue">' + escapeHtml(c.group_name) + '</span>' : '<span class="text-secondary text-sm">Sin grupo</span>') + '</td><td>' + remarkBadge + '</td><td class="text-secondary text-sm">' + escapeHtml(c.notes || '-') + '</td><td><button class="btn btn-ghost btn-sm btn-icon" onclick="showEditContactModal(' + c.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button><button class="btn btn-ghost btn-sm btn-icon" onclick="deleteContact(' + c.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></td></tr>';
             }).join('');
 
-        container.innerHTML =
+        var initialHtml =
             '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Contactos</h1><div class="flex gap-2"><button class="btn btn-secondary btn-sm" onclick="showImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Importar CSV</button><button class="btn btn-primary btn-sm" onclick="showAddContactModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo Contacto</button></div></div>' +
             '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por nombre, telefono..." value="' + escapeHtml(state.contacts.search) + '" onkeyup="handleContactSearch(event)"><select onchange="handleContactGroupFilter(this.value)"><option value="">Todos los grupos</option>' + groupOptions + '</select>' + remarkSelect + '</div></div><div class="table-container"><table><thead><tr><th>Nombre</th><th>Telefono</th><th>Grupo</th><th>Nota</th><th>Observaciones</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contacts') + '</div>';
     } catch (err) {
@@ -1608,7 +1624,8 @@ async function renderMyAccount(container) {
         var filterHtml = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Mi Cuenta</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="stats-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="stats-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderMyAccount(document.getElementById(\'page-content\'))">Filtrar</button></div></div>';
 
         var myRate = myAcct.total > 0 ? (myAcct.sent / myAcct.total * 100).toFixed(1) : '0.0';
-        var html = filterHtml + '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen de Cuenta</h3><span class="badge badge-primary" style="margin-left:auto;">' + escapeHtml(state.user.username) + '</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);">' + statCard('Total SMS', myAcct.total || 0) + statCard('Enviados', myAcct.sent || 0, 'var(--success)') + statCard('Fallidos', myAcct.failed || 0, 'var(--danger)') + statCard('Tasa de Exito', myRate + '%') + '</div><table style="width:100%;font-size:13px;margin-top:16px;"><tbody><tr><td style="color:var(--text-secondary);">SMS Pendientes</td><td style="text-align:right;font-weight:600;">' + (myAcct.pending || 0) + '</td></tr></tbody></table></div></div>';
+        var billingNote = Number(data.unit_price) > 0 ? ('Costo por SMS: ' + formatPrice(data.unit_price)) : 'Costo por SMS no configurado';
+        var html = filterHtml + '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen de Cuenta</h3><span class="badge badge-primary" style="margin-left:auto;">' + escapeHtml(state.user.username) + '</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(5,1fr);">' + statCard('Total SMS', myAcct.total || 0) + statCard('Enviados', myAcct.sent || 0, 'var(--success)') + statCard('Fallidos', myAcct.failed || 0, 'var(--danger)') + statCard('Costo Total', formatMoney(myAcct.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', myRate + '%') + '</div><table style="width:100%;font-size:13px;margin-top:16px;"><tbody><tr><td style="color:var(--text-secondary);">SMS Pendientes</td><td style="text-align:right;font-weight:600;">' + (myAcct.pending || 0) + '</td></tr><tr><td style="color:var(--text-secondary);">Facturacion</td><td style="text-align:right;font-weight:600;">' + billingNote + ' (se cuenta cada SMS enviado, exitoso o fallido)</td></tr></tbody></table></div></div>';
 
         container.innerHTML = html;
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
@@ -1644,7 +1661,7 @@ async function renderMyTeam(container) {
         var html = filterHtml;
         if (myTeam && myTeam.member_count !== undefined) {
             var teamRate = myTeam.total > 0 ? (myTeam.sent / myTeam.total * 100).toFixed(1) : '0.0';
-            html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen del Equipo</h3><span class="badge badge-success" style="margin-left:auto;">' + (myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px;">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard('Enviados Hoy', myTeam.today || 0, 'var(--success)') + statCard('Tasa de Exito', teamRate + '%') + '</div><table style="width:100%;font-size:13px;"><tbody>' + statRow('SMS Pendientes', myTeam.pending || 0) + statRow('Limite Diario', myTeam.daily_limit > 0 ? myTeam.daily_limit + ' SMS/usuario' : 'Sin limite') + statRow('Ultima Actividad', myTeam.last_activity ? timeAgo(myTeam.last_activity) : 'Sin actividad') + '</tbody></table></div></div>';
+            html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen del Equipo</h3><span class="badge badge-success" style="margin-left:auto;">' + (myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:16px;">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard('Enviados Hoy', myTeam.today || 0, 'var(--success)') + statCard('Costo Total', formatMoney(myTeam.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', teamRate + '%') + '</div><table style="width:100%;font-size:13px;"><tbody>' + statRow('SMS Pendientes', myTeam.pending || 0) + statRow('Costo por SMS', Number(data.unit_price) > 0 ? formatPrice(data.unit_price) : 'No configurado') + statRow('Facturacion', 'Cada SMS enviado se factura (exito o fallo)') + statRow('Limite Diario', myTeam.daily_limit > 0 ? myTeam.daily_limit + ' SMS/usuario' : 'Sin limite') + statRow('Ultima Actividad', myTeam.last_activity ? timeAgo(myTeam.last_activity) : 'Sin actividad') + '</tbody></table></div></div>';
         } else {
             html += '<div class="card mb-4"><div class="card-body"><div class="empty-state"><h3>Sin datos de equipo</h3><p>No tienes acceso a datos de equipo.</p></div></div></div>';
         }
@@ -1676,15 +1693,15 @@ async function renderAllTeams(container) {
         if (allTeams && allTeams.member_count !== undefined) {
             var allRate = allTeams.total > 0 ? (allTeams.sent / allTeams.total * 100).toFixed(1) : '0.0';
             var teamCount = allTeamsList ? allTeamsList.length : 0;
-            html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen Global</h3><span class="badge" style="margin-left:auto;background:var(--primary);color:#fff;">' + teamCount + ' equipos</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px;">' + statCard('Total Equipos', teamCount) + statCard('Total Miembros', allTeams.member_count || 0) + statCard('Total SMS', allTeams.total || 0) + statCard('Enviados Hoy', allTeams.today || 0, 'var(--success)') + '</div>';
+            html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen Global</h3><span class="badge" style="margin-left:auto;background:var(--primary);color:#fff;">' + teamCount + ' equipos</span></div><div class="card-body"><div class="stats-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:16px;">' + statCard('Total Equipos', teamCount) + statCard('Total Miembros', allTeams.member_count || 0) + statCard('Total SMS', allTeams.total || 0) + statCard('Costo Total', formatMoney(allTeams.total || 0, data.unit_price), 'var(--primary)') + statCard('Enviados Hoy', allTeams.today || 0, 'var(--success)') + '</div>';
 
             if (allTeamsList && allTeamsList.length > 0) {
                 var teamRows = allTeamsList.map(function(t) {
                     var r = t.total > 0 ? (t.sent / t.total * 100).toFixed(1) : '0.0';
                     var rateClass = r >= 90 ? 'badge-success' : r >= 70 ? 'badge-warning' : 'badge-danger';
-                    return '<tr><td><strong>' + escapeHtml(t.team_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.team_admin || '-') + '</small></td><td style="text-align:center;">' + t.member_count + '</td><td style="text-align:right;font-weight:600;">' + t.total + '</td><td style="text-align:right;color:var(--success);">' + t.sent + '</td><td style="text-align:right;color:var(--danger);">' + t.failed + '</td><td style="text-align:right;color:var(--primary);">' + (t.today || 0) + '</td><td style="text-align:right;"><span class="badge ' + rateClass + '">' + r + '%</span></td></tr>';
+                    return '<tr><td><strong>' + escapeHtml(t.team_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.team_admin || '-') + '</small></td><td style="text-align:center;">' + t.member_count + '</td><td style="text-align:right;font-weight:600;">' + t.total + '</td><td style="text-align:right;color:var(--success);">' + t.sent + '</td><td style="text-align:right;color:var(--danger);">' + t.failed + '</td><td style="text-align:right;color:var(--primary);font-weight:600;">' + formatMoney(t.total || 0, data.unit_price) + '</td><td style="text-align:right;color:var(--primary);">' + (t.today || 0) + '</td><td style="text-align:right;"><span class="badge ' + rateClass + '">' + r + '%</span></td></tr>';
                 }).join('');
-                html += '<div class="table-container" style="margin-top:16px;"><table><thead><tr><th>Equipo</th><th style="text-align:center;">Miembros</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Hoy</th><th style="text-align:right;">Exito</th></tr></thead><tbody>' + teamRows + '</tbody></table></div>';
+                html += '<div class="table-container" style="margin-top:16px;"><table><thead><tr><th>Equipo</th><th style="text-align:center;">Miembros</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Hoy</th><th style="text-align:right;">Exito</th></tr></thead><tbody>' + teamRows + '</tbody></table></div>';
             }
             html += '</div></div>';
         } else {
@@ -2010,6 +2027,12 @@ async function renderConfig(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
         var results = await Promise.all([api('/api/config/sms'), api('/api/config/logs')]);
+        if (state.user.role === 'admin') {
+            try {
+                var billing = await api('/api/settings/billing');
+                results.billing = billing;
+            } catch (e) { results.billing = { sms_unit_price: 0 }; }
+        }
         var configs = results[0].configs || [];
         var logsData = results[1];
         var anyConfigured = configs.some(function(c) { return c.domain && c.spid && c.api_pwd; });
@@ -2023,8 +2046,17 @@ async function renderConfig(container) {
                 var isCfg = c.domain && c.spid && c.api_pwd;
                 return '<div class="card mb-3"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><h3 style="margin:0;">' + escapeHtml(c.name) + ' <span class="badge ' + (c.country === 'MX' ? 'badge-green' : 'badge-blue') + '">' + escapeHtml(c.country) + '</span></h3><span class="badge ' + (c.is_active ? 'badge-green' : 'badge-gray') + '" style="margin-left:auto;">' + (c.is_active ? 'Activa' : 'Inactiva') + '</span></div><div class="card-body"><form onsubmit="handleSaveApiConfig(event, ' + c.id + ')"><div class="form-grid"><div class="form-group"><label>Dominio del Servidor</label><input type="text" name="domain" value="' + escapeHtml(c.domain || '') + '" placeholder="api.infin8linx.com"></div><div class="form-group"><label>Cuenta de Interfaz (SPID)</label><input type="text" name="spid" value="' + escapeHtml(c.spid || '') + '" placeholder="Su cuenta de interfaz"></div><div class="form-group"><label>Contrasena API</label><input type="password" name="api_pwd" value="' + escapeHtml(c.api_pwd || '') + '" placeholder="Contrasena de la API"></div><div class="form-group"><label>Nombre del Remitente</label><input type="text" name="sender_name" value="' + escapeHtml(c.sender_name || '') + '" placeholder="MiEmpresa"></div></div><div class="flex gap-2 mt-3"><button type="submit" class="btn btn-primary">Guardar</button><button type="button" class="btn btn-secondary" onclick="testApiConfig(' + c.id + ')">Probar</button><button type="button" class="btn btn-danger btn-sm" onclick="deleteApiConfig(' + c.id + ')">Eliminar</button></div></form>' + (isCfg ? '<div class="mt-3"><span class="badge badge-green">API Configurada</span></div>' : '<div class="mt-3"><span class="badge badge-yellow">API No Configurada - Modo Simulacion</span></div>') + '</div></div>';
             }).join('') +
-            '<div class="card mb-4"><div class="card-body"><div style="padding:12px;background:#EFF6FF;border-radius:8px;font-size:13px;color:#1E293B;"><strong>Nota sobre codificacion:</strong> El espanol usa codificacion UCS2. Cada SMS individual admite hasta 70 caracteres. SMS largos se dividen en partes de 67 caracteres cada una.</div></div></div>' +
-            '<div class="card"><div class="card-header"><h2>Registros de Actividad</h2></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Accion</th><th>Detalles</th><th>Estado</th></tr></thead><tbody>' + logRows + '</tbody></table></div></div>';
+            '<div class="card mb-4"><div class="card-body"><div style="padding:12px;background:#EFF6FF;border-radius:8px;font-size:13px;color:#1E293B;"><strong>Nota sobre codificacion:</strong> El espanol usa codificacion UCS2. Cada SMS individual admite hasta 70 caracteres. SMS largos se dividen en partes de 67 caracteres cada una.</div></div></div>';
+
+        var html = initialHtml;
+
+        if (state.user.role === 'admin') {
+            var price = (results.billing && results.billing.sms_unit_price != null) ? results.billing.sms_unit_price : 0;
+            html += '<div class="card mb-4"><div class="card-header"><h2 style="margin:0;">Facturacion por SMS</h2></div><div class="card-body"><p class="text-secondary" style="margin-bottom:16px">Define el costo por SMS enviado. La facturacion se calcula por <strong>SMS enviado</strong> (se cuenta cada intento, exitoso o fallido). Se aplica a los costos mostrados en Mi Cuenta, Mi Equipo y Todos los Equipos.</p><div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;"><div style="flex:1;min-width:200px"><label class="form-label">Costo por SMS</label><input type="number" id="sms-unit-price" class="form-input" value="' + price + '" min="0" step="0.0001" placeholder="0.0000"></div><button class="btn btn-primary" onclick="saveBillingPrice()">Guardar Costo</button></div></div></div>';
+        }
+
+        html += '<div class="card"><div class="card-header"><h2>Registros de Actividad</h2></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Accion</th><th>Detalles</th><th>Estado</th></tr></thead><tbody>' + logRows + '</tbody></table></div></div>';
+        container.innerHTML = html;
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
@@ -2037,6 +2069,18 @@ async function handleSaveApiConfig(event, configId) {
 async function testApiConfig(configId) {
     try { var data = await api('/api/config/sms/test', { method: 'POST', body: { config_id: configId } }); showToast(data.message, 'success'); }
     catch (err) { showToast(err.message, 'error'); }
+}
+
+async function saveBillingPrice() {
+    var input = document.getElementById('sms-unit-price');
+    if (!input) return;
+    var val = parseFloat(input.value);
+    if (isNaN(val) || val < 0) { showToast('Ingrese un costo valido', 'error'); return; }
+    try {
+        await api('/api/settings/billing', { method: 'PUT', body: { sms_unit_price: val } });
+        showToast('Costo por SMS guardado', 'success');
+        renderConfig(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
 }
 
 async function showAddApiConfig() {
