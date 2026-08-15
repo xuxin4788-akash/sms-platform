@@ -395,12 +395,17 @@ def init_db():
             else:
                 cur.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Mexico', 'MX', '', '', '', '')")
             cur.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Colombia', 'CO', '', '', '', '')")
-        # Create default role_permissions
+        # Create default role_permissions. Seed team_admin/team_member with
+        # sensible defaults so fresh installs do not show a blank sidebar;
+        # admin permissions are hard-coded in /api/auth/me.
         cur.execute("SELECT role FROM role_permissions LIMIT 1")
         if cur.fetchone() is None:
-            cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('admin', '')")
-            cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_admin', '')")
-            cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_member', '')")
+            cur.execute("INSERT INTO role_permissions (role, permissions) VALUES (%s, %s)",
+                        ('admin', '[]'))
+            cur.execute("INSERT INTO role_permissions (role, permissions) VALUES (%s, %s)",
+                        ('team_admin', json.dumps(DEFAULT_ROLE_PERMISSIONS['team_admin'])))
+            cur.execute("INSERT INTO role_permissions (role, permissions) VALUES (%s, %s)",
+                        ('team_member', json.dumps(DEFAULT_ROLE_PERMISSIONS['team_member'])))
 
         # Performance indexes (idempotent). Critical for large teams:
         # the send_logs page and SMS records/statistics pages sort/filter by
@@ -541,12 +546,16 @@ def init_db():
         if cursor.fetchone() is None:
             db.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Mexico', 'MX', '', '', '', '')")
             db.execute("INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES ('Colombia', 'CO', '', '', '', '')")
-        # Create default role_permissions
+        # Create default role_permissions. Seed team_admin/team_member with
+        # sensible defaults so fresh installs do not show a blank sidebar.
         cursor = db.execute("SELECT role FROM role_permissions LIMIT 1")
         if cursor.fetchone() is None:
-            db.execute("INSERT INTO role_permissions (role, permissions) VALUES ('admin', '')")
-            db.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_admin', '')")
-            db.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_member', '')")
+            db.execute("INSERT INTO role_permissions (role, permissions) VALUES (?, ?)",
+                       ('admin', '[]'))
+            db.execute("INSERT INTO role_permissions (role, permissions) VALUES (?, ?)",
+                       ('team_admin', json.dumps(DEFAULT_ROLE_PERMISSIONS['team_admin'])))
+            db.execute("INSERT INTO role_permissions (role, permissions) VALUES (?, ?)",
+                       ('team_member', json.dumps(DEFAULT_ROLE_PERMISSIONS['team_member'])))
             db.commit()
         # Migration: add new columns if they don't exist
         try:
@@ -1199,27 +1208,50 @@ def get_me():
     db = get_db()
     # Get permissions from role_permissions table
     permissions = []
+    perms_configured = True
     try:
         role = g.user['role']
         if role == 'admin':
             # Admin always has all permissions
             permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'role-permissions']
+            perms_configured = True
         else:
             # Get permissions from role_permissions table
             row = db.execute("SELECT permissions FROM role_permissions WHERE role = %s" if db.db_type == 'postgresql' else "SELECT permissions FROM role_permissions WHERE role = ?", (role,)).fetchone()
+            raw_perms = None
+            has_explicit_config = False
             if row:
                 perms_raw = row['permissions']
                 if isinstance(perms_raw, (list, dict)):
                     # PostgreSQL JSON/JSONB column already parsed by psycopg2
-                    permissions = perms_raw if isinstance(perms_raw, list) else []
+                    raw_perms = perms_raw if isinstance(perms_raw, list) else []
+                    has_explicit_config = True
                 else:
                     perms_raw = perms_raw or ''
                     import json as _json
-                    permissions = _json.loads(perms_raw) if perms_raw else []
+                    try:
+                        raw_perms = _json.loads(perms_raw) if perms_raw else []
+                        # An empty string / no JSON means the role was never
+                        # configured; treat that as "use defaults". A literal
+                        # "[]" means an admin explicitly removed all pages.
+                        has_explicit_config = bool(perms_raw)
+                    except Exception:
+                        raw_perms = []
+            # Fall back to role defaults only when the row is missing or the
+            # stored value is empty (never configured). This prevents a blank
+            # sidebar for team_admin/team_member on fresh databases while still
+            # respecting an admin who explicitly sets permissions to [].
+            if has_explicit_config:
+                permissions = raw_perms or []
+                perms_configured = True
+            else:
+                permissions = list(DEFAULT_ROLE_PERMISSIONS.get(role, []))
+                perms_configured = False
     except Exception as e:
         import traceback
         app.logger.error(f"Error loading permissions for role {g.user.get('role')}: {e}\n{traceback.format_exc()}")
         permissions = []
+        perms_configured = False
 
     # Get team country code
     team_country = ''
@@ -1251,6 +1283,7 @@ def get_me():
             'role': g.user['role'],
             'role_label': ROLE_LABELS.get(g.user['role'], g.user['role']),
             'permissions': permissions,
+            'permsConfigured': perms_configured,
             'team_country_code': team_country_code
         }
     })
@@ -2080,6 +2113,22 @@ AVAILABLE_PAGES = [
     {'id': 'all-teams', 'label': 'Todos los Equipos', 'icon': 'bar-chart'},
     {'id': 'config', 'label': 'Configuracion API', 'icon': 'settings'},
 ]
+
+# Default permissions per role when the role_permissions table has no explicit
+# configuration (empty string or missing row). This avoids blank sidebars on
+# fresh installations or after role_permissions were reset. Admins always get
+# every page plus role-permissions management, handled explicitly in /api/auth/me.
+DEFAULT_ROLE_PERMISSIONS = {
+    'admin': [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions'],
+    'team_admin': [
+        'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
+        'content-search', 'users', 'my-account', 'my-team', 'all-teams',
+    ],
+    'team_member': [
+        'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
+        'my-account',
+    ],
+}
 
 @app.route('/api/role-permissions', methods=['GET'])
 @admin_required

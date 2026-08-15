@@ -271,6 +271,22 @@ function showMainApp() {
     // Permission-based navigation visibility
     var perms = state.user.permissions || [];
     var role = state.user.role;
+    // Fallback defaults: when the backend reports no permissions AND the
+    // session does not carry an explicit permsConfigured flag, show core
+    // menu items so the sidebar is never blank on fresh databases. The
+    // server applies the same fallback; an explicit [] set by an admin is
+    // respected because /api/auth/me includes permsConfigured=true.
+    if (role !== 'admin' && (!perms || perms.length === 0) &&
+        state.user.permsConfigured !== true) {
+        if (role === 'team_admin') {
+            perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
+                     'records', 'content-search', 'users', 'my-account',
+                     'my-team', 'all-teams'];
+        } else {
+            perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
+                     'records', 'my-account'];
+        }
+    }
     document.querySelectorAll('.nav-item').forEach(function(el) {
         var page = el.dataset.page;
         // Admin always sees everything
