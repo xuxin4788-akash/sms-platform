@@ -326,6 +326,8 @@ def init_db():
             cur.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT DEFAULT ''")
         if not pg_column_exists('users', 'last_login_at'):
             cur.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL")
+        if not pg_column_exists('users', 'session_token'):
+            cur.execute("ALTER TABLE users ADD COLUMN session_token TEXT DEFAULT ''")
         # Update role check constraint - drop old constraint, add new one
         try:
             cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
@@ -392,6 +394,7 @@ def init_db():
                 team_creator_id INTEGER,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 daily_limit INTEGER DEFAULT 0,
+                session_token TEXT DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (team_creator_id) REFERENCES users(id) ON DELETE SET NULL
@@ -635,6 +638,8 @@ def init_db():
                     db.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT DEFAULT ''")
                 if 'last_login_at' not in cols:
                     db.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL")
+                if 'session_token' not in cols:
+                    db.execute("ALTER TABLE users ADD COLUMN session_token TEXT DEFAULT ''")
             else:
                 cursor = db.execute("PRAGMA table_info(users)")
                 cols = [row[1] for row in cursor.fetchall()]
@@ -642,6 +647,8 @@ def init_db():
                     db.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT DEFAULT ''")
                 if 'last_login_at' not in cols:
                     db.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL")
+                if 'session_token' not in cols:
+                    db.execute("ALTER TABLE users ADD COLUMN session_token TEXT DEFAULT ''")
             db.commit()
         except Exception as e:
             print(f"Migration error: {e}")
@@ -669,11 +676,17 @@ def login_required(f):
     def decorated(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'No autorizado'}), 401
-        user = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
-        if not user:
+        user_row = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
+        if not user_row:
             session.clear()
             return jsonify({'error': 'Sesion expirada'}), 401
-        g.user = dict(user)
+        user = dict(user_row)
+        # Estrategia B: solo la ultima sesion iniciada es valida.
+        # Si el token de la cookie no coincide con el de la base, se invalida.
+        if not user.get('session_token') or session.get('session_token') != user.get('session_token'):
+            session.clear()
+            return jsonify({'error': 'Sesion invalidada. Se ha iniciado sesion en otro dispositivo.'}), 401
+        g.user = user
         return f(*args, **kwargs)
     return decorated
 
@@ -682,13 +695,17 @@ def admin_required(f):
     def decorated(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'No autorizado'}), 401
-        user = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
-        if not user:
+        user_row = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
+        if not user_row:
             session.clear()
             return jsonify({'error': 'Sesion expirada'}), 401
+        user = dict(user_row)
+        if not user.get('session_token') or session.get('session_token') != user.get('session_token'):
+            session.clear()
+            return jsonify({'error': 'Sesion invalidada. Se ha iniciado sesion en otro dispositivo.'}), 401
         if user['role'] != 'admin':
             return jsonify({'error': 'Permisos insuficientes'}), 403
-        g.user = dict(user)
+        g.user = user
         return f(*args, **kwargs)
     return decorated
 
@@ -698,13 +715,17 @@ def manager_required(f):
     def decorated(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'No autorizado'}), 401
-        user = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
-        if not user:
+        user_row = get_db().execute("SELECT * FROM users WHERE id=? AND is_active=1", (session['user_id'],)).fetchone()
+        if not user_row:
             session.clear()
             return jsonify({'error': 'Sesion expirada'}), 401
+        user = dict(user_row)
+        if not user.get('session_token') or session.get('session_token') != user.get('session_token'):
+            session.clear()
+            return jsonify({'error': 'Sesion invalidada. Se ha iniciado sesion en otro dispositivo.'}), 401
         if user['role'] not in ('admin', 'team_admin'):
             return jsonify({'error': 'Permisos insuficientes'}), 403
-        g.user = dict(user)
+        g.user = user
         return f(*args, **kwargs)
     return decorated
 
@@ -993,13 +1014,19 @@ def login():
         return jsonify({'error': 'Credenciales invalidas'}), 401
     if not user['is_active']:
         return jsonify({'error': 'Cuenta desactivada. Contacte al administrador.'}), 403
+
+    # Single-session policy: generate a new token for this login.
+    # Any older session with a different token is invalidated.
+    session_token = secrets.token_urlsafe(32)
     session['user_id'] = user['id']
     session['role'] = user['role']
-    # Record login IP
+    session['session_token'] = session_token
+
+    # Record login IP and rotate session token
     login_ip = request.headers.get('X-Forwarded-For', request.remote_addr or '').split(',')[0].strip()
     db.execute(
-        "UPDATE users SET last_login_ip=?, last_login_at=datetime('now') WHERE id=?",
-        (login_ip, user['id'])
+        "UPDATE users SET last_login_ip=?, last_login_at=datetime('now'), session_token=? WHERE id=?",
+        (login_ip, session_token, user['id'])
     )
     db.commit()
     return jsonify({
@@ -1245,6 +1272,8 @@ def update_user(user_id):
             return jsonify({'error': 'La contrasena debe tener minimo 6 caracteres'}), 400
         updates.append("password_hash=?")
         params.append(hash_password(password))
+        updates.append("session_token=?")
+        params.append(None)
     params.append(user_id)
     db.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", params)
     db.commit()
@@ -1559,7 +1588,7 @@ def bulk_update_passwords():
                 continue
 
         try:
-            db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(new_password), uid))
+            db.execute("UPDATE users SET password_hash=?, session_token=NULL WHERE id=?", (hash_password(new_password), uid))
             updated.append({'id': uid, 'username': row['username'], 'password': new_password})
             EXPORTABLE_PASSWORDS[int(uid)] = new_password
         except Exception as e:

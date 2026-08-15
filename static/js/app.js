@@ -17,6 +17,22 @@ const state = {
 // ============================================================
 // API Helper
 // ============================================================
+let isHandlingSessionExpiry = false;
+
+async function handleSessionExpiry(message) {
+    if (isHandlingSessionExpiry) return;
+    isHandlingSessionExpiry = true;
+    state.user = null;
+    showLogin();
+    const errorEl = document.getElementById('login-error');
+    if (errorEl) {
+        errorEl.textContent = message || 'Tu sesion ha expirado. Inicia sesion nuevamente.';
+        errorEl.style.display = 'block';
+    }
+    try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }); } catch (e) {}
+    isHandlingSessionExpiry = false;
+}
+
 async function api(url, options = {}) {
     const defaults = { headers: { 'Content-Type': 'application/json' }, credentials: 'include' };
     const config = { ...defaults, ...options };
@@ -24,12 +40,15 @@ async function api(url, options = {}) {
         config.body = JSON.stringify(config.body);
     }
     if (config.body instanceof FormData) { delete config.headers['Content-Type']; }
-    try {
-        const res = await fetch(url, config);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Error en la solicitud');
-        return data;
-    } catch (err) { throw err; }
+    const res = await fetch(url, config);
+    let data = {};
+    try { data = await res.json(); } catch (e) { data = {}; }
+    if (res.status === 401) {
+        handleSessionExpiry(data.error);
+        throw new Error(data.error || 'Sesion expirada');
+    }
+    if (!res.ok) throw new Error(data.error || 'Error en la solicitud');
+    return data;
 }
 
 // ============================================================
