@@ -294,16 +294,21 @@ async function logout() {
 function toggleSidebar(forceClose) {
     var sidebar = document.getElementById('sidebar');
     var backdrop = document.getElementById('sidebar-backdrop');
-    var open = typeof forceClose === 'boolean' ? !forceClose : !sidebar.classList.contains('open');
-    sidebar.classList.toggle('open', open);
-    if (backdrop) backdrop.classList.toggle('show', open);
+    if (!sidebar) return;
+    var willOpen = typeof forceClose === 'boolean' ? !forceClose : !sidebar.classList.contains('open');
+    sidebar.classList.toggle('open', willOpen);
+    if (backdrop) {
+        backdrop.classList.toggle('show', willOpen);
+        backdrop.style.display = willOpen ? 'block' : '';
+    }
+    document.body.classList.toggle('sidebar-open', willOpen);
 }
 
 function closeSidebar() { toggleSidebar(true); }
 
 document.addEventListener('click', function(e) {
     var backdrop = e.target.closest && e.target.closest('#sidebar-backdrop');
-    if (backdrop) closeSidebar();
+    if (backdrop) { e.preventDefault(); closeSidebar(); }
 });
 
 // ============================================================
@@ -316,7 +321,11 @@ function navigateTo(page) {
     });
     document.getElementById('sidebar').classList.remove('open');
     var backdrop = document.getElementById('sidebar-backdrop');
-    if (backdrop) backdrop.classList.remove('show');
+    if (backdrop) {
+        backdrop.classList.remove('show');
+        backdrop.style.display = '';
+    }
+    document.body.classList.remove('sidebar-open');
     var content = document.getElementById('page-content');
     switch (page) {
         case 'dashboard': renderDashboard(content); break;

@@ -865,6 +865,9 @@ table tbody tr:nth-child(even):hover {
 }
 
 /* Sidebar backdrop (mobile) */
+body.sidebar-open {
+    overflow: hidden;
+}
 .sidebar-backdrop {
     display: none;
     position: fixed;
@@ -872,10 +875,15 @@ table tbody tr:nth-child(even):hover {
     background: rgba(15, 23, 42, 0.45);
     z-index: 998;
     opacity: 0;
-    transition: opacity 0.2s ease;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+    -webkit-tap-highlight-color: transparent;
 }
 .sidebar-backdrop.show {
     opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
 }
 
 @media (max-width: 768px) {
@@ -885,10 +893,26 @@ table tbody tr:nth-child(even):hover {
 }
 
 @media (max-width: 768px) {
+    .main-layout {
+        position: relative;
+    }
+
     .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 82%;
+        max-width: 300px;
+        height: 100%;
+        height: 100dvh;
         transform: translateX(-100%);
         z-index: 1000;
         box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        transition: transform 0.25s ease;
+        will-change: transform;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
     }
 
     .sidebar.open {
@@ -897,10 +921,13 @@ table tbody tr:nth-child(even):hover {
 
     .main-content {
         margin-left: 0;
+        width: 100%;
     }
 
     .menu-toggle {
-        display: block;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
     .topbar {
