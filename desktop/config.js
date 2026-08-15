@@ -1,61 +1,103 @@
-const $ = (id) => document.getElementById(id);
-const input = $('server');
-const testBtn = $('testBtn');
-const saveBtn = $('saveBtn');
-const status = $('status');
-
-function setStatus(type, html) {
-  status.className = 'status show ' + type;
-  status.innerHTML = html;
-}
-function clearStatus() {
-  status.className = 'status';
-  status.innerHTML = '';
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-function norm(u) {
-  u = (u || '').trim();
-  if (!u) return '';
-  if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
-  return u.replace(/\/+$/, '');
+function normalizeUrl(input) {
+  let url = String(input || '').trim();
+  if (!url) return '';
+  if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+  return url.replace(/\/+$/, '');
 }
 
-window.desktopAPI.getInitial((data) => {
-  if (data && data.url) input.value = data.url;
-  setTimeout(() => input.focus(), 50);
-});
+document.addEventListener('DOMContentLoaded', () => {
+  const serverInput = document.getElementById('server');
+  const testBtn = document.getElementById('testBtn');
+  const saveBtn = document.getElementById('saveBtn');
+  const status = document.getElementById('status');
+  const footer = document.getElementById('footer');
 
-testBtn.addEventListener('click', async () => {
-  const url = norm(input.value);
-  if (!url) {
-    setStatus('err', 'Introduce una direccion valida.');
+  if (!window.desktopAPI) {
+    status.textContent = 'Error: la API de escritorio no esta disponible.';
+    status.className = 'status error';
+    testBtn.disabled = true;
+    saveBtn.disabled = true;
     return;
   }
-  testBtn.disabled = true;
-  setStatus('info', 'Probando conexion...');
-  const res = await window.desktopAPI.testServer(url);
-  testBtn.disabled = false;
-  if (res.ok) setStatus('ok', 'Conexion correcta. ' + res.message);
-  else setStatus('err', res.message);
-});
 
-saveBtn.addEventListener('click', async () => {
-  const url = norm(input.value);
-  if (!url) {
-    setStatus('err', 'Introduce una direccion valida.');
-    return;
-  }
-  saveBtn.disabled = true;
-  saveBtn.innerHTML = '<span class="spinner"></span>Conectando...';
-  const res = await window.desktopAPI.saveServer(url);
-  if (!res.ok) {
-    saveBtn.disabled = false;
-    saveBtn.textContent = 'Guardar y continuar';
-    setStatus('err', res.message);
-  }
-  // si ok, la ventana se cierra desde el proceso principal
-});
+  window.desktopAPI.getInitial().then((data) => {
+    if (data && data.url) serverInput.value = data.url;
+  }).catch(() => {});
 
-input.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') saveBtn.click();
+  testBtn.addEventListener('click', async () => {
+    const url = normalizeUrl(serverInput.value);
+    if (!url) {
+      status.textContent = 'Introduce la direccion del servidor.';
+      status.className = 'status error';
+      return;
+    }
+
+    status.textContent = 'Probando conexion...';
+    status.className = 'status testing';
+    testBtn.disabled = true;
+
+    try {
+      const result = await window.desktopAPI.testServer(url);
+      if (result && result.ok) {
+        status.textContent = result.message || 'Conexion correcta.';
+        status.className = 'status success';
+      } else {
+        status.textContent = (result && result.message) || 'No se pudo conectar.';
+        status.className = 'status error';
+      }
+    } catch (error) {
+      status.textContent = 'Error: ' + (error && error.message ? error.message : error);
+      status.className = 'status error';
+    } finally {
+      testBtn.disabled = false;
+    }
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    const rawUrl = String(serverInput.value || '').trim();
+    if (!rawUrl) {
+      status.textContent = 'Introduce la direccion del servidor.';
+      status.className = 'status error';
+      return;
+    }
+
+    const url = normalizeUrl(rawUrl);
+    serverInput.value = url;
+
+    status.textContent = 'Verificando conexion...';
+    status.className = 'status testing';
+    testBtn.disabled = true;
+    saveBtn.disabled = true;
+
+    try {
+      const result = await window.desktopAPI.testServer(url);
+      if (!result || !result.ok) {
+        throw new Error((result && result.message) || 'No se pudo conectar con el servidor.');
+      }
+
+      status.textContent = 'Guardando y abriendo la plataforma...';
+      const saved = await window.desktopAPI.saveServer(url);
+      if (!saved || !saved.ok) {
+        throw new Error((saved && saved.message) || 'No se pudo guardar la configuracion.');
+      }
+    } catch (error) {
+      status.textContent = error && error.message ? error.message : 'Error inesperado.';
+      status.className = 'status error';
+      testBtn.disabled = false;
+      saveBtn.disabled = false;
+    }
+  });
+
+  if (footer) {
+    footer.textContent = 'Los datos se almacenan en el servidor central. Esta aplicacion es un cliente de acceso.';
+  }
 });

@@ -100,10 +100,6 @@ function createConfigWindow(initialUrl) {
   configWindow.setMenuBarVisibility(false);
   configWindow.loadFile(path.join(__dirname, 'config.html'));
 
-  configWindow.webContents.on('did-finish-load', () => {
-    configWindow.webContents.send('config:initial', { url: initialUrl || '' });
-  });
-
   configWindow.on('closed', () => {
     configWindow = null;
   });
