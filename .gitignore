@@ -10,3 +10,6 @@ mobile/package-lock.json
 instance/
 
 mobile/capacitor.config.json
+
+# Preview files
+.preview
