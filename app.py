@@ -3363,7 +3363,8 @@ def get_unified_stats():
     all_teams_data = None
     all_teams_list = []
     if role == 'admin':
-        # Overall stats
+        # Overall stats: only team users (team_admin + team_member),
+        # excluding the system admin so the summary matches the per-team breakdown.
         overall = db.execute(f"""
             SELECT
                 COUNT(DISTINCT u.id) as member_count,
@@ -3372,12 +3373,14 @@ def get_unified_stats():
                 COALESCE(COUNT(r.id), 0) as total
             FROM users u
             LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
+            WHERE u.role IN ('team_admin', 'team_member')
         """, date_params).fetchone()
 
-        # Today's total SMS
+        # Today's total SMS (team users only, same scope as the summary)
         today_total_row = db.execute("""
             SELECT COUNT(*) as cnt FROM sms_records
             WHERE date(created_at) = date('now')
+              AND created_by IN (SELECT id FROM users WHERE role IN ('team_admin','team_member'))
         """).fetchone()
         today_total = today_total_row['cnt'] if today_total_row else 0
 
