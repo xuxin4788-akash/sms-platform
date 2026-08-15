@@ -3011,14 +3011,18 @@ def get_unified_stats():
     date_to = request.args.get('date_to', '')
     filter_user_id = request.args.get('user_id', '')  # Account filter
 
-    # Build date filter
+    # Build date filter. One version for single-table queries (no alias),
+    # one for JOIN queries using the sms_records alias `r`.
     date_filter = ''
+    date_filter_r = ''
     date_params = []
     if date_from:
         date_filter += ' AND date(created_at) >= ?'
+        date_filter_r += ' AND date(r.created_at) >= ?'
         date_params.append(date_from)
     if date_to:
         date_filter += ' AND date(created_at) <= ?'
+        date_filter_r += ' AND date(r.created_at) <= ?'
         date_params.append(date_to)
 
     # 1. My Account stats (with optional account filter)
@@ -3058,7 +3062,7 @@ def get_unified_stats():
                     COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
                     COALESCE(COUNT(r.id), 0) as total
                 FROM users u
-                LEFT JOIN sms_records r ON r.created_by = u.id {date_filter}
+                LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
                 WHERE u.id IN ({placeholders})
             """, member_ids + date_params).fetchone()
         else:
@@ -3071,7 +3075,7 @@ def get_unified_stats():
                     COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
                     COALESCE(COUNT(r.id), 0) as total
                 FROM users u
-                LEFT JOIN sms_records r ON r.created_by = u.id {date_filter}
+                LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
                 WHERE u.role IN ('team_admin', 'team_member')
             """, date_params).fetchone()
 
@@ -3084,9 +3088,9 @@ def get_unified_stats():
                 if admin_row:
                     team_name = f"Equipo de {admin_row['username']}"
                 # Get daily limit from team_config
-                limit_row = db.execute("SELECT daily_limit FROM team_config WHERE admin_id = ?", (user_id,)).fetchone()
-                if limit_row and limit_row['daily_limit']:
-                    daily_limit = limit_row['daily_limit']
+                limit_row = db.execute("SELECT daily_sms_limit FROM team_config WHERE team_admin_id = ?", (user_id,)).fetchone()
+                if limit_row and limit_row['daily_sms_limit']:
+                    daily_limit = limit_row['daily_sms_limit']
             elif role == 'admin':
                 team_name = 'Todos los Equipos'
 
@@ -3143,7 +3147,7 @@ def get_unified_stats():
                 COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
                 COALESCE(COUNT(r.id), 0) as total
             FROM users u
-            LEFT JOIN sms_records r ON r.created_by = u.id {date_filter}
+            LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
         """, date_params).fetchone()
 
         # Today's total SMS
@@ -3175,7 +3179,7 @@ def get_unified_stats():
                 COALESCE(COUNT(r.id), 0) as total
             FROM users ta
             LEFT JOIN users m ON m.team_creator_id = ta.id
-            LEFT JOIN sms_records r ON (r.created_by = ta.id OR r.created_by = m.id) {date_filter}
+            LEFT JOIN sms_records r ON (r.created_by = ta.id OR r.created_by = m.id) {date_filter_r}
             WHERE ta.role = 'team_admin'
             GROUP BY ta.id
             ORDER BY total DESC
