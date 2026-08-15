@@ -379,6 +379,31 @@ def init_db():
             cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_admin', '')")
             cur.execute("INSERT INTO role_permissions (role, permissions) VALUES ('team_member', '')")
 
+        # Performance indexes (idempotent). Critical for large teams:
+        # the send_logs page and SMS records/statistics pages sort/filter by
+        # these columns. Without indexes every request does a full table scan
+        # and sort, which degrades linearly with row count.
+        index_statements = [
+            # Activity logs (admin log page): ORDER BY created_at DESC
+            "CREATE INDEX IF NOT EXISTS idx_send_logs_created_at ON send_logs(created_at DESC)",
+            # SMS records: list filtering by owner + time range, plus scheduling
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_created_by ON sms_records(created_by)",
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_created_at ON sms_records(created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_status_created_at ON sms_records(status, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_status_sent_at ON sms_records(status, sent_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_scheduled ON sms_records(status, scheduled_at)",
+            # Contacts/groups lookups used by team-scoped queries
+            "CREATE INDEX IF NOT EXISTS idx_contacts_created_by ON contacts(created_by)",
+            "CREATE INDEX IF NOT EXISTS idx_contacts_group_id ON contacts(group_id)",
+        ]
+        for stmt in index_statements:
+            try:
+                cur.execute(stmt)
+            except Exception as e:
+                # A missing table/column shouldn't block startup.
+                print(f"Index warning: {e}")
+        conn.commit()
+
         cur.close()
         conn.close()
     else:
