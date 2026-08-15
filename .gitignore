@@ -18,3 +18,5 @@ mobile/capacitor.config.json
 
 __pycache__/
 *.pyc
+
+assets/
