@@ -13,3 +13,5 @@ mobile/capacitor.config.json
 
 # Preview files
 .preview
+.cozeproj/reduction
+.codegraph
