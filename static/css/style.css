@@ -906,17 +906,21 @@ body.sidebar-open {
         max-width: 300px;
         height: 100%;
         height: 100dvh;
-        transform: translateX(-100%);
+        transform: translate3d(-100%, 0, 0);
         z-index: 1000;
         box-shadow: 0 10px 30px rgba(0,0,0,0.2);
         transition: transform 0.25s ease;
         will-change: transform;
         -webkit-overflow-scrolling: touch;
         overscroll-behavior: contain;
+        -webkit-transform: translate3d(-100%, 0, 0);
     }
 
     .sidebar.open {
-        transform: translateX(0);
+        transform: translate3d(0, 0, 0);
+        -webkit-transform: translate3d(0, 0, 0);
+        display: flex !important;
+        visibility: visible !important;
     }
 
     .main-content {

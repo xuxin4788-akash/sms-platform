@@ -291,24 +291,49 @@ async function logout() {
     showLogin();
 }
 
-function toggleSidebar(forceClose) {
+function setSidebarOpen(open) {
     var sidebar = document.getElementById('sidebar');
     var backdrop = document.getElementById('sidebar-backdrop');
     if (!sidebar) return;
-    var willOpen = typeof forceClose === 'boolean' ? !forceClose : !sidebar.classList.contains('open');
-    sidebar.classList.toggle('open', willOpen);
+    sidebar.classList.toggle('open', !!open);
     if (backdrop) {
-        backdrop.classList.toggle('show', willOpen);
-        backdrop.style.display = willOpen ? 'block' : '';
+        backdrop.classList.toggle('show', !!open);
+        backdrop.style.display = open ? 'block' : '';
     }
-    document.body.classList.toggle('sidebar-open', willOpen);
+    document.body.classList.toggle('sidebar-open', !!open);
 }
 
-function closeSidebar() { toggleSidebar(true); }
+function toggleSidebar(forceClose) {
+    var sidebar = document.getElementById('sidebar');
+    if (!sidebar) return;
+    var isOpen = sidebar.classList.contains('open');
+    var willOpen = typeof forceClose === 'boolean' ? !forceClose : !isOpen;
+    setSidebarOpen(willOpen);
+}
+
+function closeSidebar() { setSidebarOpen(false); }
+function openSidebar() { setSidebarOpen(true); }
 
 document.addEventListener('click', function(e) {
-    var backdrop = e.target.closest && e.target.closest('#sidebar-backdrop');
-    if (backdrop) { e.preventDefault(); closeSidebar(); }
+    var target = e.target;
+    if (target && target.closest && target.closest('#sidebar-backdrop')) {
+        e.preventDefault();
+        closeSidebar();
+    }
+});
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeSidebar();
+});
+
+document.addEventListener('click', function(e) {
+    var target = e.target;
+    if (!target || !target.closest) return;
+    if (target.closest('.sidebar .nav-item')) closeSidebar();
+});
+
+window.addEventListener('resize', function() {
+    if (window.innerWidth > 768) closeSidebar();
 });
 
 // ============================================================
@@ -319,13 +344,7 @@ function navigateTo(page) {
     document.querySelectorAll('.nav-item').forEach(function(el) {
         el.classList.toggle('active', el.dataset.page === page);
     });
-    document.getElementById('sidebar').classList.remove('open');
-    var backdrop = document.getElementById('sidebar-backdrop');
-    if (backdrop) {
-        backdrop.classList.remove('show');
-        backdrop.style.display = '';
-    }
-    document.body.classList.remove('sidebar-open');
+    closeSidebar();
     var content = document.getElementById('page-content');
     switch (page) {
         case 'dashboard': renderDashboard(content); break;

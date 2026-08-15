@@ -1126,9 +1126,14 @@ def sms_api_check_charset(content, config=None):
 
 @app.after_request
 def add_cache_headers(response):
-    """Add cache headers for static files"""
-    if request.path.startswith('/static/'):
-        response.headers['Cache-Control'] = 'public, max-age=86400'  # 1 day
+    """Add cache headers: HTML must not be cached (so asset version bumps take effect);
+    static files under /static/ use 1 hour cache with ETag validation."""
+    if request.path == '/' or request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    elif request.path.startswith('/static/'):
+        response.headers['Cache-Control'] = 'public, max-age=3600'
     return response
 
 @app.route('/')
