@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -114,6 +114,33 @@ function createMainWindow(serverUrl) {
     mainWindow.focus();
     return;
   }
+
+  // El servidor envia X-Frame-Options: SAMEORIGIN (y posible CSP frame-ancestors)
+  // en todas las respuestas. Electron carga el sitio desde un origen distinto
+  // (el proceso renderer es file://), por lo que Chromium bloquea la carga.
+  // Eliminamos esas cabeceras solo en el cliente de escritorio para permitir
+  // que la ventana cargue el servidor central.
+  const ses = session.defaultSession;
+  if (!ses.__smsHeadersPatched) {
+    ses.webRequest.onHeadersReceived((details, callback) => {
+      const headers = details.responseHeaders || {};
+      delete headers['X-Frame-Options'];
+      delete headers['x-frame-options'];
+      if (headers['Content-Security-Policy']) {
+        headers['Content-Security-Policy'] = headers['Content-Security-Policy'].map(
+          (v) => v.replace(/frame-ancestors[^;]*/gi, '').replace(/;\s*;/g, ';').trim()
+        );
+      }
+      if (headers['content-security-policy']) {
+        headers['content-security-policy'] = headers['content-security-policy'].map(
+          (v) => v.replace(/frame-ancestors[^;]*/gi, '').replace(/;\s*;/g, ';').trim()
+        );
+      }
+      callback({ responseHeaders: headers });
+    });
+    ses.__smsHeadersPatched = true;
+  }
+
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -130,6 +157,32 @@ function createMainWindow(serverUrl) {
 
   mainWindow.loadURL(serverUrl + '/');
 
+  // Mostrar un error claro si la pagina no carga (servidor apagado, red, etc.)
+  mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
+    if (errorCode === -3) return; // ERR_ABORTED: normal al cerrar/recargar
+    const page = `<!DOCTYPE html><html><head><meta charset="utf-8">
+      <title>Servidor no disponible</title>
+      <style>
+        body{font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#f8fafc;color:#1e293b;
+          display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:24px}
+        .box{max-width:520px;text-align:center}
+        h1{font-size:22px;margin:0 0 8px}
+        p{color:#64748b;line-height:1.6;margin:8px 0;word-break:break-all}
+        code{background:#e2e8f0;padding:2px 6px;border-radius:4px}
+        button{margin-top:18px;background:#2563eb;color:#fff;border:none;padding:10px 22px;
+          border-radius:8px;font-size:14px;cursor:pointer}
+        button:hover{background:#1d4ed8}
+      </style></head>
+      <body><div class="box">
+        <h1>No se puede conectar con el servidor</h1>
+        <p>Direccion configurada: <code>${serverUrl}</code></p>
+        <p>Verifica que el servidor este en linea y que la direccion sea correcta.</p>
+        <p style="font-size:12px">Error: ${errorDescription} (${errorCode})</p>
+        <button onclick="location.reload()">Reintentar</button>
+      </div></body></html>`;
+    mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(page));
+  });
+
   // Abrir enlaces externos en el navegador del sistema
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) {
@@ -137,9 +190,6 @@ function createMainWindow(serverUrl) {
     }
     return { action: 'deny' };
   });
-
-  // Si el servidor se cae o no responde, Electron mostrara su pagina de error.
-  // Ofrecemos recargar con Ctrl+R desde el menu.
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -203,6 +253,12 @@ function buildMenu() {
 // --- IPC: probar conexion ---
 ipcMain.handle('server:test', async (_evt, rawUrl) => {
   return await testServer(rawUrl);
+});
+
+// --- IPC: obtener configuracion guardada ---
+ipcMain.handle('server:get', async () => {
+  const cfg = readConfig();
+  return { url: cfg.serverUrl || '' };
 });
 
 // --- IPC: guardar y continuar ---
