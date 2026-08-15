@@ -339,6 +339,8 @@ def init_db():
         # contacts migrations
         if not pg_column_exists('contacts', 'remark'):
             cur.execute("ALTER TABLE contacts ADD COLUMN remark TEXT DEFAULT ''")
+        if not pg_column_exists('contacts', 'created_by'):
+            cur.execute("ALTER TABLE contacts ADD COLUMN created_by INTEGER")
 
         # sms_records migrations
         if not pg_column_exists('sms_records', 'msgid'):
@@ -396,6 +398,12 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_contacts_created_by ON contacts(created_by)",
             "CREATE INDEX IF NOT EXISTS idx_contacts_group_id ON contacts(group_id)",
         ]
+        # Use a session-level advisory lock so that multiple Gunicorn workers
+        # booting at the same time do not race to create identically named
+        # indexes (CREATE INDEX IF NOT EXISTS is not concurrency-safe under
+        # concurrent DDL). Only one worker proceeds; others block here then
+        # find all indexes already present.
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext('sms_platform_init_indexes'))")
         for stmt in index_statements:
             try:
                 cur.execute(stmt)
