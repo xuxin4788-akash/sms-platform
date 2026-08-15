@@ -22,6 +22,7 @@
     "directories": {
       "output": "dist"
     },
+    "icon": "assets/icon.png",
     "files": [
       "main.js",
       "preload.js",

@@ -17,10 +17,13 @@ jobs:
       matrix:
         include:
           - os: windows-latest
+            builder: win
             artifact_name: sms-plataforma-win
           - os: macos-latest
+            builder: mac
             artifact_name: sms-plataforma-mac
           - os: ubuntu-latest
+            builder: linux
             artifact_name: sms-plataforma-linux
 
     steps:
@@ -38,13 +41,30 @@ jobs:
         working-directory: desktop
         run: npm ci || npm install
 
-      - name: Build
+      - name: Build Electron app
         working-directory: desktop
-        run: npx electron-builder --${{ matrix.os == 'windows-latest' && 'win' || matrix.os == 'macos-latest' && 'mac' || 'linux' }} --x64
+        shell: bash
+        run: npx electron-builder --${{ matrix.builder }} --x64 --publish never
+
+      - name: List build output
+        working-directory: desktop
+        shell: bash
+        run: |
+          echo "--- dist directory ---"
+          ls -la dist/ || { echo "ERROR: dist/ does not exist"; exit 1; }
+          echo "--- installer files ---"
+          find dist -maxdepth 2 -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.zip" -o -name "*.blockmap" -o -name "*.yml" \) -print
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: desktop/dist/*.{exe,dmg,AppImage,zip,blockmap,yml}
-          if-no-files-found: warn
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.dmg
+            desktop/dist/*.AppImage
+            desktop/dist/*.zip
+            desktop/dist/*.blockmap
+            desktop/dist/*.yml
+          if-no-files-found: error
+          retention-days: 30
