@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 import hashlib
 import secrets
@@ -964,6 +965,49 @@ def get_team_sms_config(user_id):
         return get_sms_api_config(tc['api_config_id'])
     return get_sms_api_config()
 
+def normalize_phone(phone, default_country='+52'):
+    """Normalize a phone number to E.164-ish form: +<digits>.
+
+    Rules:
+    - Strip spaces, dashes, parentheses.
+    - If it already starts with '+' or '00', keep it (00 converted to +).
+    - If it starts with the country code without '+' (e.g. '52155...' with 12+ digits),
+      prepend '+'.
+    - Otherwise prepend the default country (Mexico +52 by default), removing any
+      leading domestic '0'/'1' long-distance prefix.
+    Returns the normalized string; invalid (empty/too short) input returned as-is.
+    """
+    if not phone:
+        return phone
+    p = re.sub(r'[\s\-\(\)]+', '', str(phone))
+    if not p:
+        return phone
+    if p.startswith('+'):
+        digits = p[1:]
+        return '+' + digits
+    if p.startswith('00'):
+        return '+' + p[2:]
+    digits = p
+    # Already has country code (>=12 digits for MX 52+10, or generic 11+ with 52 prefix)
+    if len(digits) == 12 and digits.startswith('52'):
+        return '+' + digits
+    if len(digits) >= 11 and not digits.startswith('0') and not digits.startswith('1'):
+        # Looks like it already includes a country code
+        return '+' + digits
+    # Domestic number: strip leading 0/1 prefix for MX, prepend default country
+    if digits.startswith('0') or digits.startswith('1'):
+        digits = digits.lstrip('01') or digits
+    return default_country + digits
+
+
+def phone_to_das(phone):
+    """Convert a normalized phone (+52...) to the API 'das' format (0052...)."""
+    p = normalize_phone(phone)
+    if p.startswith('+'):
+        return '00' + p[1:]
+    return p
+
+
 def is_sms_api_configured(user_id=None):
     """Check if SMS API is properly configured."""
     if user_id:
@@ -988,8 +1032,8 @@ def sms_api_send_single(phone, content, config=None):
     pwd = generate_api_pwd(config['spid'], config['api_pwd'], timestamp)
     sm_hex = str_to_hex(content)
 
-    # Convert phone format: +52... -> 0052...
-    das = phone.replace('+', '00') if phone.startswith('+') else phone
+    # Normalize and convert phone format: +52... -> 0052...
+    das = phone_to_das(phone)
 
     params = {
         'spid': config['spid'],
@@ -1034,8 +1078,8 @@ def sms_api_send_batch(phone_content_pairs, config=None):
     parts = []
     for phone, content in phone_content_pairs:
         hex_content = str_to_hex(content)
-        # Convert phone format: +52... -> 0052...
-        das = phone.replace('+', '00') if phone.startswith('+') else phone
+        # Normalize and convert phone format: +52... -> 0052...
+        das = phone_to_das(phone)
         parts.append(f"{das},{hex_content}")
     dasm = '/'.join(parts)
 
@@ -2302,7 +2346,7 @@ def list_contacts():
 def create_contact():
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
-    phone = (data.get('phone') or '').strip()
+    phone = normalize_phone((data.get('phone') or '').strip())
     notes = (data.get('notes') or '').strip()
     remark = (data.get('remark') or '').strip()
     group_id = data.get('group_id', None)
@@ -2326,7 +2370,7 @@ def create_contact():
         (name, phone, notes, remark, group_id, session.get('user_id'))
     )
     db.commit()
-    return jsonify({'message': 'Contacto creado'}), 201
+    return jsonify({'message': 'Contacto creado', 'phone': phone}), 201
 
 
 @app.route('/api/contacts/import-device', methods=['POST'])
@@ -2356,7 +2400,7 @@ def import_device_contacts():
             skipped += 1
             continue
         name = (str(item.get('name') or '').strip())[:100]
-        phone = (str(item.get('phone') or '').strip())[:30]
+        phone = normalize_phone((str(item.get('phone') or '').strip())[:30])
         notes = (str(item.get('notes') or '').strip())[:255]
         if not name:
             name = phone or 'Sin nombre'
@@ -2475,7 +2519,7 @@ def import_contacts():
         errors = []
         for i, row in enumerate(reader, start=2):
             name = (row.get('name') or row.get('nombre') or '').strip()
-            phone = (row.get('phone') or row.get('telefono') or row.get('tel') or '').strip()
+            phone = normalize_phone((row.get('phone') or row.get('telefono') or row.get('tel') or '').strip())
             notes = (row.get('notes') or row.get('notas') or row.get('observaciones') or '').strip()
             remark = (row.get('remark') or row.get('nota') or '').strip()
             if not name or not phone:
@@ -2658,8 +2702,9 @@ def send_sms():
 
     if api_configured and len(phones) == 1:
         # Single SMS - use /sms/send endpoint
-        phone = phones[0].strip()
-        name = contact_names.get(phone, '')
+        raw_phone = phones[0].strip()
+        phone = normalize_phone(raw_phone)
+        name = contact_names.get(raw_phone, '') or contact_names.get(phone, '')
         msg = content.replace('{nombre}', name).replace('{telefono}', phone)
         result = sms_api_send_single(phone, msg)
         api_code = result.get('code', -1)
@@ -2686,11 +2731,12 @@ def send_sms():
         # Multiple SMS - use /sms/rsend endpoint (max 200 per batch)
         phone_content_pairs = []
         phone_name_map = {}
-        for phone in phones:
-            phone = phone.strip()
-            if not phone:
+        for raw in phones:
+            raw = (raw or '').strip()
+            if not raw:
                 continue
-            name = contact_names.get(phone, '')
+            phone = normalize_phone(raw)
+            name = contact_names.get(raw, '') or contact_names.get(phone, '')
             msg = content.replace('{nombre}', name).replace('{telefono}', phone)
             phone_content_pairs.append((phone, msg))
             phone_name_map[phone] = (name, msg)
@@ -2703,16 +2749,21 @@ def send_sms():
             api_msg = result.get('msg', '')
 
             if api_code == 0 and result.get('data'):
-                # Map results back to phones
+                # Map results back to phones. The API returns das in 0052... form,
+                # so build a lookup keyed by both das and the +52... normalized form.
                 result_map = {}
                 for item in result['data']:
-                    result_map[item.get('das', '')] = item
+                    das_val = str(item.get('das', '') or '').strip()
+                    if das_val:
+                        plus_form = ('+' + das_val[2:]) if das_val.startswith('00') else ('+' + das_val)
+                        result_map[das_val] = item
+                        result_map[plus_form] = item
 
                 for phone, msg in batch:
                     name = phone_name_map[phone][0]
-                    item = result_map.get(phone, {})
+                    item = result_map.get(phone) or result_map.get(phone_to_das(phone)) or {}
                     item_code = item.get('state', 0)
-                    msgid = item.get('msgid', '')
+                    msgid = str(item.get('msgid', '') or '')
                     if item_code == 0:
                         status = 'sent'
                     else:
