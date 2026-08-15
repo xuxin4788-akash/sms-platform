@@ -1,0 +1,50 @@
+name: Build Desktop Client
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: sms-plataforma-win
+          - os: macos-latest
+            artifact_name: sms-plataforma-mac
+          - os: ubuntu-latest
+            artifact_name: sms-plataforma-linux
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: npm ci || npm install
+
+      - name: Build
+        working-directory: desktop
+        run: npx electron-builder --${{ matrix.os == 'windows-latest' && 'win' || matrix.os == 'macos-latest' && 'mac' || 'linux' }} --x64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: desktop/dist/*.{exe,dmg,AppImage,zip,blockmap,yml}
+          if-no-files-found: warn
