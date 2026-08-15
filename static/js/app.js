@@ -2040,7 +2040,7 @@ async function renderConfig(container) {
             ? '<tr><td colspan="4" class="text-center text-secondary" style="padding:24px;">No hay registros</td></tr>'
             : logsData.logs.map(function(l) { return '<tr><td class="text-sm text-secondary">' + formatDate(l.created_at) + '</td><td>' + escapeHtml(l.action) + '</td><td class="text-sm">' + escapeHtml(l.details || '-') + '</td><td><span class="badge ' + (l.status === 'success' ? 'badge-green' : l.status === 'error' ? 'badge-red' : 'badge-gray') + '">' + escapeHtml(l.status) + '</span></td></tr>'; }).join('');
 
-        container.innerHTML =
+        var initialHtml =
             '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Configuraciones API SMS</h1><button class="btn btn-primary btn-sm" onclick="showAddApiConfig()">+ Nueva Configuracion</button></div>' +
             configs.map(function(c) {
                 var isCfg = c.domain && c.spid && c.api_pwd;
