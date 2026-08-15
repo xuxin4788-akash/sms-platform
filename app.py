@@ -520,6 +520,12 @@ def init_db():
             db.commit()
         except Exception:
             pass
+        # Migration: add created_by to contacts if missing (older SQLite DBs)
+        try:
+            db.execute("ALTER TABLE contacts ADD COLUMN created_by INTEGER")
+            db.commit()
+        except Exception:
+            pass
         # Migration: add team_creator_id to users if not exists
         try:
             db.execute("ALTER TABLE users ADD COLUMN team_creator_id INTEGER")
@@ -652,6 +658,35 @@ def init_db():
             db.commit()
         except Exception as e:
             print(f"Migration error: {e}")
+
+        # Performance indexes (idempotent). Critical for large teams:
+        # the send_logs page and SMS records/statistics pages sort/filter by
+        # these columns. Without indexes every request does a full table scan
+        # and sort, which degrades linearly with row count.
+        index_statements = [
+            # Activity logs (admin log page): ORDER BY created_at DESC
+            "CREATE INDEX IF NOT EXISTS idx_send_logs_created_at ON send_logs(created_at DESC)",
+            # SMS records: list filtering by owner + time range, plus scheduling
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_created_by ON sms_records(created_by)",
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_created_at ON sms_records(created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_status_created_at ON sms_records(status, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_status_sent_at ON sms_records(status, sent_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_scheduled ON sms_records(status, scheduled_at)",
+            # Contacts/groups lookups used by team-scoped queries
+            "CREATE INDEX IF NOT EXISTS idx_contacts_created_by ON contacts(created_by)",
+            "CREATE INDEX IF NOT EXISTS idx_contacts_group_id ON contacts(group_id)",
+        ]
+        for stmt in index_statements:
+            try:
+                db.execute(stmt)
+            except Exception as e:
+                # A missing table (e.g. older schema) shouldn't block startup;
+                # the CREATE TABLE statements above run before this.
+                print(f"Index warning: {e}")
+        try:
+            db.commit()
+        except Exception:
+            pass
 
         db.close()
 
