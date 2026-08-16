@@ -6,6 +6,9 @@ mobile/www/index.html
 mobile/www/static/
 mobile/package-lock.json
 
+# Prebuilt APK artifacts (sandbox/production builds are downloaded, not committed)
+*.apk
+
 # Local SQLite database
 instance/
 
