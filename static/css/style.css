@@ -1662,3 +1662,32 @@ html.embed, body.embed-body {
 .quick-sms-contact-item:hover,
 .quick-sms-contact-item.hover { background: var(--light-blue); }
 .quick-sms-contact-item .muted { color: var(--text-secondary); font-size: 13px; }
+
+/* Ensure Agregar button is always visible on small screens (APK) */
+.phone-add-row {
+    flex-wrap: nowrap !important;
+}
+.phone-add-row input {
+    min-width: 0;
+    flex: 1 1 auto;
+    width: 1% !important;
+}
+.phone-add-row .btn-sm {
+    flex: 0 0 auto !important;
+    min-width: 88px;
+    height: 44px;
+    padding: 0 16px !important;
+    font-size: 15px !important;
+    font-weight: 700;
+    border-radius: 8px;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    background: var(--primary) !important;
+    color: #fff !important;
+    border: none !important;
+    box-shadow: 0 2px 6px rgba(37,99,235,0.25);
+}
+.phone-add-row .btn-sm:active {
+    background: var(--primary-hover) !important;
+}
