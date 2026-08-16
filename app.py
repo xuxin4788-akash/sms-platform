@@ -2903,37 +2903,42 @@ def list_sms_records():
     date_to = request.args.get('date_to', '').strip()
     search = request.args.get('search', '').strip()
     offset = (page - 1) * per_page
-    query = "SELECT * FROM sms_records WHERE 1=1"
-    count_query = "SELECT COUNT(*) as total FROM sms_records WHERE 1=1"
+    query = ("SELECT r.*, u.username AS sender_username, u.full_name AS sender_full_name, "
+             "u.role AS sender_role FROM sms_records r "
+             "LEFT JOIN users u ON u.id = r.created_by WHERE 1=1")
+    count_query = "SELECT COUNT(*) as total FROM sms_records r WHERE 1=1"
     params = []
     # Role-based scope filtering
     if g.user['role'] == 'team_member':
-        query += " AND created_by = ?"
+        query += " AND r.created_by = ?"
         count_query += " AND created_by = ?"
         params.append(g.user['id'])
     elif g.user['role'] == 'team_admin':
-        query += " AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)"
+        query += " AND r.created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)"
         count_query += " AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)"
         params.extend([g.user['id'], g.user['id']])
     # admin sees all
     if status:
-        query += " AND status = ?"
+        query += " AND r.status = ?"
         count_query += " AND status = ?"
         params.append(status)
     if date_from:
-        query += " AND created_at >= ?"
+        query += " AND r.created_at >= ?"
         count_query += " AND created_at >= ?"
         params.append(date_from)
     if date_to:
-        query += " AND created_at <= ?"
+        query += " AND r.created_at <= ?"
         count_query += " AND created_at <= ?"
         params.append(date_to + ' 23:59:59')
     if search:
-        query += " AND (phone LIKE ? OR contact_name LIKE ? OR content LIKE ?)"
+        query += " AND (r.phone LIKE ? OR r.contact_name LIKE ? OR r.content LIKE ? OR u.username LIKE ?)"
         count_query += " AND (phone LIKE ? OR contact_name LIKE ? OR content LIKE ?)"
-        params.extend([f'%{search}%'] * 3)
-    total = db.execute(count_query, params).fetchone()['total']
-    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        count_params = params + [f'%{search}%'] * 3
+        params.extend([f'%{search}%'] * 4)
+    else:
+        count_params = list(params)
+    total = db.execute(count_query, count_params).fetchone()['total']
+    query += " ORDER BY r.created_at DESC LIMIT ? OFFSET ?"
     params.extend([per_page, offset])
     records = db.execute(query, params).fetchall()
     return jsonify({
