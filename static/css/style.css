@@ -1617,3 +1617,21 @@ html.embed, body.embed-body {
 }
 .embed-err { color: #EF4444; font-size: 13px; min-height: 18px; }
 .w-full { width: 100%; }
+
+/* Quick SMS in-app sheet */
+.quick-sms-overlay { z-index: 1100; }
+.quick-sms-sheet { max-width: 520px; width: 100%; }
+.quick-sms-recipient { display: flex; gap: 8px; }
+.quick-sms-recipient input { flex: 1; }
+.quick-sms-contact-list {
+    margin-top: 8px; border: 1px solid var(--border); border-radius: 8px;
+    background: #fff; max-height: 220px; overflow-y: auto;
+}
+.quick-sms-contact-item {
+    padding: 10px 12px; display: flex; justify-content: space-between;
+    cursor: pointer; font-size: 14px; border-bottom: 1px solid #F1F5F9; gap: 12px;
+}
+.quick-sms-contact-item:last-child { border-bottom: none; }
+.quick-sms-contact-item:hover,
+.quick-sms-contact-item.hover { background: var(--light-blue); }
+.quick-sms-contact-item .muted { color: var(--text-secondary); font-size: 13px; }

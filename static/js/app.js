@@ -2475,7 +2475,8 @@ function pickQuickContact(phone, name) {
     if (results) results.innerHTML = '';
 }
 
-function quickAddManual() {
+function quickAddManual(ev) {
+    if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
     const input = document.getElementById('quick-phone-input');
     if (!input) return;
     const val = input.value.trim();
@@ -2485,6 +2486,8 @@ function quickAddManual() {
     input.value = '';
     const results = document.getElementById('quick-contact-results');
     if (results) results.innerHTML = '';
+    // Keep focus for rapid entry
+    setTimeout(() => input.focus(), 0);
 }
 
 async function submitQuickSend() {
@@ -2571,13 +2574,14 @@ function renderQuickSendEmbed() {
             '</div>' +
             '<div class="embed-body-inner">' +
                 '<div class="embed-user">' + escapeHtml(state.user.full_name || state.user.username) + '</div>' +
-                '<label class="embed-field">Buscar contacto o escribir número' +
+                '<form class="embed-field" onsubmit="quickAddManual(event)" autocomplete="off">' +
+                    '<label for="quick-phone-input" style="margin-bottom:6px;">Buscar contacto o escribir número</label>' +
                     '<div class="embed-input-row">' +
-                        '<input id="quick-phone-input" type="text" list="embed-contact-list" placeholder="Nombre o teléfono (Enter para añadir)" oninput="onQuickPhoneInput()" onkeydown="onQuickPhoneKey(event)" autocomplete="off">' +
+                        '<input id="quick-phone-input" name="phone" type="tel" inputmode="tel" enterkeyhint="done" list="embed-contact-list" placeholder="Nombre o teléfono (pulsa ✓ para añadir)" oninput="onQuickPhoneInput()" onkeydown="onQuickPhoneKey(event)" autocomplete="off" autocapitalize="off" spellcheck="false">' +
                         '<datalist id="embed-contact-list"></datalist>' +
-                        '<button type="button" class="btn btn-secondary" onclick="quickAddManual()">Añadir</button>' +
+                        '<button type="submit" class="btn btn-secondary">Añadir</button>' +
                     '</div>' +
-                '</label>' +
+                '</form>' +
                 '<ul id="quick-contact-results" class="quick-results"></ul>' +
                 '<div class="chip-row" id="quick-phone-chips"></div>' +
                 '<label class="embed-field">Mensaje' +
@@ -2639,6 +2643,196 @@ async function refreshBubbleToggle() {
         btn.className = running ? 'btn btn-danger' : 'btn btn-primary';
     } catch (e) {}
 }
+
+// ============================================================
+// In-app quick SMS sheet (FAB #quick-sms-fab)
+// ============================================================
+let qsRecipients = [];
+let qsContacts = [];
+
+function openQuickSms(prefillPhone) {
+    qsRecipients = [];
+    qsContacts = [];
+    if (prefillPhone) qsRecipients.push(prefillPhone);
+    const overlay = document.getElementById('quick-sms-overlay');
+    if (!overlay) return;
+    overlay.style.display = 'flex';
+    renderQsRecipients();
+    renderQsContactList();
+    updateQuickSmsCount();
+    const phoneInput = document.getElementById('quick-sms-phone');
+    if (phoneInput) {
+        phoneInput.value = '';
+        setTimeout(() => phoneInput.focus(), 200);
+    }
+}
+
+function closeQuickSms(ev) {
+    if (ev && ev.target && ev.target.closest('.quick-sms-sheet')) return;
+    const overlay = document.getElementById('quick-sms-overlay');
+    if (overlay) overlay.style.display = 'none';
+    document.getElementById('quick-sms-contact-list').style.display = 'none';
+    document.getElementById('quick-sms-content').value = '';
+    qsRecipients = [];
+    qsContacts = [];
+}
+
+function renderQsRecipients() {
+    const wrap = document.getElementById('quick-sms-chips');
+    if (!wrap) return;
+    if (qsRecipients.length === 0) {
+        wrap.innerHTML = '<span class="muted" style="font-size:12px;color:var(--text-secondary)">Sin destinatarios — escribe un número y pulsa ✓</span>';
+        return;
+    }
+    wrap.innerHTML = qsRecipients.map((p, i) =>
+        `<span class="chip">${escapeHtml(p)}<button type="button" onclick="removeQsRecipient(${i})" aria-label="Quitar">×</button></span>`
+    ).join('');
+}
+
+function removeQsRecipient(i) {
+    qsRecipients.splice(i, 1);
+    renderQsRecipients();
+}
+
+function onQsPhoneInput() {
+    const input = document.getElementById('quick-sms-phone');
+    const list = document.getElementById('quick-sms-contact-list');
+    if (!input || !list) return;
+    const q = input.value.trim();
+    if (q.length < 2) { list.style.display = 'none'; return; }
+    api(`/api/contacts?search=${encodeURIComponent(q)}&page=1&per_page=20`).then(data => {
+        qsContacts = (data && data.contacts) || [];
+        if (!qsContacts.length) { list.style.display = 'none'; return; }
+        list.innerHTML = qsContacts.map((c, i) =>
+            `<div class="quick-sms-contact-item" onclick="pickQsContactIndex(${i})">
+                <strong>${escapeHtml(c.name || '(Sin nombre)')}</strong>
+                <span class="muted">${escapeHtml(c.phone)}</span>
+            </div>`
+        ).join('');
+        list.style.display = 'block';
+    }).catch(() => { list.style.display = 'none'; });
+}
+
+function renderQsContactList() {
+    const list = document.getElementById('quick-sms-contact-list');
+    if (list) list.style.display = 'none';
+}
+
+function pickQsContactIndex(i) {
+    const c = qsContacts[i];
+    if (!c) return;
+    if (!qsRecipients.includes(c.phone)) qsRecipients.push(c.phone);
+    renderQsRecipients();
+    const input = document.getElementById('quick-sms-phone');
+    if (input) input.value = '';
+    const list = document.getElementById('quick-sms-contact-list');
+    if (list) list.style.display = 'none';
+    if (input) setTimeout(() => input.focus(), 0);
+}
+
+function pickQuickSmsContact() {
+    const input = document.getElementById('quick-sms-phone');
+    if (input) input.focus();
+}
+
+function onQsPhoneKey(ev) {
+    const input = document.getElementById('quick-sms-phone');
+    if (!input) return;
+    const list = document.getElementById('quick-sms-contact-list');
+    if (ev.key === 'ArrowDown' && list && qsContacts.length) {
+        ev.preventDefault();
+        const items = list.querySelectorAll('.quick-sms-contact-item');
+        if (items.length) items[0].focus && items[0].classList.add('hover');
+        return;
+    }
+    if (ev.key === 'Enter') {
+        ev.preventDefault();
+        // Prefer a highlighted contact if one is selected
+        const hovered = list && list.querySelector('.quick-sms-contact-item.hover');
+        if (hovered) { hovered.click(); return; }
+        // If exactly one matching contact shown, pick it
+        if (list && qsContacts.length === 1 && list.style.display !== 'none') {
+            pickQsContactIndex(0);
+            return;
+        }
+        addQsTypedPhone();
+    }
+}
+
+function addQsTypedPhone() {
+    const input = document.getElementById('quick-sms-phone');
+    if (!input) return;
+    const val = input.value.trim();
+    if (!val) return;
+    val.split(/[;,]/).map(s => s.trim()).filter(Boolean).forEach(raw => {
+        // Basic normalization: if 10 digits, prefix +52 (Mexico default)
+        let p = raw;
+        if (/^\d{10}$/.test(p.replace(/\s|-/g, ''))) p = '+52' + p.replace(/\s|-/g, '');
+        if (!qsRecipients.includes(p)) qsRecipients.push(p);
+    });
+    renderQsRecipients();
+    input.value = '';
+    const list = document.getElementById('quick-sms-contact-list');
+    if (list) list.style.display = 'none';
+    setTimeout(() => input.focus(), 0);
+}
+
+function updateQuickSmsCount() {
+    const ta = document.getElementById('quick-sms-content');
+    const cc = document.getElementById('quick-sms-chars');
+    if (!ta || !cc) return;
+    cc.textContent = ta.value.length;
+}
+
+async function submitQuickSms() {
+    const ta = document.getElementById('quick-sms-content');
+    const content = (ta.value || '').trim();
+    const errBox = document.getElementById('quick-sms-error');
+    errBox.style.display = 'none';
+    if (qsRecipients.length === 0) {
+        errBox.textContent = 'Añade al menos un número de teléfono';
+        errBox.style.display = 'block';
+        return;
+    }
+    if (!content) {
+        errBox.textContent = 'Escribe el mensaje';
+        errBox.style.display = 'block';
+        return;
+    }
+    const sendBtn = document.getElementById('quick-sms-send');
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Enviando...';
+    try {
+        const result = await api('/api/sms/send', {
+            method: 'POST',
+            body: { phones: qsRecipients, content, contact_names: {} },
+        });
+        const successCount = (result.results || []).filter(r => r.success).length;
+        const failCount = (result.results || []).length - successCount;
+        showToast(`Enviado: ${successCount} exitoso(s)${failCount ? `, ${failCount} fallido(s)` : ''}`, failCount ? 'warning' : 'success');
+        closeQuickSms();
+        if (typeof loadSmsData === 'function' && (location.hash || '').includes('records')) loadSmsData();
+    } catch (e) {
+        errBox.textContent = e.message || 'Error al enviar';
+        errBox.style.display = 'block';
+    } finally {
+        sendBtn.disabled = false;
+        sendBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Enviar';
+    }
+}
+
+// Bind once DOM ready
+document.addEventListener('DOMContentLoaded', () => {
+    const phone = document.getElementById('quick-sms-phone');
+    if (phone) {
+        phone.addEventListener('input', onQsPhoneInput);
+        phone.addEventListener('keydown', onQsPhoneKey);
+    }
+    // ESC closes the sheet
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeQuickSms();
+    });
+});
 
 // ============================================================
 // Initialize
