@@ -2304,6 +2304,42 @@ def update_permissions(user_id):
 # Contacts API
 # ============================================================
 
+def _contact_visible_where(alias: str = "c") -> tuple[str, list]:
+    """Return (WHERE clause fragment, params) for contacts visible to current user.
+
+    admin          -> all contacts
+    team_admin     -> own + team members' contacts
+    team_member    -> own contacts only
+    """
+    uid = session.get('user_id')
+    role = session.get('role')
+    if role == 'admin':
+        return "1=1", []
+    if role == 'team_admin':
+        return f"({alias}.created_by = ? OR {alias}.created_by IN (SELECT id FROM users WHERE team_creator_id = ?))", [uid, uid]
+    return f"{alias}.created_by = ?", [uid]
+
+
+def _can_manage_contact(contact: sqlite3.Row | None) -> bool:
+    """Whether the current user is allowed to edit/delete the given contact."""
+    if contact is None:
+        return False
+    role = session.get('role')
+    if role == 'admin':
+        return True
+    owner = contact['created_by']
+    if role == 'team_admin':
+        return owner == session['user_id'] or owner in _team_member_ids(session['user_id'])
+    return owner == session['user_id']
+
+
+def _team_member_ids(team_admin_id: int) -> list[int]:
+    db = get_db()
+    return [r['id'] for r in db.execute(
+        "SELECT id FROM users WHERE team_creator_id=?", (team_admin_id,)
+    ).fetchall()]
+
+
 @app.route('/api/contacts', methods=['GET'])
 @login_required
 def list_contacts():
@@ -2313,9 +2349,13 @@ def list_contacts():
     search = request.args.get('search', '').strip()
     group_id = request.args.get('group_id', '', type=str)
     offset = (page - 1) * per_page
-    query = "SELECT c.*, cg.name as group_name FROM contacts c LEFT JOIN contact_groups cg ON c.group_id = cg.id WHERE 1=1"
-    count_query = "SELECT COUNT(*) as total FROM contacts c LEFT JOIN contact_groups cg ON c.group_id = cg.id WHERE 1=1"
-    params = []
+
+    where, scope_params = _contact_visible_where("c")
+    query = ("SELECT c.*, cg.name as group_name FROM contacts c "
+             "LEFT JOIN contact_groups cg ON c.group_id = cg.id WHERE " + where)
+    count_query = ("SELECT COUNT(*) as total FROM contacts c "
+                   "LEFT JOIN contact_groups cg ON c.group_id = cg.id WHERE " + where)
+    params = list(scope_params)
     if search:
         query += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.notes LIKE ?)"
         count_query += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.notes LIKE ?)"
@@ -2435,8 +2475,13 @@ def update_contact(contact_id):
     contact = db.execute("SELECT * FROM contacts WHERE id=?", (contact_id,)).fetchone()
     if not contact:
         return jsonify({'error': 'Contacto no encontrado'}), 404
+    if not _can_manage_contact(contact):
+        return jsonify({'error': 'No autorizado: solo puedes editar tus contactos o los de tu equipo'}), 403
     name = data.get('name', contact['name'])
-    phone = data.get('phone', contact['phone'])
+    raw_phone = data.get('phone', contact['phone'])
+    phone = normalize_phone(raw_phone) if raw_phone else contact['phone']
+    if not phone:
+        return jsonify({'error': 'Teléfono inválido'}), 400
     notes = data.get('notes', contact['notes'])
     remark = data.get('remark', contact['remark'])
     group_id = data.get('group_id', contact['group_id'])
@@ -2454,6 +2499,8 @@ def delete_contact(contact_id):
     contact = db.execute("SELECT * FROM contacts WHERE id=?", (contact_id,)).fetchone()
     if not contact:
         return jsonify({'error': 'Contacto no encontrado'}), 404
+    if not _can_manage_contact(contact):
+        return jsonify({'error': 'No autorizado: solo puedes eliminar tus contactos o los de tu equipo'}), 403
     db.execute("DELETE FROM contacts WHERE id=?", (contact_id,))
     db.commit()
     return jsonify({'message': 'Contacto eliminado'})
