@@ -2341,6 +2341,142 @@ async function saveDailyLimit() {
 }
 
 // ============================================================
+// Floating Action Button - Quick SMS
+// ============================================================
+let quickSendPhones = [];
+
+function isFabVisible() {
+    if (!currentUser) return false;
+    if (!currentUser.permissions) return true;
+    return currentUser.permissions.includes('send');
+}
+
+function updateFabVisibility() {
+    const fab = document.getElementById('fab-quick-send');
+    if (!fab) return;
+    // Hide when a modal is already open, or on login page
+    const anyModalOpen = document.querySelector('.modal.show');
+    fab.classList.toggle('hidden', !isFabVisible() || !!anyModalOpen);
+}
+
+function openQuickSend(prefillPhone) {
+    if (!isFabVisible()) return;
+    const modal = document.getElementById('quick-send-modal');
+    if (!modal) return;
+    quickSendPhones = [];
+    if (prefillPhone) quickSendPhones.push(prefillPhone);
+    renderQuickSend();
+    modal.classList.add('show');
+    setTimeout(() => {
+        const input = document.getElementById('quick-phone-input');
+        if (input) input.focus();
+    }, 200);
+}
+
+function closeQuickSend() {
+    const modal = document.getElementById('quick-send-modal');
+    if (modal) modal.classList.remove('show');
+}
+
+function renderQuickSend() {
+    const chips = document.getElementById('quick-phone-chips');
+    if (chips) {
+        chips.innerHTML = quickSendPhones.length
+            ? quickSendPhones.map((p, i) => `<span class="chip">${escapeHtml(p)}<button onclick="removeQuickPhone(${i})" aria-label="Quitar">×</button></span>`).join('')
+            : '<span class="muted" style="font-size:12px;color:var(--text-secondary)">Sin números seleccionados</span>';
+    }
+    const count = document.getElementById('quick-count');
+    if (count) count.textContent = quickSendPhones.length;
+}
+
+function addQuickPhone(phone) {
+    const cleaned = String(phone || '').trim();
+    if (!cleaned) return;
+    if (!quickSendPhones.includes(cleaned)) quickSendPhones.push(cleaned);
+    renderQuickSend();
+}
+
+function removeQuickPhone(idx) {
+    quickSendPhones.splice(idx, 1);
+    renderQuickSend();
+}
+
+async function onQuickPhoneInput() {
+    const input = document.getElementById('quick-phone-input');
+    const results = document.getElementById('quick-contact-results');
+    if (!input || !results) return;
+    const q = input.value.trim();
+    if (q.length < 2) { results.innerHTML = ''; return; }
+    try {
+        const data = await api(`/api/contacts?search=${encodeURIComponent(q)}&page=1&per_page=20`);
+        const contacts = (data && data.contacts) || [];
+        results.innerHTML = contacts.length
+            ? contacts.map(c => `<li onclick="pickQuickContact('${c.phone}','${(c.name||'').replace(/'/g,"\\'")}')"><strong>${escapeHtml(c.name || '(Sin nombre)')}</strong><span class="muted">${escapeHtml(c.phone)}</span></li>`).join('')
+            : '<li class="muted" style="cursor:default">Sin coincidencias — escribe un número y pulsa "Añadir"</li>';
+    } catch (e) {
+        results.innerHTML = '<li class="muted" style="cursor:default">Error al buscar contactos</li>';
+    }
+}
+
+function pickQuickContact(phone, name) {
+    addQuickPhone(phone);
+    const input = document.getElementById('quick-phone-input');
+    if (input) input.value = '';
+    const results = document.getElementById('quick-contact-results');
+    if (results) results.innerHTML = '';
+}
+
+function quickAddManual() {
+    const input = document.getElementById('quick-phone-input');
+    if (!input) return;
+    const val = input.value.trim();
+    if (!val) return;
+    const phones = val.split(/[;,]/).map(s => s.trim()).filter(Boolean);
+    phones.forEach(addQuickPhone);
+    input.value = '';
+    const results = document.getElementById('quick-contact-results');
+    if (results) results.innerHTML = '';
+}
+
+async function submitQuickSend() {
+    const content = (document.getElementById('quick-content')?.value || '').trim();
+    if (quickSendPhones.length === 0) { showToast('Añade al menos un número', 'error'); return; }
+    if (!content) { showToast('Escribe un mensaje', 'error'); return; }
+    const body = {
+        phones: quickSendPhones,
+        content,
+        contact_names: {},
+    };
+    try {
+        const result = await api('/api/sms/send', { method: 'POST', body });
+        const successCount = (result.results || []).filter(r => r.success).length;
+        const failCount = (result.results || []).length - successCount;
+        if (result.warnings && result.warnings.length) {
+            console.warn('SMS warnings:', result.warnings);
+        }
+        showToast(`Enviado: ${successCount} exitoso(s)${failCount ? `, ${failCount} fallido(s)` : ''}`, failCount ? 'warning' : 'success');
+        closeQuickSend();
+        if (typeof loadSmsData === 'function' && (location.hash || '').includes('records')) loadSmsData();
+    } catch (e) {
+        showToast(e.message || 'Error al enviar', 'error');
+    }
+}
+
+// Hide FAB when any modal opens; show again when all modals close
+const modalRoot = document.getElementById('modal-container');
+if (modalRoot) {
+    const mo = new MutationObserver(updateFabVisibility);
+    mo.observe(modalRoot, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+}
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        const qs = document.getElementById('quick-send-modal');
+        if (qs && qs.classList.contains('show')) closeQuickSend();
+    }
+});
+updateFabVisibility();
+
+// ============================================================
 // Initialize
 // ============================================================
 checkAuth();
