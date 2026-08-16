@@ -2276,7 +2276,7 @@ async function renderConfig(container) {
     if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
-        var results = await Promise.all([api('/api/config/sms'), api('/api/config/logs')]);
+        var results = await Promise.all([api('/api/config/sms'), api('/api/config/logs'), api('/api/config/auto-clear')]);
         if (state.user.role === 'admin') {
             try {
                 var billing = await api('/api/settings/billing');
@@ -2305,6 +2305,9 @@ async function renderConfig(container) {
             html += '<div class="card mb-4"><div class="card-header"><h2 style="margin:0;">Facturacion por SMS</h2></div><div class="card-body"><p class="text-secondary" style="margin-bottom:16px">Define el costo por SMS enviado. La facturacion se calcula por <strong>SMS enviado</strong> (se cuenta cada intento, exitoso o fallido). Se aplica a los costos mostrados en Mi Cuenta, Mi Equipo y Todos los Equipos.</p><div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;"><div style="flex:1;min-width:200px"><label class="form-label">Costo por SMS</label><input type="number" id="sms-unit-price" class="form-input" value="' + price + '" min="0" step="0.0001" placeholder="0.0000"></div><button class="btn btn-primary" onclick="saveBillingPrice()">Guardar Costo</button></div></div></div>';
         }
 
+        var ac = results[2] || {};
+        html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;"><div><h2 style="margin:0;">Limpieza automatica de contactos</h2><p class="text-secondary" style="margin:4px 0 0;font-size:13px;">Elimina todos los contactos y grupos diariamente a la hora indicada. Los registros de SMS se conservan.</p></div><label style="display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer;"><input type="checkbox" id="auto-clear-enabled" ' + (ac.enabled ? 'checked' : '') + ' onchange="saveAutoClearConfig()"> Activado</label></div><div class="card-body"><div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;"><div><label class="form-label">Hora de ejecucion (HH:MM)</label><input type="time" id="auto-clear-time" class="form-input" value="' + escapeHtml(ac.time || '03:00') + '" style="min-width:140px;"></div><button class="btn btn-primary" onclick="saveAutoClearConfig()">Guardar horario</button><button class="btn btn-danger" onclick="runAutoClearNow()">Ejecutar ahora</button></div><div class="mt-3 text-sm" style="display:grid;gap:6px;"><span>Ultima ejecucion: <strong>' + (ac.last_run_at ? escapeHtml(ac.last_run_at) : 'Nunca') + '</strong></span><span>Ultima cantidad eliminada: <strong>' + (ac.last_run_count || 0) + '</strong></span><span>Estado: <strong>' + escapeHtml(ac.last_run_status || 'pendiente') + '</strong></span></div></div></div>';
+
         html += '<div class="card"><div class="card-header"><h2>Registros de Actividad</h2></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Accion</th><th>Detalles</th><th>Estado</th></tr></thead><tbody>' + logRows + '</tbody></table></div></div>';
         container.innerHTML = html;
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
@@ -2329,6 +2332,28 @@ async function saveBillingPrice() {
     try {
         await api('/api/settings/billing', { method: 'PUT', body: { sms_unit_price: val } });
         showToast('Costo por SMS guardado', 'success');
+        renderConfig(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function saveAutoClearConfig() {
+    var enabledEl = document.getElementById('auto-clear-enabled');
+    var timeEl = document.getElementById('auto-clear-time');
+    var body = {};
+    if (enabledEl) body.enabled = enabledEl.checked;
+    if (timeEl) body.time = timeEl.value;
+    try {
+        await api('/api/config/auto-clear', { method: 'PUT', body: body });
+        showToast('Limpieza automatica guardada', 'success');
+        renderConfig(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function runAutoClearNow() {
+    if (!confirm('Se eliminaran TODOS los contactos y grupos ahora mismo. Los registros de SMS se conservan. Continuar?')) return;
+    try {
+        var data = await api('/api/config/auto-clear/run-now', { method: 'POST' });
+        showToast('Contactos eliminados: ' + (data.deleted || 0), 'success');
         renderConfig(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }
 }

@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import time
+import threading
 import requests as http_requests
 from datetime import datetime, timedelta
 from functools import wraps
@@ -4191,10 +4192,223 @@ def check_sms_charset():
         return jsonify({'error': f'Error al verificar codificacion (codigo {api_code}): {error_msg}'}), 400
 
 # ============================================================
-# Initialize and run
+# Daily auto-clear contacts (background thread)
 # ============================================================
+AUTO_CLEAR_LOCK_ID = 82347109
+
+
+def _parse_hhmm(value):
+    if not value or not isinstance(value, str):
+        return None
+    m = re.match(r'^(\d{1,2}):(\d{2})$', value.strip())
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    if 0 <= h <= 23 and 0 <= mi <= 59:
+        return h, mi
+    return None
+
+
+def _setting_get(key, default=''):
+    db = get_db()
+    cur = db.execute("SELECT value FROM system_settings WHERE key=?", (key,))
+    row = cur.fetchone()
+    if not row:
+        return default
+    return row['value'] if isinstance(row, dict) else row[0]
+
+
+def _setting_set(key, value):
+    db = get_db()
+    if get_db_type() == 'postgres':
+        db.execute(
+            """
+            INSERT INTO system_settings (key, value, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (key) DO UPDATE
+            SET value=EXCLUDED.value, updated_at=NOW()
+            """,
+            (key, str(value)),
+        )
+    else:
+        db.execute(
+            """
+            INSERT INTO system_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE
+            SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
+            """,
+            (key, str(value)),
+        )
+    db.commit()
+
+
+def get_auto_clear_config():
+    return {
+        'enabled': str(_setting_get('auto_clear_enabled', 'true')).lower() in ('1', 'true', 'yes', 'on'),
+        'time': _setting_get('auto_clear_time', '03:00'),
+        'last_run_at': _setting_get('auto_clear_last_run_at', ''),
+        'last_run_count': int(_setting_get('auto_clear_last_run_count', '0') or 0),
+        'last_run_status': _setting_get('auto_clear_last_run_status', ''),
+    }
+
+
+def set_auto_clear_config(enabled=None, time_str=None):
+    if time_str is not None:
+        parsed = _parse_hhmm(time_str)
+        if parsed is None:
+            raise ValueError('Hora invalida, use HH:MM')
+        _setting_set('auto_clear_time', f'{parsed[0]:02d}:{parsed[1]:02d}')
+    if enabled is not None:
+        _setting_set('auto_clear_enabled', 'true' if enabled else 'false')
+
+
+def run_auto_clear_contacts(triggered_by='scheduler'):
+    """Delete all contacts and group memberships; retain SMS records."""
+    db = get_db()
+    lock_acquired = False
+    try:
+        if get_db_type() == 'postgres':
+            cur = db.execute("SELECT pg_try_advisory_lock(%s) AS got", (AUTO_CLEAR_LOCK_ID,))
+            row = cur.fetchone()
+            got = row['got'] if isinstance(row, dict) else row[0]
+            lock_acquired = bool(got)
+        else:
+            db.execute("CREATE TABLE IF NOT EXISTS maintenance_locks (lock_name TEXT PRIMARY KEY, locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            db.execute("DELETE FROM maintenance_locks WHERE lock_name='auto_clear_contacts' AND locked_at < datetime('now', '-1 day')")
+            try:
+                db.execute("INSERT INTO maintenance_locks(lock_name) VALUES('auto_clear_contacts')")
+                db.commit()
+                lock_acquired = True
+            except Exception:
+                lock_acquired = False
+
+        if not lock_acquired:
+            return 0, 'Ya se esta ejecutando una limpieza'
+
+        count_cur = db.execute("SELECT COUNT(*) AS c FROM contacts")
+        count_row = count_cur.fetchone()
+        count = int((count_row['c'] if isinstance(count_row, dict) else count_row[0]) if count_row else 0)
+        group_cur = db.execute("SELECT COUNT(*) AS c FROM contact_groups")
+        group_row = group_cur.fetchone()
+        group_count = int((group_row['c'] if isinstance(group_row, dict) else group_row[0]) if group_row else 0)
+
+        # Delete dependent memberships first, then groups, then contacts.
+        if get_db_type() == 'postgres':
+            db.execute("DELETE FROM contact_group_members")
+        else:
+            # SQLite creates implicit index for this junction; table exists.
+            try:
+                db.execute("DELETE FROM contact_group_members")
+            except sqlite3.OperationalError:
+                pass
+        db.execute("DELETE FROM contact_groups")
+        db.execute("DELETE FROM contacts")
+        db.commit()
+
+        now = datetime.utcnow().isoformat()
+        _setting_set('auto_clear_last_run_at', now)
+        _setting_set('auto_clear_last_run_count', str(count))
+        _setting_set('auto_clear_last_run_status', 'ok')
+
+        details = f"Contactos eliminados: {count}; grupos: {group_count}; disparado por: {triggered_by}"
+        db.execute(
+            "INSERT INTO send_logs (action, recipient, status, details) VALUES (?, ?, ?, ?)",
+            ('auto_clear_contacts', '(all)', 'ok', details),
+        )
+        db.commit()
+        app.logger.warning('auto_clear_contacts completed: %s', details)
+        return count, details
+    except Exception as exc:
+        db.rollback()
+        try:
+            _setting_set('auto_clear_last_run_status', f'error: {str(exc)[:200]}')
+            db.execute(
+                "INSERT INTO send_logs (action, recipient, status, details) VALUES (?, ?, ?, ?)",
+                ('auto_clear_contacts', '(all)', 'error', f'Error: {str(exc)[:400]}'),
+            )
+            db.commit()
+        except Exception:
+            pass
+        app.logger.exception('auto_clear_contacts failed')
+        raise
+    finally:
+        try:
+            if get_db_type() == 'postgres' and lock_acquired:
+                db.execute("SELECT pg_advisory_unlock(%s)", (AUTO_CLEAR_LOCK_ID,))
+                db.commit()
+            elif lock_acquired:
+                db.execute("DELETE FROM maintenance_locks WHERE lock_name='auto_clear_contacts'")
+                db.commit()
+        except Exception:
+            pass
+
+
+def _auto_clear_loop():
+    app.logger.info('[auto-clear] background loop started')
+    time.sleep(15)
+    last_run_date = None
+    while True:
+        try:
+            with app.app_context():
+                cfg = get_auto_clear_config()
+                now = datetime.now()
+                if cfg['enabled']:
+                    h, m = _parse_hhmm(cfg['time']) or (3, 0)
+                    today = now.date().isoformat()
+                    if (now.hour > h or (now.hour == h and now.minute >= m)) and last_run_date != today:
+                        try:
+                            run_auto_clear_contacts(triggered_by='scheduler')
+                        except Exception as exc:
+                            app.logger.warning('[auto-clear] run failed: %s', exc)
+                        last_run_date = today
+        except Exception as exc:
+            app.logger.warning('[auto-clear] loop error: %s', exc)
+        time.sleep(30)
+
+
+@app.route('/api/config/auto-clear', methods=['GET'])
+@login_required
+@admin_required
+def api_auto_clear_config():
+    return jsonify(get_auto_clear_config())
+
+
+@app.route('/api/config/auto-clear', methods=['PUT'])
+@login_required
+@admin_required
+def api_auto_clear_update():
+    data = request.get_json() or {}
+    enabled = data.get('enabled')
+    time_str = data.get('time')
+    if enabled is None and time_str is None:
+        return jsonify({'error': 'No hay cambios'}), 400
+    try:
+        set_auto_clear_config(enabled=enabled, time_str=time_str)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify(get_auto_clear_config())
+
+
+@app.route('/api/config/auto-clear/run-now', methods=['POST'])
+@login_required
+@admin_required
+def api_auto_clear_run_now():
+    try:
+        count, details = run_auto_clear_contacts(triggered_by=f'admin:{session.get("user_id")}')
+        return jsonify({'success': True, 'deleted': count, 'details': details})
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
 
 init_db()
+
+# Start daily auto-clear worker after the database is ready. In production,
+# Gunicorn imports this module once per worker; the advisory/SQLite lock
+# guarantees only one worker performs the actual deletion per day.
+_auto_clear_thread = threading.Thread(target=_auto_clear_loop, name='auto-clear-contacts', daemon=True)
+_auto_clear_thread.start()
+app.logger.info('Daily auto-clear contacts worker thread started')
 
 if __name__ == '__main__':
     port = int(os.environ.get('DEPLOY_RUN_PORT', 5000))
