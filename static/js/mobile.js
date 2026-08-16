@@ -117,6 +117,51 @@
                 'Tu dispositivo no permite leer contactos desde esta pagina. Usa la app Android o importa un CSV.'
             );
         },
+        getFloatingPlugin: function () {
+            var plugins = getPlugins();
+            return plugins ? plugins.FloatingBubble : null;
+        },
+        canDrawOverlays: async function () {
+            var p = this.getFloatingPlugin();
+            if (!p) return false;
+            try {
+                var r = await p.canDrawOverlays();
+                return !!(r && r.granted);
+            } catch (e) { return false; }
+        },
+        openOverlaySettings: async function () {
+            var p = this.getFloatingPlugin();
+            if (p) { try { await p.openOverlaySettings(); } catch (e) {} }
+        },
+        isBubbleRunning: async function () {
+            var p = this.getFloatingPlugin();
+            if (!p) return false;
+            try {
+                var r = await p.isRunning();
+                return !!(r && r.running);
+            } catch (e) { return false; }
+        },
+        startBubble: async function (serverUrl) {
+            var p = this.getFloatingPlugin();
+            if (!p) throw new Error('El widget flotante solo esta disponible en la app Android');
+            return await p.start({ url: serverUrl || window.location.origin });
+        },
+        stopBubble: async function () {
+            var p = this.getFloatingPlugin();
+            if (p) { try { return await p.stop(); } catch (e) {} }
+        },
+        closePanel: function () {
+            try {
+                if (window.AndroidBubble && typeof window.AndroidBubble.closePanel === 'function') {
+                    window.AndroidBubble.closePanel();
+                    return true;
+                }
+            } catch (e) {}
+            return false;
+        },
+        isBubblePanel: function () {
+            return !!(window.AndroidBubble && typeof window.AndroidBubble.closePanel === 'function');
+        },
         getContactsViaPostMessage: function () {
             return new Promise(function (resolve, reject) {
                 var requestId = 'sms_ct_' + Date.now() + '_' + Math.random().toString(36).slice(2);

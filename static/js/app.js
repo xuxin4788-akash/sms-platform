@@ -243,6 +243,19 @@ document.getElementById('login-form').addEventListener('submit', async function(
 });
 
 async function checkAuth() {
+    // Embedded bubble panel: skip sidebar/dashboard, render the compact
+    // quick-send view directly inside the native WebView panel.
+    var isEmbed = (window.location.hash || '').indexOf('#/quick-send-embed') === 0;
+    if (isEmbed) {
+        try {
+            var d = await api('/api/auth/me');
+            state.user = d.user;
+            renderQuickSendEmbed();
+        } catch (e) {
+            renderEmbedLogin();
+        }
+        return;
+    }
     try {
         var data = await api('/api/auth/me');
         state.user = data.user;
@@ -1817,7 +1830,12 @@ async function renderMyAccount(container) {
         var billingNote = Number(data.unit_price) > 0 ? ('Costo por SMS: ' + formatPrice(data.unit_price)) : 'Costo por SMS no configurado';
         var html = filterHtml + '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen de Cuenta</h3><span class="badge badge-primary header-badge">' + escapeHtml(state.user.username) + '</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Total SMS', myAcct.total || 0) + statCard('Enviados', myAcct.sent || 0, 'var(--success)') + statCard('Fallidos', myAcct.failed || 0, 'var(--danger)') + statCard('Costo Total', formatMoney(myAcct.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', myRate + '%') + '</div><table class="info-table"><tbody><tr><td class="info-label">SMS Pendientes</td><td class="info-value">' + (myAcct.pending || 0) + '</td></tr><tr><td class="info-label">Facturacion</td><td class="info-value">' + billingNote + ' <span class="text-secondary">(se cuenta cada SMS enviado, exitoso o fallido)</span></td></tr></tbody></table></div></div>';
 
+        if (window.MobileNative && MobileNative.getFloatingPlugin && MobileNative.getFloatingPlugin()) {
+            html += '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">Widget flotante</h3></div><div class="card-body"><p class="text-secondary" style="margin-top:0;">Muestra un botón flotante sobre otras aplicaciones para abrir el envío rápido de SMS sin volver a la app.</p><button id="bubble-toggle-btn" class="btn btn-primary" onclick="toggleSystemBubble()">Activar widget flotante</button></div></div>';
+        }
+
         container.innerHTML = html;
+        if (window.MobileNative && MobileNative.getFloatingPlugin && MobileNative.getFloatingPlugin()) refreshBubbleToggle();
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
@@ -2475,6 +2493,121 @@ document.addEventListener('keydown', (e) => {
     }
 });
 updateFabVisibility();
+
+// ============================================================
+// Embedded bubble panel (#/quick-send-embed) and system bubble toggle
+// ============================================================
+function renderEmbedLogin() {
+    document.body.className = 'embed-body';
+    document.body.innerHTML =
+        '<div class="embed-shell">' +
+            '<div class="embed-head">' +
+                '<div class="embed-title">SMS Marketing</div>' +
+                '<button class="embed-close" onclick="MobileNative && MobileNative.closePanel && MobileNative.closePanel()" aria-label="Cerrar">×</button>' +
+            '</div>' +
+            '<form class="embed-form" onsubmit="embedLogin(event)">' +
+                '<label>Usuario<input id="embed-user" type="text" autocomplete="username" required></label>' +
+                '<label>Contraseña<input id="embed-pass" type="password" autocomplete="current-password" required></label>' +
+                '<button class="btn btn-primary w-full" type="submit">Entrar</button>' +
+                '<div id="embed-err" class="embed-err"></div>' +
+            '</form>' +
+        '</div>';
+}
+
+async function embedLogin(ev) {
+    ev.preventDefault();
+    var u = document.getElementById('embed-user').value.trim();
+    var p = document.getElementById('embed-pass').value;
+    var err = document.getElementById('embed-err');
+    err.textContent = '';
+    try {
+        await api('/api/auth/login', { method: 'POST', body: { username: u, password: p } });
+        var d = await api('/api/auth/me');
+        state.user = d.user;
+        renderQuickSendEmbed();
+    } catch (e) {
+        err.textContent = e.message || 'Error al iniciar sesión';
+    }
+}
+
+function renderQuickSendEmbed() {
+    document.body.className = 'embed-body';
+    document.body.innerHTML =
+        '<div class="embed-shell">' +
+            '<div class="embed-head">' +
+                '<div class="embed-title">Envío rápido</div>' +
+                '<button class="embed-close" onclick="MobileNative.closePanel && MobileNative.closePanel()" aria-label="Cerrar">×</button>' +
+            '</div>' +
+            '<div class="embed-body-inner">' +
+                '<div class="embed-user">' + escapeHtml(state.user.full_name || state.user.username) + '</div>' +
+                '<label class="embed-field">Buscar contacto o escribir número' +
+                    '<div class="embed-input-row">' +
+                        '<input id="quick-phone-input" type="text" list="embed-contact-list" placeholder="Nombre o teléfono" oninput="onQuickPhoneInput()" autocomplete="off">' +
+                        '<datalist id="embed-contact-list"></datalist>' +
+                        '<button type="button" class="btn btn-secondary" onclick="quickAddManual()">Añadir</button>' +
+                    '</div>' +
+                '</label>' +
+                '<ul id="quick-contact-results" class="quick-results"></ul>' +
+                '<div class="chip-row" id="quick-phone-chips"></div>' +
+                '<label class="embed-field">Mensaje' +
+                    '<textarea id="quick-content" rows="5" maxlength="600" placeholder="Escribe el SMS..." oninput="updateEmbedCounter()"></textarea>' +
+                '</label>' +
+                '<div class="embed-counter"><span id="embed-char-count">0</span> caracteres · <span id="embed-sms-count">1</span> SMS</div>' +
+                '<button class="btn btn-primary w-full" onclick="submitQuickSend()">Enviar SMS</button>' +
+            '</div>' +
+        '</div>';
+    quickSendPhones = [];
+    renderQuickSend();
+}
+
+function updateEmbedCounter() {
+    var ta = document.getElementById('quick-content');
+    if (!ta) return;
+    var len = ta.value.length;
+    var perMsg = /[^\u0000-\u007F]/.test(ta.value) ? 70 : 160;
+    var longPer = /[^\u0000-\u007F]/.test(ta.value) ? 67 : 153;
+    var parts = len === 0 ? 1 : (len <= perMsg ? 1 : Math.ceil(len / longPer));
+    var cc = document.getElementById('embed-char-count');
+    var sc = document.getElementById('embed-sms-count');
+    if (cc) cc.textContent = len;
+    if (sc) sc.textContent = parts;
+}
+
+async function toggleSystemBubble() {
+    if (!window.MobileNative || !MobileNative.getFloatingPlugin) {
+        showToast('El widget flotante solo está disponible en la app Android', 'warning');
+        return;
+    }
+    try {
+        var running = await MobileNative.isBubbleRunning();
+        if (running) {
+            await MobileNative.stopBubble();
+            showToast('Widget flotante desactivado', 'success');
+        } else {
+            var granted = await MobileNative.canDrawOverlays();
+            if (!granted) {
+                showToast('Concede el permiso de "mostrar sobre otras apps"', 'warning');
+                await MobileNative.openOverlaySettings();
+                return;
+            }
+            await MobileNative.startBubble(window.location.origin);
+            showToast('Widget flotante activado', 'success');
+        }
+        if (typeof refreshBubbleToggle === 'function') refreshBubbleToggle();
+    } catch (e) {
+        showToast(e.message || 'No se pudo activar el widget', 'error');
+    }
+}
+
+async function refreshBubbleToggle() {
+    var btn = document.getElementById('bubble-toggle-btn');
+    if (!btn || !window.MobileNative) return;
+    try {
+        var running = await MobileNative.isBubbleRunning();
+        btn.textContent = running ? 'Desactivar widget flotante' : 'Activar widget flotante';
+        btn.className = running ? 'btn btn-danger' : 'btn btn-primary';
+    } catch (e) {}
+}
 
 // ============================================================
 // Initialize
