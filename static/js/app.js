@@ -782,7 +782,14 @@ async function renderSendSMS(container) {
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Enviar SMS</h1>' +
             '<div class="card"><div class="card-body">' +
                 '<div class="send-options"><button class="tab active" onclick="switchSendMode(\'manual\', this)">Manual</button><button class="tab" onclick="switchSendMode(\'contacts\', this)">Seleccionar Contactos</button><button class="tab" onclick="switchSendMode(\'group\', this)">Por Grupo</button></div>' +
-                '<div id="send-manual" class="form-group"><label>Numeros de telefono</label><div class="phone-tags" id="phone-tags" onclick="document.getElementById(\'phone-input\').focus()"><input type="text" id="phone-input" placeholder="Escriba un numero y presione Enter" style="border:none;outline:none;flex:1;min-width:200px;padding:4px;" onkeydown="handlePhoneInput(event)"></div><small class="text-secondary">Presione Enter o coma para agregar numeros</small></div>' +
+                '<div id="send-manual" class="form-group"><label>Numeros de telefono</label>' +
+                    '<form class="phone-add-row" onsubmit="commitPhoneInput(); return false;">' +
+                      '<input type="text" id="phone-input" inputmode="tel" enterkeyhint="done" placeholder="Escriba un numero y toque Agregar" autocomplete="off" onkeydown="handlePhoneInput(event)" oninput="onPhoneTyping(event)" onblur="schedulePhoneCommit()">' +
+                      '<button type="submit" class="btn btn-primary btn-sm" id="phone-add-btn">Agregar</button>' +
+                    '</form>' +
+                    '<div class="phone-tags" id="phone-tags"></div>' +
+                    '<small class="text-secondary">Toque Agregar o Enter para confirmar; puede separar varios con coma.</small>' +
+                '</div>' +
                 '<div id="send-contacts" class="form-group" style="display:none;"><label>Seleccionar contactos</label><div id="contacts-select-list" class="contact-select-list"></div></div>' +
                 '<div id="send-group" class="form-group" style="display:none;"><label>Seleccionar grupo</label><select id="send-group-select" onchange="loadGroupContacts(this.value)"><option value="">-- Seleccione un grupo --</option>' + groupOpts + '</select><div id="group-contacts-preview" class="mt-2"></div></div>' +
                 '<div class="form-group mt-4"><label>Plantilla (opcional)</label><select id="send-template" onchange="loadTemplateContent(this.value)"><option value="">-- Escribir mensaje personalizado --</option>' + templateOpts + '</select></div>' +
@@ -804,32 +811,62 @@ function switchSendMode(mode, btn) {
     document.getElementById('send-group').style.display = mode === 'group' ? 'block' : 'none';
 }
 
+let phoneCommitTimer = null;
 function handlePhoneInput(event) {
-    if (event.key === 'Enter' || event.key === ',') {
+    if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
         event.preventDefault();
-        var input = document.getElementById('phone-input');
-        var rawPhone = input.value.replace(',', '').trim();
-        if (!rawPhone) return;
-        var defaultCode = (state.user && state.user.team_country_code) || '+52';
-        var phone = normalizePhone(rawPhone, defaultCode);
-        if (phone && state.sendPhones.indexOf(phone) === -1) { state.sendPhones.push(phone); renderPhoneTags(); }
-        input.value = '';
+        commitPhoneInput();
     }
 }
-
+function onPhoneTyping(event) {
+    // When the user types a comma/semicolon, commit immediately
+    var v = event.target.value;
+    if (/[,;，；]/.test(v)) {
+        commitPhoneInput();
+        return;
+    }
+}
+function schedulePhoneCommit() {
+    // On mobile, some IMEs do not fire Enter reliably; if the field loses
+    // focus while it still holds a number, we keep it ready but do NOT
+    // auto-commit (the user might be tapping elsewhere intentionally).
+    if (phoneCommitTimer) clearTimeout(phoneCommitTimer);
+}
+function commitPhoneInput() {
+    var input = document.getElementById('phone-input');
+    if (!input) return;
+    var raw = (input.value || '').trim();
+    if (!raw) return;
+    // Support multiple numbers separated by comma/semicolon
+    var parts = raw.split(/[,;，；\s]+/).map(function(s){return s.trim();}).filter(Boolean);
+    var defaultCode = (state.user && state.user.team_country_code) || '+52';
+    parts.forEach(function(part) {
+        var p = normalizePhone(part, defaultCode);
+        if (p && state.sendPhones.indexOf(p) === -1) state.sendPhones.push(p);
+    });
+    input.value = '';
+    renderPhoneTags();
+}
+function addPhoneFromInput() {
+    commitPhoneInput();
+    var input = document.getElementById('phone-input');
+    if (input) input.focus();
+}
 function renderPhoneTags() {
     var container = document.getElementById('phone-tags');
-    var input = document.getElementById('phone-input');
-    container.querySelectorAll('.phone-tag').forEach(function(t) { t.remove(); });
+    if (!container) return;
+    container.innerHTML = '';
     state.sendPhones.forEach(function(phone, i) {
         var tag = document.createElement('span');
         tag.className = 'phone-tag';
-        tag.innerHTML = escapeHtml(phone) + ' <button onclick="removePhone(' + i + ')">&times;</button>';
-        container.insertBefore(tag, input);
+        tag.innerHTML = escapeHtml(phone) + ' <button type="button" onclick="removePhone(' + i + ')" aria-label="Quitar">&times;</button>';
+        container.appendChild(tag);
     });
 }
-
-function removePhone(index) { state.sendPhones.splice(index, 1); renderPhoneTags(); }
+function removePhone(index) {
+    state.sendPhones.splice(index, 1);
+    renderPhoneTags();
+}
 
 async function loadContactsForSelection() {
     try {
@@ -1044,6 +1081,8 @@ function clearAllPhones() {
 }
 
 async function handleSendSMS() {
+    // Make sure any number still sitting in the input is committed before sending
+    commitPhoneInput();
     var content = document.getElementById('send-content').value.trim();
     var phones = getSendPhones();
     if (!content) return showToast('Escriba un mensaje', 'error');

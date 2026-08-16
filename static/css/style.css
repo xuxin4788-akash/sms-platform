@@ -759,6 +759,33 @@ table tbody tr:nth-child(even):hover {
     border-radius: var(--radius-input);
     min-height: 44px;
     cursor: text;
+    margin-top: 8px;
+}
+
+.phone-add-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+.phone-add-row input {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-input);
+    font-size: 16px; /* prevent iOS zoom */
+    background: #fff;
+    color: var(--text-primary);
+}
+.phone-add-row input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
+}
+.phone-add-row .btn-sm {
+    padding: 0 16px;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .phone-tag {
