@@ -2427,6 +2427,29 @@ function removeQuickPhone(idx) {
     renderQuickSend();
 }
 
+function onQuickPhoneKey(event) {
+    if (event.key === 'Enter' || event.keyCode === 13) {
+        event.preventDefault();
+        const input = document.getElementById('quick-phone-input');
+        if (!input) return;
+        const raw = (input.value || '').trim();
+        if (!raw) return;
+        // If a contact result is highlighted, prefer it; otherwise add typed value(s)
+        const results = document.getElementById('quick-contact-results');
+        const highlighted = results && results.querySelector('li.hover, li:focus, li[aria-selected="true"]');
+        if (highlighted && typeof highlighted.onclick === 'function') {
+            highlighted.click();
+            return;
+        }
+        // Split multiple numbers pasted/typed with comma or semicolon
+        raw.split(/[;,]/).map(s => s.trim()).filter(Boolean).forEach(addQuickPhone);
+        input.value = '';
+        if (results) results.innerHTML = '';
+        // keep focus for rapid entry
+        setTimeout(() => input.focus(), 0);
+    }
+}
+
 async function onQuickPhoneInput() {
     const input = document.getElementById('quick-phone-input');
     const results = document.getElementById('quick-contact-results');
@@ -2550,7 +2573,7 @@ function renderQuickSendEmbed() {
                 '<div class="embed-user">' + escapeHtml(state.user.full_name || state.user.username) + '</div>' +
                 '<label class="embed-field">Buscar contacto o escribir número' +
                     '<div class="embed-input-row">' +
-                        '<input id="quick-phone-input" type="text" list="embed-contact-list" placeholder="Nombre o teléfono" oninput="onQuickPhoneInput()" autocomplete="off">' +
+                        '<input id="quick-phone-input" type="text" list="embed-contact-list" placeholder="Nombre o teléfono (Enter para añadir)" oninput="onQuickPhoneInput()" onkeydown="onQuickPhoneKey(event)" autocomplete="off">' +
                         '<datalist id="embed-contact-list"></datalist>' +
                         '<button type="button" class="btn btn-secondary" onclick="quickAddManual()">Añadir</button>' +
                     '</div>' +
