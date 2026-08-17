@@ -168,6 +168,7 @@ function changePage(type, page) {
     if (type === 'contacts') { state.contacts.page = page; renderContacts(document.getElementById('page-content')); }
     else if (type === 'records') { state.records.page = page; renderRecords(document.getElementById('page-content')); }
     else if (type === 'contentSearch') { state.contentSearch.page = page; renderContentSearch(document.getElementById('page-content')); }
+    else if (type === 'calls') { state.calls.page = page; loadVoiceRecords(); }
 }
 
 // ============================================================
@@ -293,11 +294,11 @@ function showMainApp() {
         state.user.permsConfigured !== true) {
         if (role === 'team_admin') {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'content-search', 'users', 'my-account',
+                     'records', 'calls', 'content-search', 'users', 'my-account',
                      'my-team', 'all-teams'];
         } else {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'my-account'];
+                     'records', 'calls', 'my-account'];
         }
     }
     document.querySelectorAll('.nav-item').forEach(function(el) {
@@ -383,6 +384,10 @@ function navigateTo(page) {
         case 'templates': renderTemplates(content); break;
         case 'send': renderSendSMS(content); break;
         case 'records': renderRecords(content); break;
+        case 'calls': renderCalls(content); break;
+        case 'voice-config':
+            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            renderVoiceConfig(content); break;
         case 'content-search': renderContentSearch(content); break;
         case 'users': renderUsers(content); break;
         case 'my-account': renderMyAccount(content); break;
@@ -1346,13 +1351,15 @@ var PERM_ITEMS = [
     { key: 'groups', label: 'Grupos', icon: 'folder' },
     { key: 'templates', label: 'Plantillas', icon: 'file' },
     { key: 'send', label: 'Enviar SMS', icon: 'send' },
-    { key: 'records', label: 'Registros', icon: 'activity' },
+    { key: 'records', label: 'Registros SMS', icon: 'activity' },
+    { key: 'calls', label: 'Llamadas (Voz)', icon: 'phone' },
     { key: 'content-search', label: 'Buscar Contenido', icon: 'search' },
     { key: 'users', label: 'Usuarios', icon: 'user-plus' },
     { key: 'my-account', label: 'Mi Cuenta', icon: 'user' },
     { key: 'my-team', label: 'Mi Equipo', icon: 'users' },
     { key: 'all-teams', label: 'Todos los Equipos', icon: 'bar-chart' },
-    { key: 'config', label: 'Configuracion API', icon: 'settings' },
+    { key: 'config', label: 'Configuracion API SMS', icon: 'settings' },
+    { key: 'voice-config', label: 'Configuracion Voz', icon: 'settings' },
     { key: 'team-api-select', label: 'Seleccionar API de Equipo', icon: 'server' }
 ];
 
@@ -2971,6 +2978,323 @@ document.addEventListener('DOMContentLoaded', () => {
         setTimeout(() => MobileNative.syncInAppFab(), 600);
     }
 });
+
+// ============================================================
+// Voice Calls (Llamadas / 电呼)
+// ============================================================
+if (!state.calls) state.calls = { page: 1, perPage: 20, total: 0, status: '', search: '', dateFrom: '', dateTo: '' };
+if (!state.voiceCall) state.voiceCall = { phones: [], mode: 'manual' };
+
+var VOICE_STATUS_BADGE = {
+    'pending': 'badge-gray',
+    'initiated': 'badge-blue',
+    'ringing': 'badge-blue',
+    'answered': 'badge-blue',
+    'completed': 'badge-green',
+    'failed': 'badge-red',
+    'no-answer': 'badge-yellow',
+    'busy': 'badge-yellow',
+    'canceled': 'badge-gray'
+};
+var VOICE_STATUS_LABELS = {
+    'pending': 'Pendiente', 'initiated': 'Iniciada', 'ringing': 'Llamando',
+    'answered': 'Contestada', 'completed': 'Completada', 'failed': 'Fallida',
+    'no-answer': 'Sin respuesta', 'busy': 'Ocupado', 'canceled': 'Cancelada'
+};
+
+function getVoiceStatusBadge(status) {
+    var cls = VOICE_STATUS_BADGE[status] || 'badge-gray';
+    var label = VOICE_STATUS_LABELS[status] || status;
+    return '<span class="badge ' + cls + '">' + escapeHtml(label) + '</span>';
+}
+
+function formatDuration(sec) {
+    sec = parseInt(sec || 0, 10);
+    if (!sec) return '-';
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return (m > 0 ? m + 'm ' : '') + s + 's';
+}
+
+async function renderCalls(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var [stats, groupsData, templatesData] = await Promise.all([
+            api('/api/voice/statistics'),
+            api('/api/groups'),
+            api('/api/templates')
+        ]);
+        window._voiceGroups = groupsData.groups || [];
+        window._voiceTemplates = templatesData.templates || [];
+        var groupOpts = window._voiceGroups.map(function(g) {
+            return '<option value="' + g.id + '">' + escapeHtml(g.name) + ' (' + g.contact_count + ')</option>';
+        }).join('');
+        var tplOpts = window._voiceTemplates.map(function(t) {
+            return '<option value="' + t.id + '">' + escapeHtml(t.name) + '</option>';
+        }).join('');
+        var simBanner = stats.configured
+            ? ''
+            : '<div class="alert alert-warning" style="margin-bottom:16px;">La API de voz no esta configurada. Las llamadas se procesan en <strong>modo simulacion</strong>. Configurela en <a href="#/voice-config" style="color:inherit;text-decoration:underline;">Configuracion Voz</a>.</div>';
+
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Llamadas de Voz</h1>' +
+            simBanner +
+            '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));margin-bottom:20px;">' +
+                '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div><div class="stat-label">Hoy</div><div class="stat-value" style="font-size:22px;">' + stats.today_calls + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div><div class="stat-label">Completadas</div><div class="stat-value" style="font-size:22px;">' + stats.completed + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon yellow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div><div class="stat-label">En curso / Pendientes</div><div class="stat-value" style="font-size:22px;">' + stats.pending + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon" style="background:#FEF2F2;color:#DC2626;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div><div class="stat-label">Fallidas</div><div class="stat-value" style="font-size:22px;">' + stats.failed + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">Tasa de contacto</div><div class="stat-value" style="font-size:22px;">' + stats.answer_rate + '%</div></div>' +
+                '<div class="stat-card"><div class="stat-label">Duracion total</div><div class="stat-value" style="font-size:22px;">' + formatDuration(stats.total_duration) + '</div></div>' +
+            '</div>' +
+            '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;"><h2>Nueva Llamada Masiva</h2><span class="text-secondary" style="font-size:12px;">El sistema llama y reproduce el guion con voz (TTS)</span></div><div class="card-body">' +
+                '<div class="send-options"><button class="tab active" onclick="switchVoiceMode(\'manual\', this)">Manual</button><button class="tab" onclick="switchVoiceMode(\'contacts\', this)">Contactos</button><button class="tab" onclick="switchVoiceMode(\'group\', this)">Por Grupo</button></div>' +
+                '<div id="voice-manual" class="form-group"><label>Telefonos</label>' +
+                    '<form class="phone-add-row" onsubmit="commitVoicePhoneInput(); return false;">' +
+                      '<input type="text" id="voice-phone-input" inputmode="tel" enterkeyhint="done" placeholder="Escriba un numero y Enter" autocomplete="off" onkeydown="if(event.key===\'Enter\'){event.preventDefault();commitVoicePhoneInput();}">' +
+                      '<button type="submit" class="btn btn-primary btn-sm">Agregar</button>' +
+                    '</form>' +
+                    '<div class="phone-tags" id="voice-phone-tags"></div>' +
+                '</div>' +
+                '<div id="voice-contacts" class="form-group" style="display:none;"><label>Seleccionar contactos</label><div id="voice-contacts-list" class="contact-select-list"></div></div>' +
+                '<div id="voice-group" class="form-group" style="display:none;"><label>Grupo</label><select id="voice-group-select" onchange="loadVoiceGroupContacts(this.value)"><option value="">-- Seleccione --</option>' + groupOpts + '</select><div id="voice-group-preview" class="mt-2 text-secondary text-sm"></div></div>' +
+                '<div class="form-group mt-3"><label>Plantilla de guion (opcional)</label><select id="voice-template" onchange="loadVoiceTemplate(this.value)"><option value="">-- Personalizado --</option>' + tplOpts + '</select></div>' +
+                '<div class="form-group"><label>Guion de la llamada *</label><textarea id="voice-script" rows="5" placeholder="Hola {nombre}, le llamamos para..."></textarea><small class="text-secondary">Variables soportadas: {nombre}, {telefono}. El texto se convierte en voz automaticamente.</small></div>' +
+                '<div id="voice-error" class="alert alert-error" style="display:none;"></div>' +
+                '<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-primary" onclick="handlePlaceCalls()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Iniciar Llamada(s)</button><span class="text-secondary text-sm" style="align-self:center;">Maximo 200 numeros por tanda.</span></div>' +
+            '</div></div>' +
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;"><input type="text" id="voice-search" placeholder="Buscar telefono, nombre o guion..." value="' + escapeHtml(state.calls.search) + '" onkeydown="if(event.key===\'Enter\')triggerVoiceSearch()" style="flex:1;min-width:200px;"><button class="btn btn-primary btn-sm" onclick="triggerVoiceSearch()">Buscar</button><select id="voice-status-filter" onchange="handleVoiceStatus(this.value)"><option value="">Todos los estados</option>' + Object.keys(VOICE_STATUS_LABELS).map(function(s){return '<option value="'+s+'"'+(state.calls.status===s?' selected':'')+'>'+VOICE_STATUS_LABELS[s]+'</option>';}).join('') + '</select><input type="date" lang="es" value="' + state.calls.dateFrom + '" onchange="handleVoiceDateFrom(this.value)"><input type="date" lang="es" value="' + state.calls.dateTo + '" onchange="handleVoiceDateTo(this.value)"></div></div><div id="voice-records-container"><div class="text-center text-secondary" style="padding:24px;">Cargando registros...</div></div></div>';
+
+        loadVoiceContactsForSelection();
+        loadVoiceRecords();
+    } catch (err) {
+        container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
+    }
+}
+
+function switchVoiceMode(mode, btn) {
+    state.voiceCall.mode = mode;
+    document.querySelectorAll('#voice-manual, #voice-contacts, #voice-group').forEach(function(el){ el.style.display='none'; });
+    var target = document.getElementById('voice-' + mode);
+    if (target) target.style.display = 'block';
+    btn.parentNode.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
+    btn.classList.add('active');
+}
+
+function commitVoicePhoneInput() {
+    var input = document.getElementById('voice-phone-input');
+    if (!input) return;
+    var raw = (input.value || '').trim();
+    if (!raw) return;
+    var parts = raw.split(/[,;，；\s]+/).map(function(s){return s.trim();}).filter(Boolean);
+    var defaultCode = (state.user && state.user.team_country_code) || '+52';
+    parts.forEach(function(part) {
+        var p = normalizePhone(part, defaultCode);
+        if (p && state.voiceCall.phones.indexOf(p) === -1) state.voiceCall.phones.push(p);
+    });
+    input.value = '';
+    renderVoicePhoneTags();
+}
+
+function renderVoicePhoneTags() {
+    var c = document.getElementById('voice-phone-tags');
+    if (!c) return;
+    c.innerHTML = state.voiceCall.phones.map(function(p, i){
+        return '<span class="phone-tag">' + escapeHtml(p) + ' <button type="button" onclick="removeVoicePhone(' + i + ')" style="background:none;border:none;color:inherit;cursor:pointer;font-weight:bold;">&times;</button></span>';
+    }).join('');
+}
+
+function removeVoicePhone(i) { state.voiceCall.phones.splice(i, 1); renderVoicePhoneTags(); }
+
+async function loadVoiceContactsForSelection() {
+    try {
+        var data = await api('/api/contacts?per_page=1000');
+        var list = document.getElementById('voice-contacts-list');
+        if (!list) return;
+        if (!data.contacts || !data.contacts.length) { list.innerHTML = '<p class="text-secondary">Sin contactos.</p>'; return; }
+        list.innerHTML = data.contacts.map(function(c) {
+            return '<label class="contact-select-item"><input type="checkbox" class="voice-contact-check" data-phone="' + escapeHtml(c.phone) + '" data-name="' + escapeHtml(c.name || '') + '" onchange="syncVoiceContactSelection()"> ' + escapeHtml(c.name || '') + ' <span class="text-secondary">' + escapeHtml(c.phone) + '</span></label>';
+        }).join('');
+    } catch (e) { /* ignore */ }
+}
+
+function syncVoiceContactSelection() {
+    var checks = document.querySelectorAll('.voice-contact-check:checked');
+    var selected = [];
+    checks.forEach(function(cb) {
+        var p = normalizePhone(cb.dataset.phone);
+        if (selected.indexOf(p) === -1) selected.push(p);
+    });
+    state.voiceCall.selectedContacts = selected;
+}
+
+async function loadVoiceGroupContacts(groupId) {
+    var preview = document.getElementById('voice-group-preview');
+    if (!groupId) { if (preview) preview.textContent = ''; state.voiceCall.groupPhones = []; return; }
+    try {
+        var data = await api('/api/contacts?group_id=' + groupId + '&per_page=1000');
+        var phones = (data.contacts || []).map(function(c){ return normalizePhone(c.phone); });
+        state.voiceCall.groupPhones = phones;
+        if (preview) preview.textContent = phones.length + ' contacto(s) en el grupo.';
+    } catch (e) { if (preview) preview.textContent = 'Error: ' + e.message; }
+}
+
+function loadVoiceTemplate(id) {
+    var tpl = (window._voiceTemplates || []).find(function(t){ return String(t.id) === String(id); });
+    var ta = document.getElementById('voice-script');
+    if (tpl && ta) ta.value = tpl.content;
+}
+
+function collectVoicePhones() {
+    var mode = state.voiceCall.mode;
+    var phones = [];
+    var add = function(p) { p = normalizePhone(p); if (p && phones.indexOf(p) === -1) phones.push(p); };
+    if (mode === 'manual') {
+        (state.voiceCall.phones || []).forEach(add);
+    } else if (mode === 'contacts') {
+        (state.voiceCall.selectedContacts || []).forEach(add);
+    } else if (mode === 'group') {
+        (state.voiceCall.groupPhones || []).forEach(add);
+    }
+    return phones;
+}
+
+async function handlePlaceCalls() {
+    var errBox = document.getElementById('voice-error');
+    errBox.style.display = 'none';
+    var script = (document.getElementById('voice-script').value || '').trim();
+    var phones = collectVoicePhones();
+    if (!phones.length) { errBox.textContent = 'Seleccione o ingrese al menos un numero.'; errBox.style.display='block'; return; }
+    if (!script) { errBox.textContent = 'El guion es requerido.'; errBox.style.display='block'; return; }
+    if (phones.length > 200) { errBox.textContent = 'Maximo 200 numeros por tanda.'; errBox.style.display='block'; return; }
+    if (!confirm('Se iniciaran ' + phones.length + ' llamada(s). Continuar?')) return;
+    try {
+        var result = await api('/api/voice/call', { method: 'POST', body: { phones: phones, script: script } });
+        showToast(result.message || 'Llamadas iniciadas', (result.errors && result.errors.length) ? 'warning' : 'success');
+        state.voiceCall.phones = [];
+        state.voiceCall.selectedContacts = [];
+        state.voiceCall.groupPhones = [];
+        renderVoicePhoneTags();
+        loadVoiceRecords();
+        // Refresh stats
+        renderCalls(document.getElementById('page-content'));
+    } catch (e) {
+        errBox.textContent = e.message || 'Error al iniciar llamadas';
+        errBox.style.display = 'block';
+    }
+}
+
+async function loadVoiceRecords() {
+    var container = document.getElementById('voice-records-container');
+    if (!container) return;
+    try {
+        var params = new URLSearchParams({ page: state.calls.page, per_page: state.calls.perPage });
+        if (state.calls.status) params.set('status', state.calls.status);
+        if (state.calls.search) params.set('search', state.calls.search);
+        if (state.calls.dateFrom) params.set('date_from', state.calls.dateFrom);
+        if (state.calls.dateTo) params.set('date_to', state.calls.dateTo);
+        var data = await api('/api/voice/records?' + params.toString());
+        state.calls.total = data.total;
+        var rows = data.records.length === 0
+            ? '<tr><td colspan="8" class="text-center text-secondary" style="padding:32px;">No hay llamadas registradas</td></tr>'
+            : data.records.map(function(r) {
+                var actions = r.call_sid && r.call_sid.indexOf('SIM') !== 0
+                    ? '<button class="btn btn-ghost btn-sm" onclick="refreshVoiceStatus(' + r.id + ',\'' + escapeHtml(r.call_sid) + '\')" title="Actualizar estado"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>'
+                    : '<span class="text-secondary text-sm">simulada</span>';
+                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.script) + '">' + escapeHtml(r.script) + '</td><td>' + getVoiceStatusBadge(r.status) + '</td><td class="text-sm">' + formatDuration(r.duration) + '</td><td class="text-sm text-secondary">' + escapeHtml(r.sender_full_name || r.sender_username || '-') + '</td><td style="white-space:nowrap;">' + actions + (r.error_msg ? '<div class="text-secondary text-sm" title="' + escapeHtml(r.error_msg) + '" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#DC2626;">' + escapeHtml(r.error_msg) + '</div>' : '') + '</td></tr>';
+            }).join('');
+        container.innerHTML =
+            '<div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono</th><th>Nombre</th><th>Guion</th><th>Estado</th><th>Duracion</th><th>Operador</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+            renderPagination({ page: data.page, per_page: data.per_page, total: data.total, total_pages: Math.ceil(data.total / data.per_page) }, 'calls');
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
+    }
+}
+
+async function refreshVoiceStatus(id, sid) {
+    try {
+        await api('/api/voice/query-status', { method: 'POST', body: { id: id, call_sid: sid } });
+        showToast('Estado actualizado', 'success');
+        loadVoiceRecords();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+function triggerVoiceSearch() { state.calls.search = document.getElementById('voice-search').value; state.calls.page = 1; loadVoiceRecords(); }
+function handleVoiceStatus(s) { state.calls.status = s; state.calls.page = 1; loadVoiceRecords(); }
+function handleVoiceDateFrom(d) { state.calls.dateFrom = d; state.calls.page = 1; loadVoiceRecords(); }
+function handleVoiceDateTo(d) { state.calls.dateTo = d; state.calls.page = 1; loadVoiceRecords(); }
+
+// ============================================================
+// Voice Config (admin)
+// ============================================================
+async function renderVoiceConfig(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var data = await api('/api/config/voice');
+        var cfg = data.config || { provider: 'simulation', account_sid: '', from_number: '', api_domain: '', has_token: false, configured: false };
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Configuracion de Voz (电呼)</h1>' +
+            '<div class="card"><div class="card-body">' +
+                '<div class="alert alert-info" style="margin-bottom:16px;">Define el proveedor de llamadas de voz. El sistema marca automaticamente y reproduce el guion con voz (TTS). En <strong>modo simulacion</strong> no se realizan llamadas reales (util para pruebas).</div>' +
+                '<div class="form-group"><label>Proveedor</label><select id="vc-provider" onchange="toggleVoiceProviderFields()"><option value="simulation"' + (cfg.provider==='simulation'?' selected':'') + '>Simulacion (sin llamadas reales)</option><option value="twilio"' + (cfg.provider==='twilio'?' selected':'') + '>Twilio</option><option value="custom"' + (cfg.provider==='custom'?' selected':'') + '>Proveedor personalizado (HTTP)</option></select></div>' +
+                '<div id="vc-twilio-fields">' +
+                    '<div class="form-group"><label>Account SID</label><input type="text" id="vc-account-sid" value="' + escapeHtml(cfg.account_sid || '') + '" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></div>' +
+                    '<div class="form-group"><label>Auth Token</label><input type="password" id="vc-auth-token" placeholder="' + (cfg.has_token ? '******** (configurado - dejar vacio para conservar)' : 'Tu auth token') + '"></div>' +
+                    '<div class="form-group"><label>Numero remitente (from)</label><input type="text" id="vc-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="+15551234567"></div>' +
+                '</div>' +
+                '<div id="vc-custom-fields" style="display:none;">' +
+                    '<div class="form-group"><label>API URL base</label><input type="text" id="vc-domain" value="' + escapeHtml(cfg.api_domain || '') + '" placeholder="https://api.voz-proveedor.com/v1"></div>' +
+                    '<div class="form-group"><label>Clave/Token de API</label><input type="password" id="vc-custom-token" placeholder="Bearer token"></div>' +
+                    '<div class="form-group"><label>Numero remitente</label><input type="text" id="vc-custom-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="+52..."></div>' +
+                '</div>' +
+                '<div class="alert alert-warning" style="font-size:13px;">Nota: Para llamadas en Mexico/Latinoamerica con Twilio, las numeraciones pueden requerir registro de marca (A2P) o numero geografico habilitado para voz. Compruebe la cobertura en su pais.</div>' +
+                '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary" onclick="saveVoiceConfig()">Guardar</button><button class="btn btn-secondary" onclick="testVoiceConfig()">Probar conexion</button><a class="btn btn-outline" href="#/calls">Ir a Llamadas</a></div>' +
+                '<div id="vc-result" style="margin-top:12px;"></div>' +
+            '</div></div>';
+        toggleVoiceProviderFields();
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(e.message) + '</p></div>';
+    }
+}
+
+function toggleVoiceProviderFields() {
+    var p = document.getElementById('vc-provider').value;
+    var t = document.getElementById('vc-twilio-fields');
+    var c = document.getElementById('vc-custom-fields');
+    if (t) t.style.display = (p === 'twilio') ? 'block' : 'none';
+    if (c) c.style.display = (p === 'custom') ? 'block' : 'none';
+}
+
+async function saveVoiceConfig() {
+    var provider = document.getElementById('vc-provider').value;
+    var body = { provider: provider, account_sid: '', auth_token: '', from_number: '', api_domain: '' };
+    if (provider === 'twilio') {
+        body.account_sid = document.getElementById('vc-account-sid').value.trim();
+        body.auth_token = document.getElementById('vc-auth-token').value;
+        body.from_number = document.getElementById('vc-from').value.trim();
+    } else if (provider === 'custom') {
+        body.api_domain = document.getElementById('vc-domain').value.trim();
+        body.auth_token = document.getElementById('vc-custom-token').value;
+        body.from_number = document.getElementById('vc-custom-from').value.trim();
+    }
+    var result = document.getElementById('vc-result');
+    try {
+        var res = await api('/api/config/voice', { method: 'POST', body: body });
+        result.innerHTML = '<div class="alert alert-success">' + escapeHtml(res.message || 'Guardado') + (res.configured ? ' (configurado correctamente)' : ' (modo simulacion)') + '</div>';
+    } catch (e) {
+        result.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>';
+    }
+}
+
+async function testVoiceConfig() {
+    var result = document.getElementById('vc-result');
+    result.innerHTML = '<div class="text-secondary">Probando conexion...</div>';
+    try {
+        var res = await api('/api/config/voice/test', { method: 'POST' });
+        result.innerHTML = '<div class="alert alert-success">OK: ' + escapeHtml(res.message || 'Conectado') + (res.account_name ? ' / ' + escapeHtml(res.account_name) : '') + '</div>';
+    } catch (e) {
+        result.innerHTML = '<div class="alert alert-error">Fallo: ' + escapeHtml(e.message) + '</div>';
+    }
+}
 
 // ============================================================
 // Initialize

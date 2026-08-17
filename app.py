@@ -333,6 +333,35 @@ def init_db():
                 daily_sms_limit INTEGER DEFAULT 100,
                 api_config_id INTEGER REFERENCES sms_api_configs(id) ON DELETE SET NULL
             );
+
+            CREATE TABLE IF NOT EXISTS voice_config (
+                id SERIAL PRIMARY KEY,
+                provider VARCHAR(50) NOT NULL DEFAULT 'simulation',
+                account_sid VARCHAR(255) DEFAULT '',
+                auth_token VARCHAR(255) DEFAULT '',
+                from_number VARCHAR(100) DEFAULT '',
+                api_domain VARCHAR(500) DEFAULT '',
+                extra TEXT DEFAULT '',
+                is_active BOOLEAN DEFAULT TRUE,
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS voice_records (
+                id SERIAL PRIMARY KEY,
+                phone VARCHAR(50) NOT NULL,
+                contact_name VARCHAR(255) DEFAULT '',
+                script TEXT NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','initiated','ringing','answered','completed','failed','no-answer','busy','canceled')),
+                call_sid VARCHAR(255) DEFAULT '',
+                provider VARCHAR(50) DEFAULT '',
+                duration INTEGER DEFAULT 0,
+                price NUMERIC(12,4) DEFAULT 0,
+                error_msg TEXT DEFAULT '',
+                initiated_at TIMESTAMP,
+                finished_at TIMESTAMP,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
         """)
 
         # Migrations for existing databases - add missing columns
@@ -414,6 +443,10 @@ def init_db():
                         ('team_admin', json.dumps(DEFAULT_ROLE_PERMISSIONS['team_admin'])))
             cur.execute("INSERT INTO role_permissions (role, permissions) VALUES (%s, %s)",
                         ('team_member', json.dumps(DEFAULT_ROLE_PERMISSIONS['team_member'])))
+        # Create default voice_config
+        cur.execute("SELECT id FROM voice_config LIMIT 1")
+        if cur.fetchone() is None:
+            cur.execute("INSERT INTO voice_config (provider, account_sid, auth_token, from_number, is_active) VALUES ('simulation', '', '', '', TRUE)")
 
         # Performance indexes (idempotent). Critical for large teams:
         # the send_logs page and SMS records/statistics pages sort/filter by
@@ -431,6 +464,9 @@ def init_db():
             # Contacts/groups lookups used by team-scoped queries
             "CREATE INDEX IF NOT EXISTS idx_contacts_created_by ON contacts(created_by)",
             "CREATE INDEX IF NOT EXISTS idx_contacts_group_id ON contacts(group_id)",
+            "CREATE INDEX IF NOT EXISTS idx_voice_records_created_by ON voice_records(created_by)",
+            "CREATE INDEX IF NOT EXISTS idx_voice_records_created_at ON voice_records(created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_voice_records_status_created_at ON voice_records(status, created_at DESC)",
         ]
         # Use a session-level advisory lock so that multiple Gunicorn workers
         # booting at the same time do not race to create identically named
@@ -540,6 +576,37 @@ def init_db():
                 role TEXT PRIMARY KEY,
                 permissions TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS voice_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL DEFAULT 'simulation',
+                account_sid TEXT DEFAULT '',
+                auth_token TEXT DEFAULT '',
+                from_number TEXT DEFAULT '',
+                api_domain TEXT DEFAULT '',
+                extra TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS voice_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                contact_name TEXT DEFAULT '',
+                script TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','initiated','ringing','answered','completed','failed','no-answer','busy','canceled')),
+                call_sid TEXT DEFAULT '',
+                provider TEXT DEFAULT '',
+                duration INTEGER DEFAULT 0,
+                price REAL DEFAULT 0,
+                error_msg TEXT DEFAULT '',
+                initiated_at TEXT,
+                finished_at TEXT,
+                created_by INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_voice_records_created_by ON voice_records(created_by);
+            CREATE INDEX IF NOT EXISTS idx_voice_records_created_at ON voice_records(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_voice_records_status_created_at ON voice_records(status, created_at DESC);
         ''')
         # Create default admin if not exists
         cursor = db.execute("SELECT id FROM users WHERE username='admin'")
@@ -564,6 +631,11 @@ def init_db():
                        ('team_admin', json.dumps(DEFAULT_ROLE_PERMISSIONS['team_admin'])))
             db.execute("INSERT INTO role_permissions (role, permissions) VALUES (?, ?)",
                        ('team_member', json.dumps(DEFAULT_ROLE_PERMISSIONS['team_member'])))
+            db.commit()
+        # Create default voice_config if not exists
+        cursor = db.execute("SELECT id FROM voice_config LIMIT 1")
+        if cursor.fetchone() is None:
+            db.execute("INSERT INTO voice_config (provider, account_sid, auth_token, from_number, is_active) VALUES ('simulation', '', '', '', 1)")
             db.commit()
         # Migration: add new columns if they don't exist
         try:
@@ -1264,7 +1336,7 @@ def get_me():
         role = g.user['role']
         if role == 'admin':
             # Admin always has all permissions
-            permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'role-permissions']
+            permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'voice-config', 'role-permissions']
             perms_configured = True
         else:
             # Get permissions from role_permissions table
@@ -1398,7 +1470,7 @@ def list_users():
             ud['permissions'] = []
         # Admin always has all permissions
         if ud['role'] == 'admin':
-            ud['permissions'] = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config']
+            ud['permissions'] = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'voice-config']
         # Team affiliation: show team creator name for team members
         if ud['team_creator_name']:
             ud['team_affiliation'] = ud['team_creator_fullname'] or ud['team_creator_name']
@@ -2156,13 +2228,15 @@ AVAILABLE_PAGES = [
     {'id': 'groups', 'label': 'Grupos', 'icon': 'folder'},
     {'id': 'templates', 'label': 'Plantillas', 'icon': 'file-text'},
     {'id': 'send', 'label': 'Enviar SMS', 'icon': 'send'},
-    {'id': 'records', 'label': 'Registros', 'icon': 'activity'},
+    {'id': 'records', 'label': 'Registros SMS', 'icon': 'activity'},
+    {'id': 'calls', 'label': 'Llamadas', 'icon': 'phone'},
     {'id': 'content-search', 'label': 'Buscar Contenido', 'icon': 'search'},
     {'id': 'users', 'label': 'Usuarios', 'icon': 'user-plus'},
     {'id': 'my-account', 'label': 'Mi Cuenta', 'icon': 'user'},
     {'id': 'my-team', 'label': 'Mi Equipo', 'icon': 'users'},
     {'id': 'all-teams', 'label': 'Todos los Equipos', 'icon': 'bar-chart'},
-    {'id': 'config', 'label': 'Configuracion API', 'icon': 'settings'},
+    {'id': 'config', 'label': 'Configuracion API SMS', 'icon': 'settings'},
+    {'id': 'voice-config', 'label': 'Configuracion Voz', 'icon': 'settings'},
 ]
 
 # Default permissions per role when the role_permissions table has no explicit
@@ -2173,11 +2247,11 @@ DEFAULT_ROLE_PERMISSIONS = {
     'admin': [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions'],
     'team_admin': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'content-search', 'users', 'my-account', 'my-team', 'all-teams',
+        'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams',
     ],
     'team_member': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'my-account',
+        'calls', 'my-account',
     ],
 }
 
@@ -4312,8 +4386,8 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
 
         details = f"Contactos eliminados: {count}; grupos: {group_count}; disparado por: {triggered_by}"
         db.execute(
-            "INSERT INTO send_logs (action, recipient, status, details) VALUES (?, ?, ?, ?)",
-            ('auto_clear_contacts', '(all)', 'ok', details),
+            "INSERT INTO send_logs (action, status, details) VALUES (?, ?, ?)",
+            ('auto_clear_contacts', 'ok', details),
         )
         db.commit()
         app.logger.warning('auto_clear_contacts completed: %s', details)
@@ -4323,8 +4397,8 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
         try:
             _setting_set('auto_clear_last_run_status', f'error: {str(exc)[:200]}')
             db.execute(
-                "INSERT INTO send_logs (action, recipient, status, details) VALUES (?, ?, ?, ?)",
-                ('auto_clear_contacts', '(all)', 'error', f'Error: {str(exc)[:400]}'),
+                "INSERT INTO send_logs (action, status, details) VALUES (?, ?, ?)",
+                ('auto_clear_contacts', 'error', f'Error: {str(exc)[:400]}'),
             )
             db.commit()
         except Exception:
@@ -4398,6 +4472,469 @@ def api_auto_clear_run_now():
         return jsonify({'success': True, 'deleted': count, 'details': details})
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+# ============================================================
+# Voice Call (电呼) Provider Integration
+# ============================================================
+
+VOICE_STATUS_LABELS = {
+    'pending': 'Pendiente',
+    'initiated': 'Iniciada',
+    'ringing': 'Llamando',
+    'answered': 'Contestada',
+    'completed': 'Completada',
+    'failed': 'Fallida',
+    'no-answer': 'Sin respuesta',
+    'busy': 'Ocupado',
+    'canceled': 'Cancelada',
+}
+
+
+def get_voice_config():
+    """Return the active voice config row as a dict, or None."""
+    db = get_db()
+    row = db.execute("SELECT * FROM voice_config WHERE is_active = 1 ORDER BY id LIMIT 1").fetchone()
+    if not row:
+        return None
+    return {
+        'id': row['id'],
+        'provider': (row['provider'] or 'simulation').strip().lower(),
+        'account_sid': row['account_sid'] or '',
+        'auth_token': row['auth_token'] or '',
+        'from_number': row['from_number'] or '',
+        'api_domain': row['api_domain'] or '',
+        'extra': row['extra'] or '',
+    }
+
+
+def is_voice_configured():
+    cfg = get_voice_config()
+    if not cfg:
+        return False
+    if cfg['provider'] in ('', 'simulation', 'simulacion', 'none'):
+        return False
+    if cfg['provider'] == 'twilio':
+        return bool(cfg['account_sid'] and cfg['auth_token'] and cfg['from_number'])
+    if cfg['provider'] == 'custom':
+        return bool(cfg['api_domain'] and cfg['account_sid'] and cfg['auth_token'])
+    return False
+
+
+def _twilio_tts_xml(script_text, lang='es-MX', voice='alice'):
+    """Build TwiML <Say> response with the call script."""
+    safe = (script_text or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Response><Say language="' + lang + '" voice="' + voice + '">'
+        + safe + '</Say></Response>'
+    )
+
+
+def voice_place_call(phone, script, config=None, contact_name=''):
+    """Place an outbound voice call that plays TTS script.
+
+    Returns dict: {ok, call_sid, status, error_msg, price, duration}
+    Provider 'simulation' does not hit any external API.
+    """
+    if config is None:
+        config = get_voice_config()
+    provider = (config or {}).get('provider', 'simulation') or 'simulation'
+    normalized = normalize_phone(phone)
+    result = {
+        'ok': False, 'call_sid': '', 'status': 'failed',
+        'error_msg': '', 'price': 0.0, 'duration': 0,
+    }
+
+    if provider in ('', 'simulation', 'simulacion', 'none'):
+        # Simulation: pseudo-random deterministic outcome so demos are reproducible
+        digest = hashlib.sha256((normalized + script).encode()).hexdigest()
+        bucket = int(digest[:6], 16) % 100
+        if bucket < 10:
+            result.update(status='no-answer', error_msg='Sin respuesta (simulacion)')
+        elif bucket < 15:
+            result.update(status='busy', error_msg='Ocupado (simulacion)')
+        elif bucket < 20:
+            result.update(status='failed', error_msg='Error de red (simulacion)')
+        else:
+            dur = 15 + (int(digest[6:10], 16) % 90)
+            result.update(ok=True, call_sid='SIM' + digest[:14].upper(),
+                          status='completed', duration=dur)
+        return result
+
+    if provider == 'twilio':
+        try:
+            from twilio.rest import Client
+            from twilio.base.exceptions import TwilioRestException
+            client = Client(config['account_sid'], config['auth_token'])
+            twiml = _twilio_tts_xml(script)
+            call = client.calls.create(
+                to=normalized,
+                from_=config['from_number'],
+                twiml=twiml,
+                status_callback_method='GET',
+            )
+            sid = getattr(call, 'sid', '') or ''
+            status = (getattr(call, 'status', '') or 'initiated').lower()
+            mapped = {
+                'queued': 'initiated', 'initiated': 'initiated', 'ringing': 'ringing',
+                'in-progress': 'answered', 'answered': 'answered',
+                'completed': 'completed', 'busy': 'busy', 'failed': 'failed',
+                'no-answer': 'no-answer', 'canceled': 'canceled',
+            }.get(status, 'initiated')
+            result.update(ok=mapped in ('initiated', 'ringing', 'answered', 'completed'),
+                          call_sid=sid, status=mapped)
+            if not result['ok']:
+                result['error_msg'] = 'Estado Twilio: ' + status
+            return result
+        except ImportError:
+            result['error_msg'] = 'Paquete twilio no instalado en el servidor'
+            return result
+        except Exception as e:
+            # TwilioRestException has .msg / .code
+            msg = getattr(e, 'msg', None) or str(e)
+            result['error_msg'] = msg[:500]
+            return result
+
+    if provider == 'custom':
+        # Generic JSON voice gateway. POST {to, from, text, callback}.
+        try:
+            payload = {
+                'to': normalized,
+                'from': config['from_number'],
+                'text': script,
+                'account_sid': config['account_sid'],
+            }
+            headers = {
+                'Authorization': 'Bearer ' + config['auth_token'],
+                'Content-Type': 'application/json',
+            }
+            url = config['api_domain'].rstrip('/') + '/call'
+            resp = http_requests.post(url, json=payload, headers=headers, timeout=20)
+            data = resp.json() if resp.content else {}
+            if resp.status_code < 300 and str(data.get('code', 0)) in ('0', '200'):
+                result.update(ok=True, call_sid=str(data.get('call_id') or data.get('sid') or ''),
+                              status='initiated')
+            else:
+                result['error_msg'] = str(data.get('message') or data.get('msg') or ('HTTP ' + str(resp.status_code)))[:500]
+            return result
+        except Exception as e:
+            result['error_msg'] = str(e)[:500]
+            return result
+
+    result['error_msg'] = 'Proveedor de voz no soportado: ' + provider
+    return result
+
+
+def voice_query_status(call_sid, config=None):
+    """Query a call's live status from the provider. Returns dict or None."""
+    if not call_sid or call_sid.startswith('SIM'):
+        return None
+    if config is None:
+        config = get_voice_config()
+    provider = (config or {}).get('provider', '')
+    if provider == 'twilio':
+        try:
+            from twilio.rest import Client
+            client = Client(config['account_sid'], config['auth_token'])
+            call = client.calls(call_sid).fetch()
+            status = (getattr(call, 'status', '') or '').lower()
+            mapped = {
+                'queued': 'initiated', 'initiated': 'initiated', 'ringing': 'ringing',
+                'in-progress': 'answered', 'answered': 'answered',
+                'completed': 'completed', 'busy': 'busy', 'failed': 'failed',
+                'no-answer': 'no-answer', 'canceled': 'canceled',
+            }.get(status, status)
+            duration = 0
+            try:
+                duration = int(getattr(call, 'duration', 0) or 0)
+            except Exception:
+                duration = 0
+            price = 0.0
+            try:
+                price = float(getattr(call, 'price', 0) or 0)
+            except Exception:
+                price = 0.0
+            return {'status': mapped, 'duration': duration, 'price': abs(price)}
+        except Exception:
+            return None
+    return None
+
+
+# ----- Voice API routes -----
+
+@app.route('/api/voice/call', methods=['POST'])
+@login_required
+def voice_place_call_route():
+    """Place one or more outbound voice calls with a TTS script."""
+    data = request.get_json() or {}
+    phones = data.get('phones') or []
+    script = (data.get('script') or '').strip()
+    contact_names = data.get('contact_names', {}) or {}
+    if isinstance(phones, str):
+        phones = [phones]
+    phones = [str(p).strip() for p in phones if str(p).strip()]
+    if not phones or not script:
+        return jsonify({'error': 'Telefono(s) y guion son requeridos'}), 400
+    if len(phones) > 200:
+        return jsonify({'error': 'Maximo 200 numeros por llamada masiva'}), 400
+
+    cfg = get_voice_config()
+    simulated = not is_voice_configured()
+    db = get_db()
+    results = []
+    errors = []
+    for raw in phones:
+        phone = normalize_phone(raw)
+        name = contact_names.get(raw, '') or contact_names.get(phone, '')
+        text = script.replace('{nombre}', name).replace('{telefono}', phone)
+        res = voice_place_call(phone, text, config=cfg, contact_name=name)
+        status = res['status']
+        db.execute(
+            "INSERT INTO voice_records (phone, contact_name, script, status, call_sid, provider, duration, price, error_msg, initiated_at, finished_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), CASE WHEN ? IN ('completed','failed','no-answer','busy','canceled') THEN datetime('now') ELSE NULL END, ?)",
+            (phone, name, text, status, res['call_sid'],
+             (cfg or {}).get('provider', 'simulation'),
+             res['duration'], res['price'], res['error_msg'],
+             status, g.user['id'])
+        )
+        results.append({'phone': phone, 'status': status, 'call_sid': res['call_sid'],
+                        'error': res['error_msg'], 'simulated': simulated})
+        if status in ('failed', 'no-answer', 'busy'):
+            errors.append(phone + ': ' + (res['error_msg'] or VOICE_STATUS_LABELS.get(status, status)))
+    db.commit()
+    db.execute(
+        "INSERT INTO send_logs (action, details, status) VALUES (?, ?, ?)",
+        ('voice_call',
+         json.dumps({'count': len(results), 'user': g.user['username'],
+                     'simulated': simulated, 'errors': errors[:5]}),
+         'success' if not errors else ('partial' if results else 'error'))
+    )
+    db.commit()
+    ok = sum(1 for r in results if r['status'] in ('completed', 'initiated', 'ringing', 'answered'))
+    msg = f'{ok} llamada(s) iniciada(s)'
+    if errors:
+        msg += f', {len(errors)} fallida(s)'
+    if simulated:
+        msg += ' (modo simulacion - API de voz no configurada)'
+    return jsonify({'message': msg, 'results': results, 'errors': errors[:10], 'simulated': simulated})
+
+
+@app.route('/api/voice/records', methods=['GET'])
+@login_required
+def voice_list_records():
+    db = get_db()
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    status = request.args.get('status', '').strip()
+    search = request.args.get('search', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    offset = (page - 1) * per_page
+
+    where = ['1=1']
+    params = []
+    if g.user['role'] == 'team_member':
+        where.append('r.created_by = ?')
+        params.append(g.user['id'])
+    elif g.user['role'] == 'team_admin':
+        where.append('r.created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)')
+        params.extend([g.user['id'], g.user['id']])
+    if status:
+        where.append('r.status = ?')
+        params.append(status)
+    if search:
+        where.append('(r.phone LIKE ? OR r.contact_name LIKE ? OR r.script LIKE ?)')
+        like = f'%{search}%'
+        params.extend([like, like, like])
+    if date_from:
+        where.append("date(r.created_at) >= date(?)")
+        params.append(date_from)
+    if date_to:
+        where.append("date(r.created_at) <= date(?)")
+        params.append(date_to)
+    where_sql = ' AND '.join(where)
+
+    total = db.execute(f"SELECT COUNT(*) AS c FROM voice_records r WHERE {where_sql}", params).fetchone()['c']
+    rows = db.execute(
+        f"SELECT r.*, u.username AS sender_username, u.full_name AS sender_full_name "
+        f"FROM voice_records r LEFT JOIN users u ON u.id=r.created_by "
+        f"WHERE {where_sql} ORDER BY r.id DESC LIMIT ? OFFSET ?",
+        params + [per_page, offset]
+    ).fetchall()
+    items = []
+    for r in rows:
+        items.append({
+            'id': r['id'], 'phone': r['phone'], 'contact_name': r['contact_name'] or '',
+            'script': r['script'], 'status': r['status'],
+            'status_label': VOICE_STATUS_LABELS.get(r['status'], r['status']),
+            'call_sid': r['call_sid'] or '', 'provider': r['provider'] or '',
+            'duration': r['duration'] or 0, 'price': float(r['price'] or 0),
+            'error_msg': r['error_msg'] or '',
+            'initiated_at': r['initiated_at'], 'finished_at': r['finished_at'],
+            'created_at': r['created_at'],
+            'created_by': r['created_by'],
+            'sender_username': r['sender_username'] or '',
+            'sender_full_name': r['sender_full_name'] or '',
+        })
+    return jsonify({'records': items, 'total': total, 'page': page, 'per_page': per_page})
+
+
+@app.route('/api/voice/statistics', methods=['GET'])
+@login_required
+def voice_statistics():
+    db = get_db()
+    scope = ''
+    params = []
+    if g.user['role'] == 'team_member':
+        scope = ' AND created_by = ?'
+        params = [g.user['id']]
+    elif g.user['role'] == 'team_admin':
+        scope = ' AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)'
+        params = [g.user['id'], g.user['id']]
+    today = datetime.now().strftime('%Y-%m-%d')
+    today_calls = db.execute(
+        f"SELECT COUNT(*) AS c FROM voice_records WHERE date(initiated_at)=? {scope}", [today] + params
+    ).fetchone()['c']
+    total = db.execute(f"SELECT COUNT(*) AS c FROM voice_records WHERE 1=1 {scope}", params).fetchone()['c']
+    completed = db.execute(
+        f"SELECT COUNT(*) AS c FROM voice_records WHERE status='completed' {scope}", params
+    ).fetchone()['c']
+    failed = db.execute(
+        f"SELECT COUNT(*) AS c FROM voice_records WHERE status IN ('failed','no-answer','busy','canceled') {scope}",
+        params
+    ).fetchone()['c']
+    pending = db.execute(
+        f"SELECT COUNT(*) AS c FROM voice_records WHERE status IN ('pending','initiated','ringing','answered') {scope}",
+        params
+    ).fetchone()['c']
+    total_duration = db.execute(
+        f"SELECT COALESCE(SUM(duration),0) AS s FROM voice_records WHERE status='completed' {scope}", params
+    ).fetchone()['s'] or 0
+    last7 = []
+    for i in range(6, -1, -1):
+        day = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+        c = db.execute(
+            f"SELECT COUNT(*) AS c FROM voice_records WHERE date(initiated_at)=? {scope}", [day] + params
+        ).fetchone()['c']
+        last7.append({'date': day, 'count': c})
+    answer_rate = (completed / total * 100) if total else 0
+    return jsonify({
+        'today_calls': today_calls, 'total': total, 'completed': completed,
+        'failed': failed, 'pending': pending,
+        'total_duration': int(total_duration),
+        'answer_rate': round(answer_rate, 1),
+        'last_7_days': last7,
+        'configured': is_voice_configured(),
+        'provider': (get_voice_config() or {}).get('provider', 'simulation'),
+    })
+
+
+@app.route('/api/voice/query-status', methods=['POST'])
+@login_required
+def voice_query_status_route():
+    data = request.get_json() or {}
+    call_sid = (data.get('call_sid') or '').strip()
+    record_id = data.get('id')
+    if not call_sid and record_id:
+        db = get_db()
+        row = db.execute("SELECT call_sid FROM voice_records WHERE id=?", (record_id,)).fetchone()
+        if row:
+            call_sid = row['call_sid'] or ''
+    if not call_sid:
+        return jsonify({'error': 'call_sid requerido'}), 400
+    info = voice_query_status(call_sid)
+    if not info:
+        return jsonify({'error': 'No se pudo consultar el estado (proveedor no soportado o llamada simulada)'}), 400
+    db = get_db()
+    db.execute(
+        "UPDATE voice_records SET status=?, duration=?, price=?, "
+        "finished_at=CASE WHEN ? IN ('completed','failed','no-answer','busy','canceled') THEN datetime('now') ELSE finished_at END "
+        "WHERE call_sid=?",
+        (info['status'], info['duration'], info['price'], info['status'], call_sid)
+    )
+    db.commit()
+    return jsonify({'success': True, 'status': info['status'], 'duration': info['duration'], 'price': info['price']})
+
+
+@app.route('/api/config/voice', methods=['GET'])
+@admin_required
+def voice_get_config():
+    cfg = get_voice_config()
+    if not cfg:
+        return jsonify({'config': None})
+    # Do not leak auth_token in full; return a masked flag.
+    return jsonify({'config': {
+        'id': cfg['id'], 'provider': cfg['provider'],
+        'account_sid': cfg['account_sid'], 'from_number': cfg['from_number'],
+        'api_domain': cfg['api_domain'],
+        'has_token': bool(cfg['auth_token']),
+        'configured': is_voice_configured(),
+    }})
+
+
+@app.route('/api/config/voice', methods=['POST'])
+@admin_required
+def voice_save_config():
+    data = request.get_json() or {}
+    provider = (data.get('provider') or 'simulation').strip().lower()
+    account_sid = (data.get('account_sid') or '').strip()
+    auth_token = (data.get('auth_token') or '').strip()
+    from_number = (data.get('from_number') or '').strip()
+    api_domain = (data.get('api_domain') or '').strip()
+    if provider not in ('simulation', 'twilio', 'custom'):
+        return jsonify({'error': 'Proveedor invalido'}), 400
+    db = get_db()
+    row = db.execute("SELECT id, auth_token FROM voice_config ORDER BY id LIMIT 1").fetchone()
+    # If the client sent an empty auth_token and one is already stored, keep it.
+    final_token = auth_token
+    if not final_token and row:
+        final_token = row['auth_token'] or ''
+    if row:
+        db.execute(
+            "UPDATE voice_config SET provider=?, account_sid=?, auth_token=?, from_number=?, api_domain=?, is_active=1, updated_at=datetime('now') WHERE id=?",
+            (provider, account_sid, final_token, from_number, api_domain, row['id'])
+        )
+    else:
+        db.execute(
+            "INSERT INTO voice_config (provider, account_sid, auth_token, from_number, api_domain, is_active) VALUES (?, ?, ?, ?, ?, 1)",
+            (provider, account_sid, final_token, from_number, api_domain)
+        )
+    db.commit()
+    return jsonify({'message': 'Configuracion de voz guardada', 'configured': is_voice_configured()})
+
+
+@app.route('/api/config/voice/test', methods=['POST'])
+@admin_required
+def voice_test_config():
+    """Validate credentials by fetching account info (Twilio) or a lightweight ping."""
+    cfg = get_voice_config()
+    if not cfg or not is_voice_configured():
+        return jsonify({'error': 'API de voz no configurada'}), 400
+    if cfg['provider'] == 'twilio':
+        try:
+            from twilio.rest import Client
+            client = Client(cfg['account_sid'], cfg['auth_token'])
+            account = client.api.accounts(cfg['account_sid']).fetch()
+            return jsonify({
+                'success': True,
+                'message': 'Conectado a Twilio',
+                'account_name': getattr(account, 'friendly_name', ''),
+                'status': getattr(account, 'status', ''),
+            })
+        except ImportError:
+            return jsonify({'error': 'Paquete twilio no instalado'}), 500
+        except Exception as e:
+            return jsonify({'error': getattr(e, 'msg', None) or str(e)}), 400
+    if cfg['provider'] == 'custom':
+        try:
+            url = cfg['api_domain'].rstrip('/') + '/ping'
+            resp = http_requests.get(url, timeout=10,
+                                     headers={'Authorization': 'Bearer ' + cfg['auth_token']})
+            return jsonify({'success': resp.status_code < 300, 'status_code': resp.status_code})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 400
+    return jsonify({'error': 'Proveedor no soportado'}), 400
 
 
 init_db()
