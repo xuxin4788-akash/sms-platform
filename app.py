@@ -350,6 +350,11 @@ def init_db():
                 auth_token VARCHAR(255) DEFAULT '',
                 from_number VARCHAR(100) DEFAULT '',
                 api_domain VARCHAR(500) DEFAULT '',
+                voice_appid VARCHAR(255) DEFAULT '',
+                voice_accesskey VARCHAR(255) DEFAULT '',
+                voice_extnumber VARCHAR(100) DEFAULT '',
+                voice_token VARCHAR(255) DEFAULT '',
+                voice_token_expiry BIGINT DEFAULT 0,
                 extra TEXT DEFAULT '',
                 is_active BOOLEAN DEFAULT TRUE,
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -424,6 +429,17 @@ def init_db():
             cur.execute("ALTER TABLE sms_records ADD COLUMN api_code INTEGER DEFAULT 0")
         if not pg_column_exists('sms_records', 'api_msg'):
             cur.execute("ALTER TABLE sms_records ADD COLUMN api_msg TEXT DEFAULT ''")
+
+        # voice_config migrations (infin8linx provider fields)
+        for _col, _type in (
+            ('voice_appid', 'VARCHAR(255)'),
+            ('voice_accesskey', 'VARCHAR(255)'),
+            ('voice_extnumber', 'VARCHAR(100)'),
+            ('voice_token', 'VARCHAR(255)'),
+            ('voice_token_expiry', 'BIGINT'),
+        ):
+            if not pg_column_exists('voice_config', _col):
+                cur.execute(f"ALTER TABLE voice_config ADD COLUMN {_col} {_type} DEFAULT " + ("0" if "expiry" in _col else "''"))
 
         # Create default admin
         cur.execute("SELECT id FROM users WHERE username='admin'")
@@ -604,6 +620,11 @@ def init_db():
                 auth_token TEXT DEFAULT '',
                 from_number TEXT DEFAULT '',
                 api_domain TEXT DEFAULT '',
+                voice_appid TEXT DEFAULT '',
+                voice_accesskey TEXT DEFAULT '',
+                voice_extnumber TEXT DEFAULT '',
+                voice_token TEXT DEFAULT '',
+                voice_token_expiry INTEGER DEFAULT 0,
                 extra TEXT DEFAULT '',
                 is_active INTEGER DEFAULT 1,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -705,6 +726,19 @@ def init_db():
         ):
             try:
                 db.execute(f"ALTER TABLE contacts ADD COLUMN {_col} {_type}")
+                db.commit()
+            except Exception:
+                pass
+        # Migration: voice_config extra columns for infin8linx provider
+        for _col, _type in (
+            ("voice_appid", "TEXT DEFAULT ''"),
+            ("voice_accesskey", "TEXT DEFAULT ''"),
+            ("voice_extnumber", "TEXT DEFAULT ''"),
+            ("voice_token", "TEXT DEFAULT ''"),
+            ("voice_token_expiry", "INTEGER DEFAULT 0"),
+        ):
+            try:
+                db.execute(f"ALTER TABLE voice_config ADD COLUMN {_col} {_type}")
                 db.commit()
             except Exception:
                 pass
@@ -4653,14 +4687,20 @@ def get_voice_config():
     row = db.execute("SELECT * FROM voice_config WHERE is_active = 1 ORDER BY id LIMIT 1").fetchone()
     if not row:
         return None
+    d = dict(row)
     return {
-        'id': row['id'],
-        'provider': (row['provider'] or 'simulation').strip().lower(),
-        'account_sid': row['account_sid'] or '',
-        'auth_token': row['auth_token'] or '',
-        'from_number': row['from_number'] or '',
-        'api_domain': row['api_domain'] or '',
-        'extra': row['extra'] or '',
+        'id': d.get('id'),
+        'provider': (d.get('provider') or 'simulation').strip().lower(),
+        'account_sid': d.get('account_sid') or '',
+        'auth_token': d.get('auth_token') or '',
+        'from_number': d.get('from_number') or '',
+        'api_domain': d.get('api_domain') or '',
+        'voice_appid': d.get('voice_appid') or '',
+        'voice_accesskey': d.get('voice_accesskey') or '',
+        'voice_extnumber': d.get('voice_extnumber') or '',
+        'voice_token': d.get('voice_token') or '',
+        'voice_token_expiry': int(d.get('voice_token_expiry') or 0),
+        'extra': d.get('extra') or '',
     }
 
 
@@ -4674,7 +4714,27 @@ def is_voice_configured():
         return bool(cfg['account_sid'] and cfg['auth_token'] and cfg['from_number'])
     if cfg['provider'] == 'custom':
         return bool(cfg['api_domain'] and cfg['account_sid'] and cfg['auth_token'])
+    if cfg['provider'] == 'infin8linx':
+        return bool(cfg['api_domain'] and cfg['voice_appid'] and cfg['voice_accesskey']
+                    and cfg['voice_extnumber'])
     return False
+
+
+def infin8linx_parse_response(resp):
+    """Parse a standard infin8linx JSON envelope. Returns (ok, data, error_msg)."""
+    if resp.status_code >= 300:
+        return False, None, 'El servidor respondio HTTP %s (revisar URL/puerto)' % resp.status_code
+    try:
+        data = resp.json()
+    except Exception:
+        return False, None, 'Respuesta no JSON del servidor (revisar que la URL apunte al API de voz)'
+    if int(data.get('ret', 0)) != 200:
+        return False, data, str(data.get('msg') or 'Error ret=%s' % data.get('ret'))[:300]
+    body = data.get('data') or {}
+    if int(body.get('status', 1)) != 0:
+        errs = body.get('errors') or {}
+        return False, data, str(body.get('desc') or errs.get('codemsg') or 'Error en la operacion')[:300]
+    return True, data, ''
 
 
 def _twilio_tts_xml(script_text, lang='es-MX', voice='alice'):
@@ -4685,6 +4745,133 @@ def _twilio_tts_xml(script_text, lang='es-MX', voice='alice'):
         '<Response><Say language="' + lang + '" voice="' + voice + '">'
         + safe + '</Say></Response>'
     )
+
+
+# in-memory cache for infin8linx auth tokens (one per gunicorn worker)
+_INFIN_TOKEN_CACHE = {'token': '', 'expiry': 0}
+
+
+def infin8linx_get_token(config, force=False):
+    """Obtain an auth token from infin8linx (service App.Sip_Auth.Login).
+
+    Tokens last 12h per docs; we refresh 10 minutes early. The token is also
+    persisted on the voice_config row so that multiple workers share it.
+    """
+    import time as _time
+    now = int(time.time())
+    if not force:
+        # Prefer the value freshly read from DB (shared across workers)
+        db_token = (config or {}).get('voice_token') or ''
+        db_expiry = int((config or {}).get('voice_token_expiry') or 0)
+        if db_token and db_expiry - 600 > now:
+            return db_token, None
+        cached = _INFIN_TOKEN_CACHE.get('token') or ''
+        if cached and int(_INFIN_TOKEN_CACHE.get('expiry') or 0) - 600 > now:
+            return cached, None
+    api_url = (config or {}).get('api_domain') or ''
+    appid = (config or {}).get('voice_appid') or ''
+    accesskey = (config or {}).get('voice_accesskey') or ''
+    if not (api_url and appid and accesskey):
+        return '', 'Faltan datos de acceso (URL, AppID o AccessKey)'
+    url = api_url.rstrip('/')
+    try:
+        resp = http_requests.post(url, data={
+            'service': 'App.Sip_Auth.Login',
+            'appid': appid,
+            'accesskey': accesskey,
+        }, timeout=15)
+        try:
+            data = resp.json()
+        except Exception:
+            return '', 'Respuesta no JSON del servidor (revisar que la URL apunte al API de voz)'
+        if resp.status_code >= 300 or int(data.get('ret', 0)) != 200:
+            return '', str(data.get('msg') or ('HTTP %s - revisar URL/puerto' % resp.status_code))[:300]
+        body = data.get('data') or {}
+        if int(body.get('status', 1)) != 0:
+            errs = body.get('errors') or {}
+            return '', str(body.get('desc') or errs.get('codemsg') or 'No se pudo obtener el token')[:300]
+        result = body.get('result') or {}
+        token = (result.get('token') or '').strip()
+        if not token:
+            return '', 'El servidor no devolvio token'
+        expiry = now + 12 * 3600
+        _INFIN_TOKEN_CACHE['token'] = token
+        _INFIN_TOKEN_CACHE['expiry'] = expiry
+        try:
+            db = get_db()
+            db.execute("UPDATE voice_config SET voice_token=?, voice_token_expiry=? WHERE id=?",
+                       (token, expiry, config.get('id')))
+            db.commit()
+        except Exception:
+            pass
+        return token, None
+    except Exception as e:
+        msg = str(e)
+        if 'NewConnectionError' in msg or 'Failed to establish a new connection' in msg:
+            return '', 'No se pudo conectar con la URL de la API (revisar IP/puerto)'
+        if 'timed out' in msg.lower():
+            return '', 'Tiempo de espera agotado al conectar con la API'
+        return '', 'Error de conexion: ' + msg[:200]
+
+
+def infin8linx_make_call(phone, config):
+    """Send MakeCall command to infin8linx. Returns (ok, call_sid, error_msg).
+
+    infin8linx MakeCall triggers a click-to-call between a SIP extension and
+    the destination number. It returns only a command-ack (no call id); status
+    is later obtained from the CDR/callback interface. We synthesise a local
+    reference so the call can be tracked in voice_records.
+    """
+    token, err = infin8linx_get_token(config)
+    if err:
+        return False, '', err
+    extnumber = (config or {}).get('voice_extnumber') or ''
+    disnumber = (config or {}).get('from_number') or ''
+    if not extnumber:
+        return False, '', 'Falta el numero de extension (extnumber)'
+    payload = {
+        'service': 'App.Sip_Call.MakeCall',
+        'token': token,
+        'extnumber': extnumber,
+        'destnumber': phone,
+    }
+    if disnumber:
+        payload['disnumber'] = disnumber
+    try:
+        resp = http_requests.post(config['api_domain'].rstrip('/'), data=payload, timeout=20)
+        try:
+            data = resp.json()
+        except Exception:
+            return False, '', 'Respuesta no JSON del servidor (revisar que la URL apunte al API de voz)'
+        if int(data.get('ret', 0)) != 200:
+            msg = str(data.get('msg') or ('HTTP %s' % resp.status_code))
+            # token expired/invalid -> force refresh once
+            if '600' in str(data.get('ret')) or 'token' in msg.lower():
+                token2, err2 = infin8linx_get_token(config, force=True)
+                if token2 and not err2:
+                    payload['token'] = token2
+                    resp = http_requests.post(config['api_domain'].rstrip('/'), data=payload, timeout=20)
+                    data = resp.json()
+                    if int(data.get('ret', 0)) == 200:
+                        body = data.get('data') or {}
+                        if int(body.get('status', 1)) == 0:
+                            ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
+                            return True, ref, ''
+                        return False, '', str(body.get('desc') or 'Error al iniciar llamada')[:300]
+            return False, '', msg[:300]
+        body = data.get('data') or {}
+        if int(body.get('status', 1)) != 0:
+            errs = body.get('errors') or {}
+            return False, '', str(body.get('desc') or errs.get('codemsg') or 'Error al iniciar llamada')[:300]
+        ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
+        return True, ref, ''
+    except Exception as e:
+        msg = str(e)
+        if 'NewConnectionError' in msg or 'Failed to establish a new connection' in msg:
+            return False, '', 'No se pudo conectar con la URL de la API (revisar IP/puerto)'
+        if 'timed out' in msg.lower():
+            return False, '', 'Tiempo de espera agotado al conectar con la API'
+        return False, '', 'Error de conexion: ' + msg[:200]
 
 
 def voice_place_call(phone, script, config=None, contact_name=''):
@@ -4777,6 +4964,17 @@ def voice_place_call(phone, script, config=None, contact_name=''):
         except Exception as e:
             result['error_msg'] = str(e)[:500]
             return result
+
+    if provider == 'infin8linx':
+        # infin8linx click-to-call: rings the configured SIP extension first,
+        # then connects to destnumber. There is no TTS broadcast in this API;
+        # the agent extension plays the script. We just dispatch the command.
+        ok, ref, err = infin8linx_make_call(normalized, config)
+        if ok:
+            result.update(ok=True, call_sid=ref, status='initiated')
+        else:
+            result['error_msg'] = err or 'Error al iniciar la llamada'
+        return result
 
     result['error_msg'] = 'Proveedor de voz no soportado: ' + provider
     return result
@@ -5020,12 +5218,15 @@ def voice_get_config():
     cfg = get_voice_config()
     if not cfg:
         return jsonify({'config': None})
-    # Do not leak auth_token in full; return a masked flag.
+    # Do not leak auth_token/accesskey in full; return masked flags.
     return jsonify({'config': {
         'id': cfg['id'], 'provider': cfg['provider'],
         'account_sid': cfg['account_sid'], 'from_number': cfg['from_number'],
         'api_domain': cfg['api_domain'],
         'has_token': bool(cfg['auth_token']),
+        'voice_appid': cfg['voice_appid'],
+        'voice_extnumber': cfg['voice_extnumber'],
+        'has_accesskey': bool(cfg['voice_accesskey']),
         'configured': is_voice_configured(),
     }})
 
@@ -5039,32 +5240,55 @@ def voice_save_config():
     auth_token = (data.get('auth_token') or '').strip()
     from_number = (data.get('from_number') or '').strip()
     api_domain = (data.get('api_domain') or '').strip()
-    if provider not in ('simulation', 'twilio', 'custom'):
+    voice_appid = (data.get('voice_appid') or '').strip()
+    voice_accesskey = (data.get('voice_accesskey') or '').strip()
+    voice_extnumber = (data.get('voice_extnumber') or '').strip()
+    if provider not in ('simulation', 'twilio', 'custom', 'infin8linx'):
         return jsonify({'error': 'Proveedor invalido'}), 400
     db = get_db()
-    row = db.execute("SELECT id, auth_token FROM voice_config ORDER BY id LIMIT 1").fetchone()
-    # If the client sent an empty auth_token and one is already stored, keep it.
+    row = db.execute("SELECT id, auth_token, voice_accesskey, voice_appid FROM voice_config ORDER BY id LIMIT 1").fetchone()
+    # If the client sent an empty secret and one is already stored, keep it.
     final_token = auth_token
-    if not final_token and row:
-        final_token = row['auth_token'] or ''
+    final_accesskey = voice_accesskey
+    prev_appid = ''
+    if row:
+        if not final_token:
+            final_token = row['auth_token'] or ''
+        if not final_accesskey:
+            final_accesskey = row['voice_accesskey'] or ''
+        prev_appid = row['voice_appid'] or ''
+    # Changing AppID/AccessKey/URL invalidates any cached token.
+    token_reset = bool(prev_appid and (voice_appid != prev_appid or voice_accesskey))
     if row:
         db.execute(
-            "UPDATE voice_config SET provider=?, account_sid=?, auth_token=?, from_number=?, api_domain=?, is_active=1, updated_at=datetime('now') WHERE id=?",
-            (provider, account_sid, final_token, from_number, api_domain, row['id'])
+            "UPDATE voice_config SET provider=?, account_sid=?, auth_token=?, from_number=?, api_domain=?, "
+            "voice_appid=?, voice_accesskey=?, voice_extnumber=?, "
+            "voice_token=CASE WHEN ? THEN '' ELSE voice_token END, "
+            "voice_token_expiry=CASE WHEN ? THEN 0 ELSE voice_token_expiry END, "
+            "is_active=1, updated_at=datetime('now') WHERE id=?",
+            (provider, account_sid, final_token, from_number, api_domain,
+             voice_appid, final_accesskey, voice_extnumber,
+             1 if token_reset else 0, 1 if token_reset else 0, row['id'])
         )
     else:
         db.execute(
-            "INSERT INTO voice_config (provider, account_sid, auth_token, from_number, api_domain, is_active) VALUES (?, ?, ?, ?, ?, 1)",
-            (provider, account_sid, final_token, from_number, api_domain)
+            "INSERT INTO voice_config (provider, account_sid, auth_token, from_number, api_domain, "
+            "voice_appid, voice_accesskey, voice_extnumber, is_active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            (provider, account_sid, final_token, from_number, api_domain,
+             voice_appid, final_accesskey, voice_extnumber)
         )
     db.commit()
+    if token_reset:
+        _INFIN_TOKEN_CACHE['token'] = ''
+        _INFIN_TOKEN_CACHE['expiry'] = 0
     return jsonify({'message': 'Configuracion de voz guardada', 'configured': is_voice_configured()})
 
 
 @app.route('/api/config/voice/test', methods=['POST'])
 @admin_required
 def voice_test_config():
-    """Validate credentials by fetching account info (Twilio) or a lightweight ping."""
+    """Validate credentials by fetching account info (Twilio), auth token (infin8linx) or a lightweight ping."""
     cfg = get_voice_config()
     if not cfg or not is_voice_configured():
         return jsonify({'error': 'API de voz no configurada'}), 400
@@ -5091,6 +5315,12 @@ def voice_test_config():
             return jsonify({'success': resp.status_code < 300, 'status_code': resp.status_code})
         except Exception as e:
             return jsonify({'error': str(e)}), 400
+    if cfg['provider'] == 'infin8linx':
+        token, err = infin8linx_get_token(cfg, force=True)
+        if err:
+            return jsonify({'error': err}), 400
+        return jsonify({'success': True, 'message': 'Token de infin8linx obtenido correctamente',
+                        'token_preview': (token[:6] + '...' + token[-4:]) if len(token) > 12 else 'OK'})
     return jsonify({'error': 'Proveedor no soportado'}), 400
 
 

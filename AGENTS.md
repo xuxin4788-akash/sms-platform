@@ -101,11 +101,12 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 - Templates are shared across all users regardless of role
 
 ## Voice Call Integration (电呼)
-- Feature flag: voice_config.provider ∈ `simulation` | `twilio` | `custom`
+- Feature flag: voice_config.provider ∈ `simulation` | `twilio` | `custom` | `infin8linx`
 - Simulation is the default on new installs — no external calls, deterministic pseudo-outcomes for demos/tests.
 - Twilio: uses the official `twilio` SDK (in requirements.txt). Calls are placed with `client.calls.create(to, from_, twiml=<Say language="es-MX">script</Say>)`. Status is refreshed with `client.calls(sid).fetch()`.
 - Custom HTTP gateway: POSTs `{to, from, text}` with Bearer auth to `<api_domain>/call`; expected `{code:0, call_id}`.
-- Auth Token is write-only: GET `/api/config/voice` returns `has_token` boolean, never the token. Sending empty token on update preserves the stored one.
+- infin8linx (SIP/extension click-to-call): form-data POST to `api_domain` with `service=App.Sip_Auth.Login` + `appid` + `accesskey` to obtain a 12h `token`, then `service=App.Sip_Call.MakeCall` with `token`, `extnumber`, `destnumber`, optional `disnumber`. Returns a command ack only (no provider call id); a local `INF...` reference is generated. The config UI stores `api_domain`, `voice_appid`, `voice_accesskey` (write-only), `voice_extnumber`, `from_number` (disnumber). The token is cached in DB (`voice_token`/`voice_token_expiry`) and in-process; HTTP 600 forces one refresh. Live status is not exposed by this endpoint (CDR/callback only).
+- Auth Token/AccessKey are write-only: GET `/api/config/voice` returns `has_token`/`has_accesskey` booleans, never the secrets. Sending empty secret on update preserves the stored one; changing AppID invalidates the cached token.
 - Role scope mirrors SMS: team_member sees own calls, team_admin sees team calls, admin sees all.
 
 ## SMS API Integration (infin8linx)
