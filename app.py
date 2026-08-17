@@ -1224,6 +1224,31 @@ def build_contact_template_cache(db, phones):
     return cache
 
 
+def _normalize_extnumber(value):
+    """Normalize an extension: strip, collapse internal whitespace, keep digits/letters/-/_/*#."""
+    if value is None:
+        return ''
+    ext = ' '.join(str(value).strip().split())
+    return ext
+
+
+def _find_user_by_extnumber(extnumber, exclude_id=None):
+    """Return the first active user already bound to the given extension, or None.
+
+    Extensions are matched case-insensitively and after whitespace normalization.
+    """
+    ext = _normalize_extnumber(extnumber)
+    if not ext:
+        return None
+    db = get_db()
+    q = "SELECT * FROM users WHERE is_active = 1 AND LOWER(TRIM(extnumber)) = LOWER(?)"
+    params = [ext]
+    if exclude_id:
+        q += " AND id != ?"
+        params.append(exclude_id)
+    return db.execute(q, tuple(params)).fetchone()
+
+
 def apply_template_vars(text, phone, contact_names=None, contact_cache=None):
     """Replace {nombre}/{telefono}/{app_name}/{amount}/{discount}/{payment_link} placeholders."""
     if not text:
@@ -1690,7 +1715,9 @@ def create_user():
         return jsonify({'error': 'El nombre de usuario ya existe'}), 409
     api_config_id = data.get('api_config_id')
     # Asignar telefono/extension fija (opcional). Vacio o cadena en blanco = sin asignar.
-    extnumber = (data.get('extnumber') or '').strip() or None
+    extnumber = _normalize_extnumber(data.get('extnumber')) or None
+    if extnumber and _find_user_by_extnumber(extnumber):
+        return jsonify({'error': f'La extension/telefono "{extnumber}" ya esta asignada a otro usuario.'}), 409
     cur = db.execute(
         "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber) VALUES (?, ?, ?, ?, ?, ?)",
         (username, hash_password(password), full_name, role, team_creator_id, extnumber)
@@ -1758,7 +1785,9 @@ def update_user(user_id):
     # Asignacion de extension/telefono fijo: cuando la clave esta presente,
     # una cadena vacia la desasigna; si no viene se conserva el valor actual.
     if 'extnumber' in data:
-        ext = (data.get('extnumber') or '').strip()
+        ext = _normalize_extnumber(data.get('extnumber'))
+        if ext and _find_user_by_extnumber(ext, exclude_id=user_id):
+            return jsonify({'error': f'La extension/telefono "{ext}" ya esta asignada a otro usuario.'}), 409
         updates.append("extnumber=?")
         params.append(ext if ext else None)
     params.append(user_id)
@@ -1823,9 +1852,11 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
 
     created = []
     errors = []
-    existing_rows = db.execute("SELECT username FROM users").fetchall()
-    existing_users = set(r['username'].lower() for r in existing_rows)
+    existing_rows = db.execute("SELECT username, extnumber FROM users WHERE is_active = 1 AND extnumber IS NOT NULL AND TRIM(extnumber) != ''").fetchall()
+    existing_users = set(r['username'].lower() for r in db.execute("SELECT username FROM users").fetchall())
+    existing_extensions = set((r['extnumber'] or '').strip().lower() for r in existing_rows if r['extnumber'])
     seen_usernames = set()
+    seen_extensions = set()
 
     for idx, u in enumerate(users):
         if not isinstance(u, dict):
@@ -1835,7 +1866,7 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
         full_name = (u.get('full_name') or '').strip()
         api_config_id = u.get('api_config_id') or default_api_config_id
         # Extension/telefono fija opcional (por fila). Vacio = sin asignar.
-        extnumber = (u.get('extnumber') or '').strip() or None
+        extnumber = _normalize_extnumber(u.get('extnumber')) or None
 
         if not username:
             errors.append({'index': idx, 'username': username, 'error': 'Usuario requerido'})
@@ -1856,6 +1887,18 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
         if uname_lower in existing_users or uname_lower in seen_usernames:
             errors.append({'index': idx, 'username': username, 'error': 'El nombre de usuario ya existe'})
             continue
+
+        # Validacion de extension unica: comprobar contra usuarios existentes
+        # y contra extensiones ya usadas en el mismo lote (primera fila gana).
+        if extnumber:
+            ext_key = extnumber.lower()
+            if ext_key in existing_extensions:
+                errors.append({'index': idx, 'username': username, 'error': f'La extension "{extnumber}" ya esta asignada a otro usuario'})
+                continue
+            if ext_key in seen_extensions:
+                errors.append({'index': idx, 'username': username, 'error': f'La extension "{extnumber}" esta duplicada en el archivo'})
+                continue
+            seen_extensions.add(ext_key)
 
         try:
             db.execute(
