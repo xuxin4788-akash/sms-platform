@@ -368,6 +368,7 @@ def init_db():
                 status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','initiated','ringing','answered','completed','failed','no-answer','busy','canceled')),
                 call_sid VARCHAR(255) DEFAULT '',
                 provider VARCHAR(50) DEFAULT '',
+                extnumber VARCHAR(100) DEFAULT '',
                 duration INTEGER DEFAULT 0,
                 price NUMERIC(12,4) DEFAULT 0,
                 error_msg TEXT DEFAULT '',
@@ -440,6 +441,8 @@ def init_db():
         ):
             if not pg_column_exists('voice_config', _col):
                 cur.execute(f"ALTER TABLE voice_config ADD COLUMN {_col} {_type} DEFAULT " + ("0" if "expiry" in _col else "''"))
+        if not pg_column_exists('voice_records', 'extnumber'):
+            cur.execute("ALTER TABLE voice_records ADD COLUMN extnumber VARCHAR(100) DEFAULT ''")
 
         # Create default admin
         cur.execute("SELECT id FROM users WHERE username='admin'")
@@ -637,6 +640,7 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','initiated','ringing','answered','completed','failed','no-answer','busy','canceled')),
                 call_sid TEXT DEFAULT '',
                 provider TEXT DEFAULT '',
+                extnumber TEXT DEFAULT '',
                 duration INTEGER DEFAULT 0,
                 price REAL DEFAULT 0,
                 error_msg TEXT DEFAULT '',
@@ -742,6 +746,12 @@ def init_db():
                 db.commit()
             except Exception:
                 pass
+        # Migration: record the extension used per call
+        try:
+            db.execute("ALTER TABLE voice_records ADD COLUMN extnumber TEXT DEFAULT ''")
+            db.commit()
+        except Exception:
+            pass
         # Migration: add team_creator_id to users if not exists
         try:
             db.execute("ALTER TABLE users ADD COLUMN team_creator_id INTEGER")
@@ -4716,7 +4726,7 @@ def is_voice_configured():
         return bool(cfg['api_domain'] and cfg['account_sid'] and cfg['auth_token'])
     if cfg['provider'] == 'infin8linx':
         return bool(cfg['api_domain'] and cfg['voice_appid'] and cfg['voice_accesskey']
-                    and cfg['voice_extnumber'])
+                    and _parse_extension_pool(cfg['voice_extnumber']))
     return False
 
 
@@ -4814,21 +4824,45 @@ def infin8linx_get_token(config, force=False):
         return '', 'Error de conexion: ' + msg[:200]
 
 
-def infin8linx_make_call(phone, config):
-    """Send MakeCall command to infin8linx. Returns (ok, call_sid, error_msg).
+def _parse_extension_pool(raw):
+    """Parse a comma/whitespace separated extension pool into a clean list."""
+    if not raw:
+        return []
+    parts = re.split(r'[,\s;|/]+', str(raw))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def infin8linx_pick_extension(config):
+    """Pick a random extension from the configured pool.
+
+    voice_extnumber may hold a single extension or a pool separated by
+    commas/spaces/semicolons. Returns the chosen extension or '' if empty.
+    """
+    import random as _random
+    pool = _parse_extension_pool((config or {}).get('voice_extnumber'))
+    if not pool:
+        return ''
+    return _random.choice(pool)
+
+
+def infin8linx_make_call(phone, config, extnumber=None):
+    """Send MakeCall command to infin8linx. Returns (ok, call_sid, error_msg, extnumber).
 
     infin8linx MakeCall triggers a click-to-call between a SIP extension and
     the destination number. It returns only a command-ack (no call id); status
     is later obtained from the CDR/callback interface. We synthesise a local
     reference so the call can be tracked in voice_records.
+
+    If extnumber is None, one is randomly chosen from the configured pool.
     """
     token, err = infin8linx_get_token(config)
     if err:
-        return False, '', err
-    extnumber = (config or {}).get('voice_extnumber') or ''
+        return False, '', err, ''
+    if not extnumber:
+        extnumber = infin8linx_pick_extension(config)
     disnumber = (config or {}).get('from_number') or ''
     if not extnumber:
-        return False, '', 'Falta el numero de extension (extnumber)'
+        return False, '', 'Falta el numero de extension (extnumber)', ''
     payload = {
         'service': 'App.Sip_Call.MakeCall',
         'token': token,
@@ -4842,7 +4876,7 @@ def infin8linx_make_call(phone, config):
         try:
             data = resp.json()
         except Exception:
-            return False, '', 'Respuesta no JSON del servidor (revisar que la URL apunte al API de voz)'
+            return False, '', 'Respuesta no JSON del servidor (revisar que la URL apunte al API de voz)', extnumber
         if int(data.get('ret', 0)) != 200:
             msg = str(data.get('msg') or ('HTTP %s' % resp.status_code))
             # token expired/invalid -> force refresh once
@@ -4856,22 +4890,22 @@ def infin8linx_make_call(phone, config):
                         body = data.get('data') or {}
                         if int(body.get('status', 1)) == 0:
                             ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
-                            return True, ref, ''
-                        return False, '', str(body.get('desc') or 'Error al iniciar llamada')[:300]
-            return False, '', msg[:300]
+                            return True, ref, '', extnumber
+                        return False, '', str(body.get('desc') or 'Error al iniciar llamada')[:300], extnumber
+            return False, '', msg[:300], extnumber
         body = data.get('data') or {}
         if int(body.get('status', 1)) != 0:
             errs = body.get('errors') or {}
-            return False, '', str(body.get('desc') or errs.get('codemsg') or 'Error al iniciar llamada')[:300]
+            return False, '', str(body.get('desc') or errs.get('codemsg') or 'Error al iniciar llamada')[:300], extnumber
         ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
-        return True, ref, ''
+        return True, ref, '', extnumber
     except Exception as e:
         msg = str(e)
         if 'NewConnectionError' in msg or 'Failed to establish a new connection' in msg:
-            return False, '', 'No se pudo conectar con la URL de la API (revisar IP/puerto)'
+            return False, '', 'No se pudo conectar con la URL de la API (revisar IP/puerto)', extnumber
         if 'timed out' in msg.lower():
-            return False, '', 'Tiempo de espera agotado al conectar con la API'
-        return False, '', 'Error de conexion: ' + msg[:200]
+            return False, '', 'Tiempo de espera agotado al conectar con la API', extnumber
+        return False, '', 'Error de conexion: ' + msg[:200], extnumber
 
 
 def voice_place_call(phone, script, config=None, contact_name=''):
@@ -4886,7 +4920,7 @@ def voice_place_call(phone, script, config=None, contact_name=''):
     normalized = normalize_phone(phone)
     result = {
         'ok': False, 'call_sid': '', 'status': 'failed',
-        'error_msg': '', 'price': 0.0, 'duration': 0,
+        'error_msg': '', 'price': 0.0, 'duration': 0, 'extnumber': '',
     }
 
     if provider in ('', 'simulation', 'simulacion', 'none'):
@@ -4966,14 +5000,17 @@ def voice_place_call(phone, script, config=None, contact_name=''):
             return result
 
     if provider == 'infin8linx':
-        # infin8linx click-to-call: rings the configured SIP extension first,
-        # then connects to destnumber. There is no TTS broadcast in this API;
-        # the agent extension plays the script. We just dispatch the command.
-        ok, ref, err = infin8linx_make_call(normalized, config)
+        # infin8linx click-to-call: rings a SIP extension first, then connects
+        # to destnumber. There is no TTS broadcast in this API; the agent on the
+        # extension reads the script. We just dispatch the command; an extension
+        # is picked randomly from the configured pool on each call.
+        ok, ref, err, used_ext = infin8linx_make_call(normalized, config)
         if ok:
-            result.update(ok=True, call_sid=ref, status='initiated')
+            result.update(ok=True, call_sid=ref, status='initiated',
+                          extnumber=used_ext)
         else:
             result['error_msg'] = err or 'Error al iniciar la llamada'
+            result['extnumber'] = used_ext
         return result
 
     result['error_msg'] = 'Proveedor de voz no soportado: ' + provider
@@ -5046,14 +5083,16 @@ def voice_place_call_route():
         res = voice_place_call(phone, text, config=cfg, contact_name=name)
         status = res['status']
         db.execute(
-            "INSERT INTO voice_records (phone, contact_name, script, status, call_sid, provider, duration, price, error_msg, initiated_at, finished_at, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), CASE WHEN ? IN ('completed','failed','no-answer','busy','canceled') THEN datetime('now') ELSE NULL END, ?)",
+            "INSERT INTO voice_records (phone, contact_name, script, status, call_sid, provider, extnumber, duration, price, error_msg, initiated_at, finished_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), CASE WHEN ? IN ('completed','failed','no-answer','busy','canceled') THEN datetime('now') ELSE NULL END, ?)",
             (phone, name, text, status, res['call_sid'],
              (cfg or {}).get('provider', 'simulation'),
+             res.get('extnumber', ''),
              res['duration'], res['price'], res['error_msg'],
              status, g.user['id'])
         )
         results.append({'phone': phone, 'status': status, 'call_sid': res['call_sid'],
+                        'extnumber': res.get('extnumber', ''),
                         'error': res['error_msg'], 'simulated': simulated})
         if status in ('failed', 'no-answer', 'busy'):
             errors.append(phone + ': ' + (res['error_msg'] or VOICE_STATUS_LABELS.get(status, status)))
@@ -5124,6 +5163,7 @@ def voice_list_records():
             'script': r['script'], 'status': r['status'],
             'status_label': VOICE_STATUS_LABELS.get(r['status'], r['status']),
             'call_sid': r['call_sid'] or '', 'provider': r['provider'] or '',
+            'ext_used': r['extnumber'] or '',
             'duration': r['duration'] or 0, 'price': float(r['price'] or 0),
             'error_msg': r['error_msg'] or '',
             'initiated_at': r['initiated_at'], 'finished_at': r['finished_at'],
