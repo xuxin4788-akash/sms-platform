@@ -167,6 +167,18 @@
                 return !!(r && r.running);
             } catch (e) { return false; }
         },
+        echoBubble: async function () {
+            var p = this.getFloatingPlugin();
+            if (!p) return { ok: false, reason: 'plugin-unavailable' };
+            try { return await p.echo({ value: 'ping' }); }
+            catch (e) { return { ok: false, reason: String(e) }; }
+        },
+        diagnoseBubble: async function () {
+            var p = this.getFloatingPlugin();
+            if (!p) return { available: false, reason: 'plugin-unavailable' };
+            try { return await p.diagnose(); }
+            catch (e) { return { available: false, reason: String(e) }; }
+        },
         startBubble: async function (serverUrl) {
             var p = this.getFloatingPlugin();
             if (!p) throw new Error('El widget flotante solo esta disponible en la app Android');

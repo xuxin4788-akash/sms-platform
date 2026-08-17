@@ -1886,6 +1886,7 @@ async function renderMyAccount(container) {
                 '</div>' +
                 '<button id="bubble-toggle-btn" class="btn btn-primary" onclick="toggleSystemBubble()">Activar widget flotante</button> ' +
                 '<button class="btn btn-secondary" onclick="ensureBubblePermissions()">Solicitar permisos</button> ' +
+                '<button class="btn btn-secondary" onclick="runBubbleDiagnostic()">Diagnóstico</button> ' +
                 '<button class="btn btn-secondary" onclick="MobileNative.openBatterySettings()">Ajustes de batería</button>' +
                 '</div></div>';
         }
@@ -2744,6 +2745,35 @@ async function refreshBubbleToggle() {
         btn.textContent = running ? 'Desactivar widget flotante' : 'Activar widget flotante';
         btn.className = running ? 'btn btn-danger' : 'btn btn-primary';
     } catch (e) {}
+}
+
+async function runBubbleDiagnostic() {
+    var info = document.getElementById('bubble-info');
+    if (!window.MobileNative || !MobileNative.getFloatingPlugin) {
+        if (info) info.innerHTML = '<div class="alert alert-warning">Plugin nativo no disponible. Abre esta página desde la app Android.</div>';
+        return;
+    }
+    if (info) info.innerHTML = '<div class="alert alert-info">Ejecutando diagnóstico…</div>';
+    try {
+        var echo = await MobileNative.echoBubble();
+        var diag = await MobileNative.diagnoseBubble();
+        console.log('[BubbleDiagnostic]', echo, diag);
+        if (!diag || diag.available === false) {
+            if (info) info.innerHTML = '<div class="alert alert-danger">El plugin no responde. Razón: ' + escapeHtml(diag && diag.reason || 'desconocida') + '</div>';
+            return;
+        }
+        var lines = [];
+        lines.push('Paquete: ' + (diag.package || '-'));
+        lines.push('SDK Android: ' + (diag.sdk || '-'));
+        lines.push('Permiso "mostrar encima": ' + (diag.overlayGranted ? '✅ concedido' : '❌ denegado'));
+        lines.push('Permiso notificaciones: ' + (diag.notificationsGranted ? '✅ concedido' : '❌ denegado'));
+        lines.push('Exento de optimización de batería: ' + (diag.ignoringBattery ? '✅ sí' : '❌ no'));
+        lines.push('Servicio ejecutándose: ' + (diag.serviceRunning ? '✅ sí' : '❌ no'));
+        lines.push('URL del servidor: ' + (diag.serverUrl || '-'));
+        if (info) info.innerHTML = '<div class="alert alert-' + (diag.overlayGranted && diag.serviceRunning ? 'success' : 'warning') + '" style="white-space:pre-line;font-family:monospace;font-size:12px">' + escapeHtml(lines.join('\n')) + '</div>';
+    } catch (e) {
+        if (info) info.innerHTML = '<div class="alert alert-danger">Error: ' + escapeHtml(e.message || String(e)) + '</div>';
+    }
 }
 
 // ============================================================

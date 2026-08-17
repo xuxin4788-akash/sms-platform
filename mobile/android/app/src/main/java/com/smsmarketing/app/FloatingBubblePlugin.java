@@ -23,14 +23,24 @@ public class FloatingBubblePlugin extends Plugin {
 
     private static final int REQ_OVERLAY = 4001;
     private static final int REQ_NOTIF = 4002;
-    private static final int REQ_BATTERY = 4003;
     private PluginCall pendingCall;
+
+    @PluginMethod
+    public void echo(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("value", call.getString("value", "pong"));
+        ret.put("plugin", "FloatingBubble");
+        ret.put("package", getContext().getPackageName());
+        call.resolve(ret);
+    }
 
     @PluginMethod
     public void canDrawOverlays(PluginCall call) {
         boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(getContext());
         JSObject ret = new JSObject();
         ret.put("granted", granted);
+        ret.put("sdk", Build.VERSION.SDK_INT);
+        ret.put("package", getContext().getPackageName());
         call.resolve(ret);
     }
 
@@ -43,6 +53,7 @@ public class FloatingBubblePlugin extends Plugin {
             return;
         }
         pendingCall = call;
+        saveCall(call);
         try {
             Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:" + getContext().getPackageName()));
@@ -51,6 +62,7 @@ public class FloatingBubblePlugin extends Plugin {
         } catch (Exception e) {
             JSObject ret = new JSObject();
             ret.put("granted", false);
+            ret.put("error", e.getMessage());
             call.resolve(ret);
         }
     }
@@ -78,25 +90,21 @@ public class FloatingBubblePlugin extends Plugin {
             notifGranted = ContextCompat.checkSelfPermission(getContext(),
                 Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
         }
-        boolean batteryOk = true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
-            if (pm != null) batteryOk = pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
-        }
 
         JSObject ret = new JSObject();
         ret.put("overlayGranted", overlayGranted);
         ret.put("notificationsGranted", notifGranted);
-        ret.put("batteryOk", batteryOk);
 
         if (!notifGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             pendingCall = call;
+            saveCall(call);
             ActivityCompat.requestPermissions(getActivity(),
                 new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIF);
             return;
         }
         if (!overlayGranted) {
             pendingCall = call;
+            saveCall(call);
             Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:" + getContext().getPackageName()));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -155,13 +163,17 @@ public class FloatingBubblePlugin extends Plugin {
         } else {
             getContext().startService(intent);
         }
-        call.resolve();
+        JSObject ret = new JSObject();
+        ret.put("started", true);
+        call.resolve(ret);
     }
 
     @PluginMethod
     public void stop(PluginCall call) {
         FloatingBubbleService.requestStop(getContext());
-        call.resolve();
+        JSObject ret = new JSObject();
+        ret.put("stopped", true);
+        call.resolve(ret);
     }
 
     @PluginMethod
@@ -171,41 +183,68 @@ public class FloatingBubblePlugin extends Plugin {
         call.resolve(ret);
     }
 
+    @PluginMethod
+    public void diagnose(PluginCall call) {
+        JSObject ret = new JSObject();
+        Context ctx = getContext();
+        ret.put("package", ctx.getPackageName());
+        ret.put("sdk", Build.VERSION.SDK_INT);
+        ret.put("overlayGranted", Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(ctx));
+        ret.put("serviceRunning", FloatingBubbleService.isRunning());
+        boolean notifGranted = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notifGranted = ContextCompat.checkSelfPermission(ctx,
+                Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        }
+        ret.put("notificationsGranted", notifGranted);
+        boolean ignoringBattery = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            if (pm != null) ignoringBattery = pm.isIgnoringBatteryOptimizations(ctx.getPackageName());
+        }
+        ret.put("ignoringBattery", ignoringBattery);
+        ret.put("serverUrl", FloatingBubbleService.getServerUrl(ctx));
+        call.resolve(ret);
+    }
+
     @Override
     protected void handleOnActivityResult(int requestCode, int resultCode, Intent data) {
         super.handleOnActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQ_OVERLAY && pendingCall != null) {
-            boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
-                || Settings.canDrawOverlays(getContext());
-            JSObject ret = new JSObject();
-            ret.put("granted", granted);
-            pendingCall.resolve(ret);
-            pendingCall = null;
+        if (requestCode == REQ_OVERLAY) {
+            PluginCall call = getSavedCall();
+            if (call != null) {
+                boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                    || Settings.canDrawOverlays(getContext());
+                JSObject ret = new JSObject();
+                ret.put("granted", granted);
+                call.resolve(ret);
+            }
         }
     }
 
     @Override
     protected void handleRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.handleRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_NOTIF && pendingCall != null) {
+        if (requestCode == REQ_NOTIF) {
+            PluginCall call = getSavedCall();
             boolean overlayGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                 || Settings.canDrawOverlays(getContext());
             if (!overlayGranted) {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:" + getContext().getPackageName()));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 try {
-                    startActivityForResult(pendingCall, intent, REQ_OVERLAY);
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getContext().getPackageName()));
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivityForResult(call, intent, REQ_OVERLAY);
                     return;
                 } catch (Exception ignore) {}
             }
-            JSObject ret = new JSObject();
-            ret.put("overlayGranted", overlayGranted);
-            ret.put("notificationsGranted", grantResults.length > 0
-                && grantResults[0] == PackageManager.PERMISSION_GRANTED);
-            ret.put("batteryOk", true);
-            pendingCall.resolve(ret);
-            pendingCall = null;
+            if (call != null) {
+                JSObject ret = new JSObject();
+                ret.put("overlayGranted", overlayGranted);
+                ret.put("notificationsGranted", grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED);
+                call.resolve(ret);
+            }
         }
     }
 }
