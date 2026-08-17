@@ -246,6 +246,7 @@ def init_db():
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 daily_limit INTEGER DEFAULT 0,
                 permissions TEXT DEFAULT '',
+                extnumber VARCHAR(50) DEFAULT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
@@ -444,6 +445,10 @@ def init_db():
         if not pg_column_exists('voice_records', 'extnumber'):
             cur.execute("ALTER TABLE voice_records ADD COLUMN extnumber VARCHAR(100) DEFAULT ''")
 
+        # users: per-user fixed extension (asignacion de telefono/ext fija)
+        if not pg_column_exists('users', 'extnumber'):
+            cur.execute("ALTER TABLE users ADD COLUMN extnumber VARCHAR(50) DEFAULT NULL")
+
         # Create default admin
         cur.execute("SELECT id FROM users WHERE username='admin'")
         if cur.fetchone() is None:
@@ -534,6 +539,7 @@ def init_db():
                 is_active INTEGER NOT NULL DEFAULT 1,
                 daily_limit INTEGER DEFAULT 0,
                 session_token TEXT DEFAULT '',
+                extnumber TEXT DEFAULT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (team_creator_id) REFERENCES users(id) ON DELETE SET NULL
@@ -776,6 +782,12 @@ def init_db():
             db.commit()
         except Exception:
             pass
+        # Migration: add extnumber (fixed phone/extension) to users if not exists
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN extnumber TEXT DEFAULT NULL")
+            db.commit()
+        except Exception:
+            pass
         # Migration: recreate users table with new role CHECK constraint
         try:
             cursor = db.execute("SELECT sql FROM sqlite_master WHERE name='users'")
@@ -794,9 +806,10 @@ def init_db():
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                     team_creator_id INTEGER,
-                    permissions TEXT DEFAULT ''
+                    permissions TEXT DEFAULT '',
+                    extnumber TEXT DEFAULT NULL
                 )""")
-                db.execute("INSERT INTO users (id, username, password_hash, full_name, role, is_active, created_at, updated_at, team_creator_id) SELECT id, username, password_hash, full_name, CASE WHEN role='employee' THEN 'team_member' ELSE role END, is_active, created_at, updated_at, team_creator_id FROM users_old")
+                db.execute("INSERT INTO users (id, username, password_hash, full_name, role, is_active, created_at, updated_at, team_creator_id, extnumber) SELECT id, username, password_hash, full_name, CASE WHEN role='employee' THEN 'team_member' ELSE role END, is_active, created_at, updated_at, team_creator_id, extnumber FROM users_old")
                 db.execute("DROP TABLE users_old")
                 db.execute("PRAGMA foreign_keys=ON")
                 db.commit()
@@ -1565,6 +1578,7 @@ def get_me():
             'role_label': ROLE_LABELS.get(g.user['role'], g.user['role']),
             'permissions': permissions,
             'permsConfigured': perms_configured,
+            'extnumber': g.user['extnumber'] if 'extnumber' in g.user.keys() else None,
             'team_country_code': team_country_code,
             'environment': app.config['APP_ENVIRONMENT'],
             'app_label': app.config['APP_LABEL'],
@@ -1587,7 +1601,7 @@ def list_users():
     base_select = """
         SELECT u.id, u.username, u.full_name, u.role, u.team_creator_id,
                u.is_active, u.created_at, u.updated_at,
-               u.last_login_ip, u.last_login_at,
+               u.last_login_ip, u.last_login_at, u.extnumber,
                tc.username AS team_creator_name, tc.full_name AS team_creator_fullname
         FROM users u
         LEFT JOIN users tc ON u.team_creator_id = tc.id
@@ -1675,9 +1689,11 @@ def create_user():
     if existing:
         return jsonify({'error': 'El nombre de usuario ya existe'}), 409
     api_config_id = data.get('api_config_id')
+    # Asignar telefono/extension fija (opcional). Vacio o cadena en blanco = sin asignar.
+    extnumber = (data.get('extnumber') or '').strip() or None
     cur = db.execute(
-        "INSERT INTO users (username, password_hash, full_name, role, team_creator_id) VALUES (?, ?, ?, ?, ?)",
-        (username, hash_password(password), full_name, role, team_creator_id)
+        "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber) VALUES (?, ?, ?, ?, ?, ?)",
+        (username, hash_password(password), full_name, role, team_creator_id, extnumber)
     )
     new_user_id = cur.lastrowid
     EXPORTABLE_PASSWORDS[int(new_user_id)] = password
@@ -1739,6 +1755,12 @@ def update_user(user_id):
         params.append(hash_password(password))
         updates.append("session_token=?")
         params.append(None)
+    # Asignacion de extension/telefono fijo: cuando la clave esta presente,
+    # una cadena vacia la desasigna; si no viene se conserva el valor actual.
+    if 'extnumber' in data:
+        ext = (data.get('extnumber') or '').strip()
+        updates.append("extnumber=?")
+        params.append(ext if ext else None)
     params.append(user_id)
     db.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", params)
     db.commit()
@@ -1812,6 +1834,8 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
         username = (u.get('username') or '').strip()
         full_name = (u.get('full_name') or '').strip()
         api_config_id = u.get('api_config_id') or default_api_config_id
+        # Extension/telefono fija opcional (por fila). Vacio = sin asignar.
+        extnumber = (u.get('extnumber') or '').strip() or None
 
         if not username:
             errors.append({'index': idx, 'username': username, 'error': 'Usuario requerido'})
@@ -1835,8 +1859,8 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
 
         try:
             db.execute(
-                "INSERT INTO users (username, password_hash, full_name, role, team_creator_id) VALUES (?, ?, ?, ?, ?)",
-                (username, hash_password(password), full_name, role, team_creator_id)
+                "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber) VALUES (?, ?, ?, ?, ?, ?)",
+                (username, hash_password(password), full_name, role, team_creator_id, extnumber)
             )
             new_user_row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
             new_user_id = new_user_row['id']
@@ -1855,6 +1879,7 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
                 'username': username,
                 'full_name': full_name,
                 'role': role,
+                'extnumber': extnumber or '',
                 'password': password,
                 'generated': generated_password
             })
@@ -1918,7 +1943,8 @@ def _parse_excel_users(file_storage):
     header_map = {
         'usuario': 'username', 'username': 'username', 'user': 'username', 'cuenta': 'username',
         'contrasena': 'password', 'password': 'password', 'clave': 'password', 'pass': 'password',
-        'nombre': 'full_name', 'nombre completo': 'full_name', 'nombre_completo': 'full_name', 'fullname': 'full_name', 'name': 'full_name', 'full name': 'full_name'
+        'nombre': 'full_name', 'nombre completo': 'full_name', 'nombre_completo': 'full_name', 'fullname': 'full_name', 'name': 'full_name', 'full name': 'full_name',
+        'extension': 'extnumber', 'ext': 'extnumber', 'extnumber': 'extnumber', 'telefono': 'extnumber', 'fono': 'extnumber', 'anexo': 'extnumber'
     }
     first = rows[0]
     first_norm = [normalize(c) for c in first]
@@ -1941,17 +1967,22 @@ def _parse_excel_users(file_storage):
             users.append({
                 'username': get('username'),
                 'password': get('password'),
-                'full_name': get('full_name')
+                'full_name': get('full_name'),
+                'extnumber': get('extnumber')
             })
     else:
-        # No header: treat columns as username, password, full_name in order
+        # No header: treat columns as username, password, full_name[, extension] in order
         for row in rows:
             if row is None or all(c is None or str(c).strip() == '' for c in row):
                 continue
+            ext = ''
+            if len(row) >= 4 and row[3] is not None and re.match(r'^\d{2,10}$', str(row[3]).strip()):
+                ext = str(row[3]).strip()
             users.append({
                 'username': '' if row[0] is None else str(row[0]),
                 'password': '' if len(row) < 2 or row[1] is None else str(row[1]),
-                'full_name': '' if len(row) < 3 or row[2] is None else str(row[2])
+                'full_name': '' if len(row) < 3 or row[2] is None else str(row[2]),
+                'extnumber': ext
             })
     wb.close()
     return users
@@ -2075,7 +2106,7 @@ def _users_for_export(current_user):
     if current_user['role'] == 'admin':
         rows = db.execute("""
             SELECT u.id, u.username, u.full_name, u.role, u.is_active, u.created_at,
-                   u.team_creator_id, u.last_login_ip, u.last_login_at,
+                   u.team_creator_id, u.last_login_ip, u.last_login_at, u.extnumber,
                    c.username as creator_username,
                    tc.api_config_id, sac.name as config_name, sac.country as config_country
             FROM users u
@@ -2087,7 +2118,7 @@ def _users_for_export(current_user):
     elif current_user['role'] == 'team_admin':
         rows = db.execute("""
             SELECT u.id, u.username, u.full_name, u.role, u.is_active, u.created_at,
-                   u.team_creator_id, u.last_login_ip, u.last_login_at
+                   u.team_creator_id, u.last_login_ip, u.last_login_at, u.extnumber
             FROM users u
             WHERE u.id=? OR u.team_creator_id=?
             ORDER BY u.id
@@ -2095,7 +2126,7 @@ def _users_for_export(current_user):
     else:
         rows = db.execute("""
             SELECT u.id, u.username, u.full_name, u.role, u.is_active, u.created_at,
-                   u.last_login_ip, u.last_login_at
+                   u.last_login_ip, u.last_login_at, u.extnumber
             FROM users u WHERE u.id=?
         """, (current_user['id'],)).fetchall()
     return rows
@@ -2123,7 +2154,7 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
     }
     rows = [dict(r) for r in rows]
 
-    headers = ['ID', 'Usuario', 'Nombre Completo', 'Rol', 'Equipo/Admin', 'Pais/Config API', 'Estado', 'Creado', 'Ultimo Login IP', 'Ultimo Login']
+    headers = ['ID', 'Usuario', 'Nombre Completo', 'Rol', 'Extension', 'Equipo/Admin', 'Pais/Config API', 'Estado', 'Creado', 'Ultimo Login IP', 'Ultimo Login']
     if include_passwords:
         headers.append('Contrasena')
 
@@ -2154,6 +2185,7 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
             r['username'],
             r['full_name'] or '',
             role_labels.get(r['role'], r['role']),
+            r.get('extnumber') or '',
             team_field,
             config_field,
             'Activo' if is_active else 'Inactivo',
@@ -2167,7 +2199,7 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
             ws.cell(row=ri, column=ci, value=v)
 
     # Auto-ish column widths
-    widths = [6, 18, 24, 26, 18, 20, 10, 22, 18, 22]
+    widths = [6, 18, 24, 26, 14, 18, 20, 10, 22, 18, 22]
     if include_passwords:
         widths.append(18)
     for ci, w in enumerate(widths, start=1):
@@ -2190,7 +2222,7 @@ def download_user_template():
     ws = wb.active
     ws.title = 'Usuarios'
 
-    headers = ['usuario', 'contrasena', 'nombre_completo']
+    headers = ['usuario', 'contrasena', 'nombre_completo', 'extension']
     header_fill = PatternFill(start_color='2563EB', end_color='2563EB', fill_type='solid')
     header_font = Font(bold=True, color='FFFFFF')
 
@@ -2210,12 +2242,16 @@ def download_user_template():
     ws.cell(row=1, column=3).comment = Comment(
         'OPCIONAL. Nombre completo del usuario.', 'SMS Platform'
     )
+    ws.cell(row=1, column=4).comment = Comment(
+        'OPCIONAL. Extension/telefono fijo asignado al agente. Si se indica, las llamadas saldran desde esta extension; si se deja vacio, se usara el pool de extensiones.',
+        'SMS Platform'
+    )
 
     # Example rows
     examples = [
-        ['juan.perez', 'Clave1234', 'Juan Perez'],
-        ['maria.lopez', '', 'Maria Lopez'],
-        ['carlos.ruiz', '', ''],
+        ['juan.perez', 'Clave1234', 'Juan Perez', '8001'],
+        ['maria.lopez', '', 'Maria Lopez', '8002'],
+        ['carlos.ruiz', '', '', ''],
     ]
     for row in examples:
         ws.append(row)
@@ -2223,6 +2259,7 @@ def download_user_template():
     ws.column_dimensions['A'].width = 22
     ws.column_dimensions['B'].width = 18
     ws.column_dimensions['C'].width = 28
+    ws.column_dimensions['D'].width = 16
 
     buf = BytesIO()
     wb.save(buf)
@@ -4845,7 +4882,7 @@ def infin8linx_pick_extension(config):
     return _random.choice(pool)
 
 
-def infin8linx_make_call(phone, config, extnumber=None):
+def infin8linx_make_call(phone, config, extnumber=None, forced_ext=''):
     """Send MakeCall command to infin8linx. Returns (ok, call_sid, error_msg, extnumber).
 
     infin8linx MakeCall triggers a click-to-call between a SIP extension and
@@ -4853,16 +4890,27 @@ def infin8linx_make_call(phone, config, extnumber=None):
     is later obtained from the CDR/callback interface. We synthesise a local
     reference so the call can be tracked in voice_records.
 
-    If extnumber is None, one is randomly chosen from the configured pool.
+    Selection order for the extension:
+      1. forced_ext: fixed extension of the calling agent (when assigned)
+      2. extnumber argument (explicit)
+      3. one randomly chosen from the configured pool (voice_extnumber)
     """
+    # Resolve the extension FIRST so that, even if the API/token call fails,
+    # the record shows which extension would have been used.
+    resolved_ext = ''
+    if forced_ext and forced_ext.strip():
+        resolved_ext = forced_ext.strip()
+    elif extnumber:
+        resolved_ext = str(extnumber).strip()
+    else:
+        resolved_ext = infin8linx_pick_extension(config)
+    if not resolved_ext:
+        return False, '', 'Falta el numero de extension (extnumber)', ''
     token, err = infin8linx_get_token(config)
     if err:
-        return False, '', err, ''
-    if not extnumber:
-        extnumber = infin8linx_pick_extension(config)
+        return False, '', err, resolved_ext
+    extnumber = resolved_ext
     disnumber = (config or {}).get('from_number') or ''
-    if not extnumber:
-        return False, '', 'Falta el numero de extension (extnumber)', ''
     payload = {
         'service': 'App.Sip_Call.MakeCall',
         'token': token,
@@ -4908,19 +4956,22 @@ def infin8linx_make_call(phone, config, extnumber=None):
         return False, '', 'Error de conexion: ' + msg[:200], extnumber
 
 
-def voice_place_call(phone, script, config=None, contact_name=''):
+def voice_place_call(phone, script, config=None, contact_name='', forced_ext=''):
     """Place an outbound voice call that plays TTS script.
 
-    Returns dict: {ok, call_sid, status, error_msg, price, duration}
+    Returns dict: {ok, call_sid, status, error_msg, price, duration, extnumber}
     Provider 'simulation' does not hit any external API.
+    forced_ext: si se indica (extension fija del agente/usuario que llama),
+    infin8linx la utilizara en lugar de elegir una al azar del pool.
     """
     if config is None:
         config = get_voice_config()
     provider = (config or {}).get('provider', 'simulation') or 'simulation'
     normalized = normalize_phone(phone)
+    forced_ext = (forced_ext or '').strip()
     result = {
         'ok': False, 'call_sid': '', 'status': 'failed',
-        'error_msg': '', 'price': 0.0, 'duration': 0, 'extnumber': '',
+        'error_msg': '', 'price': 0.0, 'duration': 0, 'extnumber': forced_ext,
     }
 
     if provider in ('', 'simulation', 'simulacion', 'none'):
@@ -5002,9 +5053,9 @@ def voice_place_call(phone, script, config=None, contact_name=''):
     if provider == 'infin8linx':
         # infin8linx click-to-call: rings a SIP extension first, then connects
         # to destnumber. There is no TTS broadcast in this API; the agent on the
-        # extension reads the script. We just dispatch the command; an extension
-        # is picked randomly from the configured pool on each call.
-        ok, ref, err, used_ext = infin8linx_make_call(normalized, config)
+        # extension reads the script. If the calling user has a fixed extension
+        # assigned (forced_ext), use it; otherwise pick randomly from the pool.
+        ok, ref, err, used_ext = infin8linx_make_call(normalized, config, forced_ext=forced_ext)
         if ok:
             result.update(ok=True, call_sid=ref, status='initiated',
                           extnumber=used_ext)
@@ -5072,6 +5123,9 @@ def voice_place_call_route():
 
     cfg = get_voice_config()
     simulated = not is_voice_configured()
+    # Extension fija del agente que realiza la llamada (si la tiene asignada).
+    # Si no, voice_place_call elige una al azar del pool configurado.
+    caller_ext = (g.user.get('extnumber') or '').strip() if hasattr(g, 'user') else ''
     db = get_db()
     contact_cache = build_contact_template_cache(db, phones)
     results = []
@@ -5080,7 +5134,7 @@ def voice_place_call_route():
         phone = normalize_phone(raw)
         name = contact_names.get(raw, '') or contact_names.get(phone, '')
         text = apply_template_vars(script, raw, contact_names, contact_cache)
-        res = voice_place_call(phone, text, config=cfg, contact_name=name)
+        res = voice_place_call(phone, text, config=cfg, contact_name=name, forced_ext=caller_ext)
         status = res['status']
         db.execute(
             "INSERT INTO voice_records (phone, contact_name, script, status, call_sid, provider, extnumber, duration, price, error_msg, initiated_at, finished_at, created_by) "

@@ -107,6 +107,7 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 - Custom HTTP gateway: POSTs `{to, from, text}` with Bearer auth to `<api_domain>/call`; expected `{code:0, call_id}`.
 - infin8linx (SIP/extension click-to-call): form-data POST to `api_domain` with `service=App.Sip_Auth.Login` + `appid` + `accesskey` to obtain a 12h `token`, then `service=App.Sip_Call.MakeCall` with `token`, `extnumber`, `destnumber`, optional `disnumber`. Returns a command ack only (no provider call id); a local `INF...` reference is generated. The config UI stores `api_domain`, `voice_appid`, `voice_accesskey` (write-only), `voice_extnumber`, `from_number` (disnumber). The token is cached in DB (`voice_token`/`voice_token_expiry`) and in-process; HTTP 600 forces one refresh. Live status is not exposed by this endpoint (CDR/callback only).
 - Auth Token/AccessKey are write-only: GET `/api/config/voice` returns `has_token`/`has_accesskey` booleans, never the secrets. Sending empty secret on update preserves the stored one; changing AppID invalidates the cached token.
+- Per-user fixed extension: the `users.extnumber` column holds an optional fixed SIP extension/phone for an agent. When a user with `extnumber` places a call, infin8linx rings that extension directly; otherwise one is chosen randomly from the configured pool (`voice_extnumber`, comma-separated). The extension actually used is recorded in `voice_records.extnumber`. Assign it at user create/edit time or via bulk import (Excel column `extension`, or 4th text column in Creacion Masiva).
 - Role scope mirrors SMS: team_member sees own calls, team_admin sees team calls, admin sees all.
 
 ## SMS API Integration (infin8linx)
@@ -125,7 +126,7 @@ Dual database support via `DBWrapper` abstraction layer:
 - **Production**: PostgreSQL 16 (via `DATABASE_URL` environment variable)
 - Auto-detection: if `DATABASE_URL` starts with `postgresql://` → PostgreSQL, otherwise SQLite
 
-Tables: users, contacts, contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), sms_api_configs (multi-country SMS configs), team_config, voice_config (provider/account_sid/auth_token/from_number for TTS calls), voice_records (phone/script/status/call_sid/duration/price), send_logs.
+Tables: users (with `extnumber` for per-agent fixed SIP extension), contacts (with `app_name`, `amount`, `discount_amount`, `payment_link`), contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), sms_api_configs (multi-country SMS configs), team_config, voice_config (provider/account_sid/auth_token/from_number/voice_appid/voice_accesskey/voice_extnumber), voice_records (phone/script/status/call_sid/extnumber/duration/price), send_logs.
 
 ### Contact fields
 The `contacts` table carries both basic CRM and payment/collection fields:
