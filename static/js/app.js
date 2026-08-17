@@ -3134,7 +3134,7 @@ async function renderCalls(container) {
                 '<div id="voice-contacts" class="form-group" style="display:none;"><label>Seleccionar contactos</label><div id="voice-contacts-list" class="contact-select-list"></div></div>' +
                 '<div id="voice-group" class="form-group" style="display:none;"><label>Grupo</label><select id="voice-group-select" onchange="loadVoiceGroupContacts(this.value)"><option value="">-- Seleccione --</option>' + groupOpts + '</select><div id="voice-group-preview" class="mt-2 text-secondary text-sm"></div></div>' +
                 '<div class="form-group mt-3"><label>Plantilla de guion (opcional)</label><select id="voice-template" onchange="loadVoiceTemplate(this.value)"><option value="">-- Personalizado --</option>' + tplOpts + '</select></div>' +
-                '<div class="form-group"><label>Guion de la llamada *</label><textarea id="voice-script" rows="5" placeholder="Hola {nombre}, le llamamos para..."></textarea><small class="text-secondary">Variables: {nombre}, {telefono}, {app_name}, {amount}, {discount}, {payment_link}. Con Twilio el guion se reproduce con voz (TTS); con Infinity (infin8linx) lo lee el agente de la extension.</small></div>' +
+                '<div class="form-group"><label>Guion de la llamada *</label><textarea id="voice-script" rows="5" placeholder="Hola {nombre}, le llamamos para..."></textarea><small class="text-secondary">Variables: {nombre}, {telefono}, {app_name}, {amount}, {discount}, {payment_link}. El guion lo lee el agente de la extension Infinity (infin8linx).</small></div>' +
                 '<div id="voice-error" class="alert alert-error" style="display:none;"></div>' +
                 '<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-primary" id="voice-place-btn" onclick="handlePlaceCalls()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Iniciar Llamada(s)</button><span class="text-secondary text-sm" style="align-self:center;">Maximo 200 numeros por tanda.</span></div>' +
             '</div></div>' +
@@ -3315,24 +3315,14 @@ async function renderVoiceConfig(container) {
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Configuracion de Voz (电呼)</h1>' +
             '<div class="card"><div class="card-body">' +
-                '<div class="alert alert-info" style="margin-bottom:16px;">Define el proveedor de llamadas de voz. En <strong>modo simulacion</strong> no se realizan llamadas reales (util para pruebas). Twilio reproduce el guion con voz (TTS); <strong>Infinity</strong> (infin8linx) usa la API del conmutador (click-to-call por extension).</div>' +
-                '<div class="form-group"><label>Proveedor</label><select id="vc-provider" onchange="toggleVoiceProviderFields()"><option value="simulation"' + (cfg.provider==='simulation'?' selected':'') + '>Simulacion (sin llamadas reales)</option><option value="infin8linx"' + (cfg.provider==='infin8linx'?' selected':'') + '>Infinity (infin8linx - SIP / extension)</option><option value="twilio"' + (cfg.provider==='twilio'?' selected':'') + '>Twilio</option><option value="custom"' + (cfg.provider==='custom'?' selected':'') + '>Proveedor personalizado (HTTP)</option></select></div>' +
+                '<div class="alert alert-info" style="margin-bottom:16px;">Define el proveedor de llamadas de voz. En <strong>modo simulacion</strong> no se realizan llamadas reales (util para pruebas). <strong>Infinity</strong> (infin8linx) usa la API del conmutador (click-to-call por extension).</div>' +
+                '<div class="form-group"><label>Proveedor</label><select id="vc-provider" onchange="toggleVoiceProviderFields()"><option value="simulation"' + (cfg.provider==='simulation'?' selected':'') + '>Simulacion (sin llamadas reales)</option><option value="infin8linx"' + (cfg.provider==='infin8linx'?' selected':'') + '>Infinity (infin8linx - SIP / extension)</option></select></div>' +
                 '<div id="vc-infin-fields" style="display:none;">' +
                     '<div class="form-group"><label>URL de la API</label><input type="text" id="vc-infin-url" value="' + escapeHtml(cfg.api_domain || '') + '" placeholder="http://IP:puerto (ej: http://1.2.3.4:8080)"></div>' +
                     '<div class="form-group"><label>AppID</label><input type="text" id="vc-infin-appid" value="' + escapeHtml(cfg.voice_appid || '') + '" placeholder="AppID autorizado"></div>' +
                     '<div class="form-group"><label>AccessKey</label><input type="password" id="vc-infin-accesskey" placeholder="' + (cfg.has_accesskey ? '******** (configurada - dejar vacia para conservar)' : 'AccessKey autorizada') + '"></div>' +
                     '<div class="form-group"><label>Numero remitente (disnumber, opcional)</label><input type="text" id="vc-infin-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="Dejar vacio para asignar uno aleatorio"></div>' +
                     '<div class="alert alert-warning" style="font-size:13px;"><strong>Infinity</strong> (infin8linx) <strong>MakeCall</strong> conecta primero la extension configurada con el numero destino (click-to-call); no es un broadcast TTS. El guion lo lee el agente. El estado en tiempo real no se expone por API; se actualiza via CDR/callback.</div>' +
-                '</div>' +
-                '<div id="vc-twilio-fields" style="display:none;">' +
-                    '<div class="form-group"><label>Account SID</label><input type="text" id="vc-account-sid" value="' + escapeHtml(cfg.account_sid || '') + '" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></div>' +
-                    '<div class="form-group"><label>Auth Token</label><input type="password" id="vc-auth-token" placeholder="' + (cfg.has_token ? '******** (configurado - dejar vacio para conservar)' : 'Tu auth token') + '"></div>' +
-                    '<div class="form-group"><label>Numero remitente (from)</label><input type="text" id="vc-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="+15551234567"></div>' +
-                '</div>' +
-                '<div id="vc-custom-fields" style="display:none;">' +
-                    '<div class="form-group"><label>API URL base</label><input type="text" id="vc-domain" value="' + escapeHtml(cfg.api_domain || '') + '" placeholder="https://api.voz-proveedor.com/v1"></div>' +
-                    '<div class="form-group"><label>Clave/Token de API</label><input type="password" id="vc-custom-token" placeholder="Bearer token"></div>' +
-                    '<div class="form-group"><label>Numero remitente</label><input type="text" id="vc-custom-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="+52..."></div>' +
                 '</div>' +
                 '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:16px;">' +
                     '<div class="form-group" style="margin-bottom:8px;"><label style="font-size:15px;font-weight:700;">Extensiones / Telefonos de los agentes</label>' +
@@ -3346,7 +3336,6 @@ async function renderVoiceConfig(container) {
                         '</div>' +
                         '<small class="text-secondary">Cada agente se asocia a un pais y recibe una extension fija del pool correspondiente; los agentes sin pais usan el pool general. El sistema elige automaticamente una libre y no permite asignar manualmente ni duplicar. Cuando se acaban las extensiones de un pais, la creacion falla pidiendo que se agreguen mas.</small></div>' +
                 '</div>' +
-                '<div class="alert alert-warning" id="vc-twilio-note" style="font-size:13px;display:none;">Nota: Para llamadas en Mexico/Latinoamerica con Twilio, las numeraciones pueden requerir registro de marca (A2P) o numero geografico habilitado para voz.</div>' +
                 '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary" onclick="saveVoiceConfig()">Guardar</button><button class="btn btn-secondary" onclick="testVoiceConfig()">Probar conexion</button><a class="btn btn-outline" href="#/calls">Ir a Llamadas</a></div>' +
                 '<div id="vc-result" style="margin-top:12px;"></div>' +
             '</div></div>';
@@ -3359,13 +3348,7 @@ async function renderVoiceConfig(container) {
 function toggleVoiceProviderFields() {
     var p = document.getElementById('vc-provider').value;
     var i = document.getElementById('vc-infin-fields');
-    var t = document.getElementById('vc-twilio-fields');
-    var c = document.getElementById('vc-custom-fields');
-    var note = document.getElementById('vc-twilio-note');
     if (i) i.style.display = (p === 'infin8linx') ? 'block' : 'none';
-    if (t) t.style.display = (p === 'twilio') ? 'block' : 'none';
-    if (c) c.style.display = (p === 'custom') ? 'block' : 'none';
-    if (note) note.style.display = (p === 'twilio') ? 'block' : 'none';
 }
 
 async function saveVoiceConfig() {
@@ -3373,15 +3356,7 @@ async function saveVoiceConfig() {
     var body = { provider: provider, account_sid: '', auth_token: '', from_number: '', api_domain: '',
                  voice_appid: '', voice_accesskey: '', voice_extnumber: '',
                  ext_pool_mx: '', ext_pool_co: '', ext_pool_pe: '' };
-    if (provider === 'twilio') {
-        body.account_sid = document.getElementById('vc-account-sid').value.trim();
-        body.auth_token = document.getElementById('vc-auth-token').value;
-        body.from_number = document.getElementById('vc-from').value.trim();
-    } else if (provider === 'custom') {
-        body.api_domain = document.getElementById('vc-domain').value.trim();
-        body.auth_token = document.getElementById('vc-custom-token').value;
-        body.from_number = document.getElementById('vc-custom-from').value.trim();
-    } else if (provider === 'infin8linx') {
+    if (provider === 'infin8linx') {
         body.api_domain = document.getElementById('vc-infin-url').value.trim();
         body.voice_appid = document.getElementById('vc-infin-appid').value.trim();
         body.voice_accesskey = document.getElementById('vc-infin-accesskey').value;
