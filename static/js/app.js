@@ -1269,7 +1269,9 @@ async function renderUsers(container) {
             var deleteBtn = canEdit ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="deleteUser(' + u.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>' : '';
             var teamCell = u.team_affiliation ? '<span class="text-sm">' + escapeHtml(u.team_affiliation) + '</span>' : '<span class="text-sm text-secondary">-</span>';
             var extCell = u.extnumber ? '<span class="badge badge-blue" title="Extension/telefono fijo asignado">' + escapeHtml(u.extnumber) + '</span>' : '<span class="text-sm text-secondary">-</span>';
-            return '<tr><td style="width:40px;">' + checkbox + '</td><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td>' + extCell + '</td><td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + roleBtn + deleteBtn + '</td></tr>';
+            var countryLabels = {mx: 'Mexico', co: 'Colombia', pe: 'Peru'};
+            var countryCell = u.country ? '<span class="text-sm">' + escapeHtml(countryLabels[u.country] || u.country) + '</span>' : '<span class="text-sm text-secondary">-</span>';
+            return '<tr><td style="width:40px;">' + checkbox + '</td><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td>' + extCell + '</td><td>' + countryCell + '</td><td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + roleBtn + deleteBtn + '</td></tr>';
         }).join('');
 
         // Role filter options based on current user role
@@ -1280,7 +1282,7 @@ async function renderUsers(container) {
             roleOptions += '<option value="team_member">Miembro de Equipo</option>';
         }
 
-        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="showBulkCreateModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg> Creacion Masiva</button><button class="btn btn-secondary btn-sm" onclick="showBulkImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Importar Excel</button><button class="btn btn-secondary btn-sm" onclick="showBulkPasswordModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg> Clave Masiva</button><button class="btn btn-secondary btn-sm" onclick="exportUsers()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Exportar</button><button class="btn btn-danger btn-sm" id="bulk-delete-btn" onclick="bulkDeleteUsers()" disabled style="opacity:0.5;cursor:not-allowed;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Eliminar (<span id="bulk-selected-count">0</span>)</button><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div></div><div id="bulk-action-bar" class="card mb-3" style="display:none;padding:10px 16px;background:var(--light-blue);border-color:var(--primary);"></div><div class="card mb-3"><div style="display:flex;gap:12px;align-items:center;padding:12px 16px;flex-wrap:wrap;"><div style="flex:1;min-width:200px;position:relative;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input type="text" id="user-search" class="form-control" placeholder="Buscar por usuario o nombre..." value="' + escapeHtml(searchVal) + '" style="padding-left:36px;" oninput="debounceRenderUsers()"></div><select id="user-role-filter" class="form-control" style="width:auto;min-width:180px;" onchange="renderUsers(document.getElementById(\'page-content\'))">' + roleOptions + '</select></div></div><div class="card"><div class="table-container"><table><thead><tr><th style="width:40px;"><input type="checkbox" id="user-select-all" onchange="toggleAllUsers(this)" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;"></th><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Equipo</th><th>Extension</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="9" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
+        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="showBulkCreateModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg> Creacion Masiva</button><button class="btn btn-secondary btn-sm" onclick="showBulkImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Importar Excel</button><button class="btn btn-secondary btn-sm" onclick="showBulkPasswordModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg> Clave Masiva</button><button class="btn btn-secondary btn-sm" onclick="exportUsers()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Exportar</button><button class="btn btn-danger btn-sm" id="bulk-delete-btn" onclick="bulkDeleteUsers()" disabled style="opacity:0.5;cursor:not-allowed;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Eliminar (<span id="bulk-selected-count">0</span>)</button><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div></div><div id="bulk-action-bar" class="card mb-3" style="display:none;padding:10px 16px;background:var(--light-blue);border-color:var(--primary);"></div><div class="card mb-3"><div style="display:flex;gap:12px;align-items:center;padding:12px 16px;flex-wrap:wrap;"><div style="flex:1;min-width:200px;position:relative;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input type="text" id="user-search" class="form-control" placeholder="Buscar por usuario o nombre..." value="' + escapeHtml(searchVal) + '" style="padding-left:36px;" oninput="debounceRenderUsers()"></div><select id="user-role-filter" class="form-control" style="width:auto;min-width:180px;" onchange="renderUsers(document.getElementById(\'page-content\'))">' + roleOptions + '</select></div></div><div class="card"><div class="table-container"><table><thead><tr><th style="width:40px;"><input type="checkbox" id="user-select-all" onchange="toggleAllUsers(this)" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;"></th><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Equipo</th><th>Extension</th><th>Pais</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="10" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
         window._users = data.users;
         // Restore role filter selection
         if (roleFilterVal) { var sel = document.getElementById('user-role-filter'); if (sel) sel.value = roleFilterVal; }
@@ -1318,8 +1320,9 @@ async function showAddUserModal() {
             apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais)</label><p class="text-secondary">No hay configuraciones API disponibles</p></div>';
         }
     }
-    var extFieldHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool configurado. No se permite escribir el numero manualmente; si no hay extensiones libres, pida al administrador del sistema que agregue mas.</small></div>';
-    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role" id="add-user-role" onchange="toggleApiConfig()">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div>' + apiConfigHtml + extFieldHtml + '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+    var countryFieldHtml = '<div class="form-group"><label>Pais del agente</label><select name="country"><option value="">Sin pais especifico</option><option value="mx">Mexico</option><option value="co">Colombia</option><option value="pe">Peru</option></select><small class="text-secondary">Define de que pool de extensiones se asigna (Mexico/Colombia/Peru).</small></div>';
+    var extFieldHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool del pais seleccionado. No se permite escribir el numero manualmente; si no hay extensiones libres, pida al administrador del sistema que agregue mas.</small></div>';
+    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role" id="add-user-role" onchange="toggleApiConfig()">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div>' + apiConfigHtml + countryFieldHtml + extFieldHtml + '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
 }
 
 function toggleApiConfig() {
@@ -1332,7 +1335,7 @@ function toggleApiConfig() {
 
 async function handleAddUser(event) {
     event.preventDefault(); var form = event.target;
-    var body = { username: form.username.value.trim(), full_name: form.full_name.value.trim(), password: form.password.value, role: form.role.value, assign_extension: !!form.assign_extension.checked };
+    var body = { username: form.username.value.trim(), full_name: form.full_name.value.trim(), password: form.password.value, role: form.role.value, country: form.country ? form.country.value : '', assign_extension: !!form.assign_extension.checked };
     var apiConfigSelect = form.querySelector('select[name="api_config_id"]');
     if (apiConfigSelect && apiConfigSelect.value) {
         body.api_config_id = parseInt(apiConfigSelect.value);
@@ -1348,15 +1351,17 @@ function showEditUserModal(id) {
     if (u.extnumber) {
         extHtml = '<div class="form-group"><label>Extension / Telefono asignado</label><div style="display:flex;align-items:center;gap:10px;"><span class="badge badge-blue" style="font-size:14px;padding:6px 12px;">' + escapeHtml(u.extnumber) + '</span><button type="button" class="btn btn-secondary btn-sm" onclick="releaseUserExtension(' + id + ')">Liberar extension</button></div><small class="text-secondary">El numero lo asigna el sistema y no se puede editar manualmente.</small></div>';
     } else {
-        extHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool. Si no hay disponibles, pida al administrador del sistema que agregue mas.</small></div>';
+        extHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool del pais. Si no hay disponibles, pida al administrador del sistema que agregue mas.</small></div>';
     }
-    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Rol</label><input type="text" value="' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '" disabled style="background:var(--bg);"><small class="text-secondary">El rol no se puede cambiar despues de la creacion</small></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div>' + extHtml + '<div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+    var currentCountry = u.country || '';
+    var countryHtml = '<div class="form-group"><label>Pais del agente</label><select name="country"><option value=""' + (!currentCountry?' selected':'') + '>Sin pais especifico</option><option value="mx"' + (currentCountry==='mx'?' selected':'') + '>Mexico</option><option value="co"' + (currentCountry==='co'?' selected':'') + '>Colombia</option><option value="pe"' + (currentCountry==='pe'?' selected':'') + '>Peru</option></select><small class="text-secondary">Define de que pool se asigna la extension. Cambiar de pais no reasigna la extension actual (liberela primero si necesita otra).</small></div>';
+    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Rol</label><input type="text" value="' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '" disabled style="background:var(--bg);"><small class="text-secondary">El rol no se puede cambiar despues de la creacion</small></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div>' + countryHtml + extHtml + '<div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
 }
 
 async function handleEditUser(event, id) {
     event.preventDefault(); var form = event.target;
     try {
-        var body = { full_name: form.full_name.value.trim(), is_active: parseInt(form.is_active.value) };
+        var body = { full_name: form.full_name.value.trim(), country: form.country.value, is_active: parseInt(form.is_active.value) };
         if (form.password.value) body.password = form.password.value;
         if (form.assign_extension) body.assign_extension = !!form.assign_extension.checked;
         await api('/api/users/' + id, { method: 'PUT', body: body });
@@ -1508,16 +1513,20 @@ async function showBulkCreateModal() {
             '<div style="margin-bottom:12px;">' +
                 '<a href="/api/users/template" download="plantilla_usuarios.xlsx" class="btn btn-secondary" style="font-size:13px;padding:6px 12px;">⬇ Descargar plantilla Excel</a>' +
             '</div>' +
+            '<div class="form-group"><label>Pais por defecto (para asignar extensiones)</label>' +
+                '<select id="bulk-country" style="max-width:280px;"><option value="">Sin pais especifico</option><option value="mx">Mexico</option><option value="co">Colombia</option><option value="pe">Peru</option></select>' +
+                '<small class="text-secondary">Cada nuevo usuario se asocia a este pais para tomar una extension del pool correspondiente. Puede indicar el pais por linea como 4a columna (mx/co/pe), que tiene prioridad.</small>' +
+            '</div>' +
             '<div class="form-group"><label>Lista de usuarios *</label>' +
-                '<textarea name="users_text" id="bulk-users-text" rows="10" style="width:100%;font-family:monospace;font-size:13px;" placeholder="usuario,contrasena,nombre_completo&#10;jperez,,Juan Perez&#10;mlopez,,Maria Lopez&#10;garcia,," required></textarea>' +
-                '<small class="text-secondary">Formato: <strong>usuario,contrasena,nombre_completo</strong> (una linea por usuario). Solo el <strong>usuario es obligatorio</strong>; contrasena y nombre son opcionales. Las <strong>extensiones no se indican aqui</strong>: se asignan automaticamente marcando la opcion inferior. Si omite la contrasena se genera automaticamente una clave de 10 caracteres alfanumericos.' +
+                '<textarea name="users_text" id="bulk-users-text" rows="10" style="width:100%;font-family:monospace;font-size:13px;" placeholder="usuario,contrasena,nombre_completo,pais&#10;jperez,,Juan Perez,mx&#10;mlopez,,Maria Lopez,co&#10;garcia,,," required></textarea>' +
+                '<small class="text-secondary">Formato: <strong>usuario,contrasena,nombre_completo,pais</strong> (una linea por usuario). Solo el <strong>usuario es obligatorio</strong>; contrasena, nombre y pais son opcionales. El pais acepta mx/co/pe. Las <strong>extensiones no se indican aqui</strong>: se asignan automaticamente marcando la opcion inferior. Si omite la contrasena se genera automaticamente una clave de 10 caracteres alfanumericos.' +
                 '<br>Descargue la plantilla Excel o pegue datos desde Excel/CSV (use coma como separador).</small>' +
             '</div>' +
             '<div class="form-group"><label>Contrasena por defecto (opcional)</label>' +
                 '<input type="text" name="default_password" id="bulk-default-pwd" placeholder="Se usa cuando la linea no trae contrasena" minlength="6">' +
                 '<small class="text-secondary">Si una linea solo tiene usuario (o usuario,nombre), se asignara esta contrasena.</small>' +
             '</div>' +
-            '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="bulk-assign-ext" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar automaticamente una extension/telefono a cada usuario</span></label><small class="text-secondary">El sistema elige una extension libre del pool para cada usuario nuevo. Si no hay suficientes extensiones, las filas restantes se marcan como error para que el administrador agregue mas.</small></div>' +
+            '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="bulk-assign-ext" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar automaticamente una extension/telefono a cada usuario</span></label><small class="text-secondary">El sistema elige una extension libre del pool del pais para cada usuario nuevo. Si no hay suficientes extensiones, las filas restantes se marcan como error para que el administrador agregue mas.</small></div>' +
             apiConfigHtml +
             '<div style="background:var(--light-blue);padding:10px 12px;border-radius:8px;font-size:13px;color:var(--text-secondary);margin-bottom:12px;">' + defaultPwdMsg + ' Maximo 500 usuarios por carga.</div>' +
             '<div id="bulk-result" style="display:none;margin-bottom:12px;"></div>' +
@@ -1529,10 +1538,21 @@ async function showBulkCreateModal() {
     );
 }
 
-function parseBulkUsersText(text, defaultPassword) {
+function normalizeCountryInput(val) {
+    if (!val) return '';
+    var v = String(val).trim().toLowerCase();
+    if (!v) return '';
+    if (['mx', 'mexico', 'méxico', 'mex', '52', '+52'].indexOf(v) >= 0) return 'mx';
+    if (['co', 'colombia', 'col', '57', '+57'].indexOf(v) >= 0) return 'co';
+    if (['pe', 'peru', 'perú', 'per', '51', '+51'].indexOf(v) >= 0) return 'pe';
+    return '';
+}
+
+function parseBulkUsersText(text, defaultPassword, defaultCountry) {
     var users = [];
     var errors = [];
     var lines = text.split(/\r?\n/);
+    var country = normalizeCountryInput(defaultCountry);
     lines.forEach(function(line, idx) {
         var trimmed = line.trim();
         if (!trimmed) return;
@@ -1540,9 +1560,10 @@ function parseBulkUsersText(text, defaultPassword) {
         var parts = trimmed.split(/[,;\t]/).map(function(p) { return p.trim(); });
         var username = parts[0] || '';
         var password = parts[1] || defaultPassword || '';
-        // The rest is the full name; any extra numeric column is ignored because
-        // extensions are auto-allocated by the system, never read from text.
-        var full_name = parts.slice(2).join(', ').trim();
+        // The 3rd field is the full name; the 4th (optional) is the country.
+        // Extensions are never read from text (auto-allocated by the system).
+        var full_name = parts[2] || '';
+        var lineCountry = normalizeCountryInput(parts[3]) || country;
         if (!username) {
             errors.push({ line: idx + 1, error: 'Usuario vacio' });
             return;
@@ -1551,7 +1572,7 @@ function parseBulkUsersText(text, defaultPassword) {
             errors.push({ line: idx + 1, username: username, error: 'Contrasena minima de 6 caracteres' });
             return;
         }
-        users.push({ username: username, password: password, full_name: full_name });
+        users.push({ username: username, password: password, full_name: full_name, country: lineCountry });
     });
     return { users: users, errors: errors };
 }
@@ -1561,11 +1582,12 @@ async function handleBulkCreate(event) {
     var form = event.target;
     var text = document.getElementById('bulk-users-text').value;
     var defaultPassword = document.getElementById('bulk-default-pwd').value.trim();
+    var defaultCountry = document.getElementById('bulk-country') ? document.getElementById('bulk-country').value : '';
     var apiConfigSelect = document.getElementById('bulk-api-config');
     var apiConfigId = apiConfigSelect ? parseInt(apiConfigSelect.value) : null;
     var assignExtensions = document.getElementById('bulk-assign-ext') ? document.getElementById('bulk-assign-ext').checked : false;
 
-    var parsed = parseBulkUsersText(text, defaultPassword);
+    var parsed = parseBulkUsersText(text, defaultPassword, defaultCountry);
 
     var resultEl = document.getElementById('bulk-result');
     function showResult(html, type) {
@@ -1597,6 +1619,7 @@ async function handleBulkCreate(event) {
     try {
         var body = { users: parsed.users, assign_extensions: assignExtensions };
         if (apiConfigId) body.api_config_id = apiConfigId;
+        if (defaultCountry) body.country = defaultCountry;
         var result = await api('/api/users/bulk', { method: 'POST', body: body });
         var html = '<strong>Creacion completada.</strong> Creados: ' + result.created_count + '.';
         if (assignExtensions && result.created && result.created.length) {
@@ -1651,12 +1674,16 @@ async function showBulkImportModal() {
                     '</a>' +
                 '</div>' +
                 '<input type="file" name="users_file" id="bulk-import-file" accept=".xlsx" required style="padding:8px;border:1px solid var(--border);border-radius:8px;width:100%;">' +
-                '<small class="text-secondary">Columnas esperadas: <strong>usuario</strong> (obligatorio), <strong>contrasena</strong> (opcional), <strong>nombre_completo</strong> (opcional). La primera fila se usa como encabezado. Maximo 500 usuarios. Las extensiones no se leen del archivo: se asignan automaticamente marcando la opcion inferior.</small>' +
+                '<small class="text-secondary">Columnas esperadas: <strong>usuario</strong> (obligatorio), <strong>contrasena</strong> (opcional), <strong>nombre_completo</strong> (opcional), <strong>pais</strong> (opcional: mx/co/pe). La primera fila se usa como encabezado. Maximo 500 usuarios. Las extensiones no se leen del archivo: se asignan automaticamente marcando la opcion inferior segun el pais del agente.</small>' +
+            '</div>' +
+            '<div class="form-group"><label>Pais por defecto (cuando la fila no trae pais)</label>' +
+                '<select id="bulk-import-country" style="max-width:280px;"><option value="">Sin pais especifico</option><option value="mx">Mexico</option><option value="co">Colombia</option><option value="pe">Peru</option></select>' +
+                '<small class="text-secondary">Define de que pool de extensiones se asigna cuando la fila no trae pais.</small>' +
             '</div>' +
             '<div class="form-group"><label>Contrasena por defecto (opcional)</label>' +
                 '<input type="text" name="default_password" id="bulk-import-default-pwd" minlength="6" placeholder="Se usa cuando la fila no trae contrasena">' +
             '</div>' +
-            '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="bulk-import-assign-ext" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar automaticamente una extension/telefono a cada usuario</span></label><small class="text-secondary">El sistema elige una extension libre del pool para cada usuario nuevo. Si no hay suficientes extensiones, las filas restantes se marcan como error.</small></div>' +
+            '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="bulk-import-assign-ext" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar automaticamente una extension/telefono a cada usuario</span></label><small class="text-secondary">El sistema elige una extension libre del pool del pais para cada usuario nuevo. Si no hay suficientes extensiones, las filas restantes se marcan como error.</small></div>' +
             apiConfigHtml +
             '<div id="bulk-import-result" style="display:none;margin-bottom:12px;"></div>' +
             '<div class="modal-footer" style="padding:16px 0 0;">' +
@@ -1679,6 +1706,8 @@ async function handleBulkImport(event) {
     if (apiConfig && apiConfig.value) formData.append('api_config_id', apiConfig.value);
     var assignExt = document.getElementById('bulk-import-assign-ext');
     if (assignExt && assignExt.checked) formData.append('assign_extensions', 'true');
+    var importCountry = document.getElementById('bulk-import-country');
+    if (importCountry && importCountry.value) formData.append('country', importCountry.value);
 
     var resultEl = document.getElementById('bulk-import-result');
     var submitBtn = document.getElementById('bulk-import-submit');
@@ -3282,7 +3311,7 @@ async function renderVoiceConfig(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
         var data = await api('/api/config/voice');
-        var cfg = data.config || { provider: 'simulation', account_sid: '', from_number: '', api_domain: '', has_token: false, voice_appid: '', voice_extnumber: '', has_accesskey: false, configured: false };
+        var cfg = data.config || { provider: 'simulation', account_sid: '', from_number: '', api_domain: '', has_token: false, voice_appid: '', voice_extnumber: '', ext_pool_mx: '', ext_pool_co: '', ext_pool_pe: '', has_accesskey: false, configured: false };
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Configuracion de Voz (电呼)</h1>' +
             '<div class="card"><div class="card-body">' +
@@ -3292,7 +3321,14 @@ async function renderVoiceConfig(container) {
                     '<div class="form-group"><label>URL de la API</label><input type="text" id="vc-infin-url" value="' + escapeHtml(cfg.api_domain || '') + '" placeholder="http://IP:puerto (ej: http://1.2.3.4:8080)"></div>' +
                     '<div class="form-group"><label>AppID</label><input type="text" id="vc-infin-appid" value="' + escapeHtml(cfg.voice_appid || '') + '" placeholder="AppID autorizado"></div>' +
                     '<div class="form-group"><label>AccessKey</label><input type="password" id="vc-infin-accesskey" placeholder="' + (cfg.has_accesskey ? '******** (configurada - dejar vacia para conservar)' : 'AccessKey autorizada') + '"></div>' +
-                    '<div class="form-group"><label>Pool de extensiones/telefonos *</label><input type="text" id="vc-infin-ext" value="' + escapeHtml(cfg.voice_extnumber || '') + '" placeholder="Una o varias separadas por coma, ej: 8001, 8002, 8003"><small class="text-secondary">Listado de extensiones SIP disponibles. Al crear un usuario y marcar "Asignar extension", el sistema elige automaticamente una de estas que no este en uso. Cada agente recibe una extension fija desde este pool.</small></div>' +
+                    '<div class="form-group"><label>Pools de extensiones por pais *</label>' +
+                        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">' +
+                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Mexico</label><input type="text" id="vc-infin-ext-mx" value="' + escapeHtml(cfg.ext_pool_mx || '') + '" placeholder="8001, 8002"></div>' +
+                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Colombia</label><input type="text" id="vc-infin-ext-co" value="' + escapeHtml(cfg.ext_pool_co || '') + '" placeholder="9001, 9002"></div>' +
+                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Peru</label><input type="text" id="vc-infin-ext-pe" value="' + escapeHtml(cfg.ext_pool_pe || '') + '" placeholder="7001, 7002"></div>' +
+                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">General (sin pais)</label><input type="text" id="vc-infin-ext" value="' + escapeHtml(cfg.voice_extnumber || '') + '" placeholder="6001, 6002"></div>' +
+                        '</div>' +
+                        '<small class="text-secondary">Extensiones SIP disponibles separadas por coma. Cada agente se asocia a un pais y recibe una extension fija del pool correspondiente. Los agentes sin pais usan el pool general. El sistema elige automaticamente una libre y no permite asignar manualmente ni duplicar.</small></div>' +
                     '<div class="form-group"><label>Numero remitente (disnumber, opcional)</label><input type="text" id="vc-infin-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="Dejar vacio para asignar uno aleatorio"></div>' +
                     '<div class="alert alert-warning" style="font-size:13px;">infin8linx <strong>MakeCall</strong> conecta primero la extension configurada con el numero destino (click-to-call); no es un broadcast TTS. El guion lo lee el agente. El estado en tiempo real no se expone por API; se actualiza via CDR/callback.</div>' +
                 '</div>' +
@@ -3331,7 +3367,8 @@ function toggleVoiceProviderFields() {
 async function saveVoiceConfig() {
     var provider = document.getElementById('vc-provider').value;
     var body = { provider: provider, account_sid: '', auth_token: '', from_number: '', api_domain: '',
-                 voice_appid: '', voice_accesskey: '', voice_extnumber: '' };
+                 voice_appid: '', voice_accesskey: '', voice_extnumber: '',
+                 ext_pool_mx: '', ext_pool_co: '', ext_pool_pe: '' };
     if (provider === 'twilio') {
         body.account_sid = document.getElementById('vc-account-sid').value.trim();
         body.auth_token = document.getElementById('vc-auth-token').value;
@@ -3345,6 +3382,9 @@ async function saveVoiceConfig() {
         body.voice_appid = document.getElementById('vc-infin-appid').value.trim();
         body.voice_accesskey = document.getElementById('vc-infin-accesskey').value;
         body.voice_extnumber = document.getElementById('vc-infin-ext').value.trim();
+        body.ext_pool_mx = document.getElementById('vc-infin-ext-mx').value.trim();
+        body.ext_pool_co = document.getElementById('vc-infin-ext-co').value.trim();
+        body.ext_pool_pe = document.getElementById('vc-infin-ext-pe').value.trim();
         body.from_number = document.getElementById('vc-infin-from').value.trim();
     }
     var result = document.getElementById('vc-result');

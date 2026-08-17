@@ -247,6 +247,7 @@ def init_db():
                 daily_limit INTEGER DEFAULT 0,
                 permissions TEXT DEFAULT '',
                 extnumber VARCHAR(50) DEFAULT NULL,
+                country VARCHAR(5) DEFAULT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
@@ -354,6 +355,9 @@ def init_db():
                 voice_appid VARCHAR(255) DEFAULT '',
                 voice_accesskey VARCHAR(255) DEFAULT '',
                 voice_extnumber VARCHAR(100) DEFAULT '',
+                ext_pool_mx VARCHAR(500) DEFAULT '',
+                ext_pool_co VARCHAR(500) DEFAULT '',
+                ext_pool_pe VARCHAR(500) DEFAULT '',
                 voice_token VARCHAR(255) DEFAULT '',
                 voice_token_expiry BIGINT DEFAULT 0,
                 extra TEXT DEFAULT '',
@@ -437,6 +441,9 @@ def init_db():
             ('voice_appid', 'VARCHAR(255)'),
             ('voice_accesskey', 'VARCHAR(255)'),
             ('voice_extnumber', 'VARCHAR(100)'),
+            ('ext_pool_mx', 'VARCHAR(500)'),
+            ('ext_pool_co', 'VARCHAR(500)'),
+            ('ext_pool_pe', 'VARCHAR(500)'),
             ('voice_token', 'VARCHAR(255)'),
             ('voice_token_expiry', 'BIGINT'),
         ):
@@ -448,6 +455,8 @@ def init_db():
         # users: per-user fixed extension (asignacion de telefono/ext fija)
         if not pg_column_exists('users', 'extnumber'):
             cur.execute("ALTER TABLE users ADD COLUMN extnumber VARCHAR(50) DEFAULT NULL")
+        if not pg_column_exists('users', 'country'):
+            cur.execute("ALTER TABLE users ADD COLUMN country VARCHAR(5) DEFAULT NULL")
 
         # Create default admin
         cur.execute("SELECT id FROM users WHERE username='admin'")
@@ -540,6 +549,7 @@ def init_db():
                 daily_limit INTEGER DEFAULT 0,
                 session_token TEXT DEFAULT '',
                 extnumber TEXT DEFAULT NULL,
+                country TEXT DEFAULT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (team_creator_id) REFERENCES users(id) ON DELETE SET NULL
@@ -632,6 +642,9 @@ def init_db():
                 voice_appid TEXT DEFAULT '',
                 voice_accesskey TEXT DEFAULT '',
                 voice_extnumber TEXT DEFAULT '',
+                ext_pool_mx TEXT DEFAULT '',
+                ext_pool_co TEXT DEFAULT '',
+                ext_pool_pe TEXT DEFAULT '',
                 voice_token TEXT DEFAULT '',
                 voice_token_expiry INTEGER DEFAULT 0,
                 extra TEXT DEFAULT '',
@@ -744,6 +757,9 @@ def init_db():
             ("voice_appid", "TEXT DEFAULT ''"),
             ("voice_accesskey", "TEXT DEFAULT ''"),
             ("voice_extnumber", "TEXT DEFAULT ''"),
+            ("ext_pool_mx", "TEXT DEFAULT ''"),
+            ("ext_pool_co", "TEXT DEFAULT ''"),
+            ("ext_pool_pe", "TEXT DEFAULT ''"),
             ("voice_token", "TEXT DEFAULT ''"),
             ("voice_token_expiry", "INTEGER DEFAULT 0"),
         ):
@@ -788,6 +804,12 @@ def init_db():
             db.commit()
         except Exception:
             pass
+        # Migration: add country (mx/co/pe) tag to users
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN country TEXT DEFAULT NULL")
+            db.commit()
+        except Exception:
+            pass
         # Migration: recreate users table with new role CHECK constraint
         try:
             cursor = db.execute("SELECT sql FROM sqlite_master WHERE name='users'")
@@ -807,9 +829,10 @@ def init_db():
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                     team_creator_id INTEGER,
                     permissions TEXT DEFAULT '',
-                    extnumber TEXT DEFAULT NULL
+                    extnumber TEXT DEFAULT NULL,
+                    country TEXT DEFAULT NULL
                 )""")
-                db.execute("INSERT INTO users (id, username, password_hash, full_name, role, is_active, created_at, updated_at, team_creator_id, extnumber) SELECT id, username, password_hash, full_name, CASE WHEN role='employee' THEN 'team_member' ELSE role END, is_active, created_at, updated_at, team_creator_id, extnumber FROM users_old")
+                db.execute("INSERT INTO users (id, username, password_hash, full_name, role, is_active, created_at, updated_at, team_creator_id, extnumber, country) SELECT id, username, password_hash, full_name, CASE WHEN role='employee' THEN 'team_member' ELSE role END, is_active, created_at, updated_at, team_creator_id, extnumber, country FROM users_old")
                 db.execute("DROP TABLE users_old")
                 db.execute("PRAGMA foreign_keys=ON")
                 db.commit()
@@ -1249,25 +1272,40 @@ def _find_user_by_extnumber(extnumber, exclude_id=None):
     return db.execute(q, tuple(params)).fetchone()
 
 
-def _get_extension_pool():
-    """Return the list of extensions configured in voice_config (the assignment pool)."""
+def _get_extension_pool(country=None):
+    """Return the list of extensions configured in voice_config for a country.
+
+    country ∈ 'mx'|'co'|'pe'. If empty/unknown, falls back to the legacy
+    voice_extnumber pool (used for unassigned-country setups).
+    """
     try:
         cfg = get_voice_config()
     except Exception:
         cfg = {}
+    key = {'mx': 'ext_pool_mx', 'co': 'ext_pool_co', 'pe': 'ext_pool_pe'}.get((country or '').lower())
+    if key:
+        pool = _parse_extension_pool((cfg or {}).get(key))
+        if pool:
+            return pool
     return _parse_extension_pool((cfg or {}).get('voice_extnumber'))
 
 
-def allocate_extension(exclude_id=None):
-    """Auto-assign a free extension from the configured pool.
+def normalize_country(country):
+    """Normalize a country code to one of mx/co/pe or ''."""
+    c = (country or '').strip().lower()
+    return c if c in ('mx', 'co', 'pe') else ''
 
-    Picks a random extension from voice_extnumber that is not currently bound to
-    another active user. Returns the chosen extension, or '' if none is available
-    (pool empty or fully used), in which case the caller should prompt the admin
-    to add more extensions.
+
+def allocate_extension(exclude_id=None, country=None):
+    """Auto-assign a free extension from the configured pool for a country.
+
+    Picks a random extension from the country's pool (ext_pool_mx/co/pe, or the
+    legacy voice_extnumber fallback) that is not currently bound to another
+    active user. Returns the chosen extension, or '' if none is available, in
+    which case the caller should prompt the admin to add more extensions.
     """
     import random as _random
-    pool = _get_extension_pool()
+    pool = _get_extension_pool(country)
     if not pool:
         return ''
     db = get_db()
@@ -1523,6 +1561,13 @@ ROLE_LABELS = {
     'team_member': 'Miembro de Equipo'
 }
 
+# Paises soportados para extensiones/agentes (marcado y pool por pais).
+COUNTRY_LABELS = {
+    'mx': 'Mexico',
+    'co': 'Colombia',
+    'pe': 'Peru'
+}
+
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -1649,6 +1694,8 @@ def get_me():
             'permissions': permissions,
             'permsConfigured': perms_configured,
             'extnumber': g.user['extnumber'] if 'extnumber' in g.user.keys() else None,
+            'country': normalize_country(g.user['country']) if 'country' in g.user.keys() else '',
+            'country_label': COUNTRY_LABELS.get(normalize_country(g.user['country'])) if 'country' in g.user.keys() else '',
             'team_country_code': team_country_code,
             'environment': app.config['APP_ENVIRONMENT'],
             'app_label': app.config['APP_LABEL'],
@@ -1671,7 +1718,7 @@ def list_users():
     base_select = """
         SELECT u.id, u.username, u.full_name, u.role, u.team_creator_id,
                u.is_active, u.created_at, u.updated_at,
-               u.last_login_ip, u.last_login_at, u.extnumber,
+               u.last_login_ip, u.last_login_at, u.extnumber, u.country,
                tc.username AS team_creator_name, tc.full_name AS team_creator_fullname
         FROM users u
         LEFT JOIN users tc ON u.team_creator_id = tc.id
@@ -1705,6 +1752,8 @@ def list_users():
     for u in users:
         ud = dict(u)
         ud['role_label'] = ROLE_LABELS.get(ud['role'], ud['role'])
+        ud['country'] = normalize_country(ud.get('country'))
+        ud['country_label'] = COUNTRY_LABELS.get(ud['country'], '') if ud['country'] else ''
         # Parse permissions
         import json as _json
         perms_raw = ud.get('permissions', '') or ''
@@ -1763,13 +1812,15 @@ def create_user():
     # libre del pool configurado si el administrador marca "asignar telefono".
     assign_extension = bool(data.get('assign_extension', False))
     extnumber = None
+    country = normalize_country(data.get('country'))
     if assign_extension:
-        extnumber = allocate_extension()
+        extnumber = allocate_extension(country=country)
         if not extnumber:
-            return jsonify({'error': 'No hay extensiones disponibles en el pool. Pida al administrador del sistema que agregue mas extensiones en Configuracion de Voz.'}), 409
+            label = {'mx': 'Mexico', 'co': 'Colombia', 'pe': 'Peru'}.get(country, 'el pool')
+            return jsonify({'error': f'No hay extensiones disponibles para {label}. Pida al administrador del sistema que agregue mas extensiones en Configuracion de Voz.'}), 409
     cur = db.execute(
-        "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber) VALUES (?, ?, ?, ?, ?, ?)",
-        (username, hash_password(password), full_name, role, team_creator_id, extnumber)
+        "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, country) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (username, hash_password(password), full_name, role, team_creator_id, extnumber, country or None)
     )
     new_user_id = cur.lastrowid
     EXPORTABLE_PASSWORDS[int(new_user_id)] = password
@@ -1824,6 +1875,12 @@ def update_user(user_id):
     if is_active in (0, 1, True, False):
         updates.append("is_active=?")
         params.append(int(is_active))
+    # Pais del agente (mx/co/pe). Cambiar de pais no reasigna la extension:
+    # si tenia una y el pais cambia, el admin debe liberarla y reasignar.
+    if 'country' in data:
+        new_country = normalize_country(data.get('country'))
+        updates.append("country=?")
+        params.append(new_country or None)
     if password:
         if len(password) < 6:
             return jsonify({'error': 'La contrasena debe tener minimo 6 caracteres'}), 400
@@ -1844,9 +1901,12 @@ def update_user(user_id):
         # Si ya tenia una extension, se conserva; si no, se asigna una libre.
         had_ext = _normalize_extnumber(user['extnumber'] if 'extnumber' in user.keys() else None)
         if not had_ext:
-            new_ext = allocate_extension(exclude_id=user_id)
+            target_country = normalize_country(data.get('country')) if 'country' in data else (
+                normalize_country(user['country'] if 'country' in user.keys() else None))
+            new_ext = allocate_extension(exclude_id=user_id, country=target_country)
             if not new_ext:
-                return jsonify({'error': 'No hay extensiones disponibles en el pool. Pida al administrador del sistema que agregue mas extensiones en Configuracion de Voz.'}), 409
+                label = {'mx': 'Mexico', 'co': 'Colombia', 'pe': 'Peru'}.get(target_country, 'el pool')
+                return jsonify({'error': f'No hay extensiones disponibles para {label}. Pida al administrador del sistema que agregue mas extensiones en Configuracion de Voz.'}), 409
             updates.append("extnumber=?")
             params.append(new_ext)
     params.append(user_id)
@@ -1891,7 +1951,7 @@ def delete_user(user_id):
     db.commit()
     return jsonify({'message': 'Usuario eliminado'})
 
-def _bulk_create_users_core(current_user, users, default_api_config_id, default_password=None, assign_extensions=False):
+def _bulk_create_users_core(current_user, users, default_api_config_id, default_password=None, assign_extensions=False, default_country=None):
     """Core bulk-creation logic shared by JSON and Excel upload.
 
     Returns (created, errors). Each created item includes the plain-text
@@ -1899,9 +1959,12 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
     are never returned elsewhere.
 
     When assign_extensions is True, each created user gets a free extension
-    auto-allocated from the configured pool (no manual assignment).
+    auto-allocated from the pool of their country (u.country mx/co/pe, or the
+    global fallback pool). No manual assignment is allowed.
+    default_country (mx/co/pe/'') applies to rows that omit their own country.
     """
     db = get_db()
+    default_country = normalize_country(default_country)
 
     if current_user['role'] == 'admin':
         role = 'team_admin'
@@ -1922,12 +1985,19 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
     taken_extensions = set(
         _normalize_extnumber(r['extnumber']).lower() for r in taken_rows if r['extnumber']
     )
-    # Full pool and remaining free pool (for auto-assignment).
-    all_pool = _get_extension_pool()
-    free_pool = [e for e in all_pool if _normalize_extnumber(e).lower() not in taken_extensions]
-    if assign_extensions and not all_pool:
-        preflight_error = 'No hay extensiones configuradas en el pool. Pida al administrador del sistema que agregue extensiones en Configuracion de Voz antes de asignar.'
-        return None, [{'index': -1, 'username': '', 'error': preflight_error}], role
+    # Build per-country free pools (with global fallback).
+    pools_by_country = {}
+    for _cc in ('mx', 'co', 'pe', ''):
+        all_pool = _get_extension_pool(_cc or None)
+        pools_by_country[_cc] = {
+            'all': all_pool,
+            'free': [e for e in all_pool if _normalize_extnumber(e).lower() not in taken_extensions]
+        }
+    if assign_extensions:
+        # No pool configured anywhere at all.
+        if not any(p['all'] for p in pools_by_country.values()):
+            preflight_error = 'No hay extensiones configuradas en el pool. Pida al administrador del sistema que agregue extensiones en Configuracion de Voz antes de asignar.'
+            return None, [{'index': -1, 'username': '', 'error': preflight_error}], role
     seen_usernames = set()
 
     for idx, u in enumerate(users):
@@ -1936,6 +2006,7 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
             continue
         username = (u.get('username') or '').strip()
         full_name = (u.get('full_name') or '').strip()
+        country = normalize_country(u.get('country')) or default_country
         api_config_id = u.get('api_config_id') or default_api_config_id
         # Las extensiones nunca se leen del archivo: se asignan automaticamente.
         extnumber = None
@@ -1961,8 +2032,11 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
             continue
 
         if assign_extensions:
+            pool_info = pools_by_country.get(country) or pools_by_country['']
+            free_pool = pool_info['free']
             if not free_pool:
-                errors.append({'index': idx, 'username': username, 'error': 'No quedan extensiones libres en el pool. Pida al administrador del sistema que agregue mas extensiones.'})
+                label = COUNTRY_LABELS.get(country, 'el pool')
+                errors.append({'index': idx, 'username': username, 'error': f'No quedan extensiones libres para {label}. Pida al administrador del sistema que agregue mas extensiones.'})
                 continue
             import random as _random
             chosen = _random.choice(free_pool)
@@ -1972,8 +2046,8 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
 
         try:
             db.execute(
-                "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber) VALUES (?, ?, ?, ?, ?, ?)",
-                (username, hash_password(password), full_name, role, team_creator_id, extnumber)
+                "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, country) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (username, hash_password(password), full_name, role, team_creator_id, extnumber, country or None)
             )
             new_user_row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
             new_user_id = new_user_row['id']
@@ -1992,6 +2066,8 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
                 'username': username,
                 'full_name': full_name,
                 'role': role,
+                'country': country,
+                'country_label': COUNTRY_LABELS.get(country, ''),
                 'extnumber': extnumber or '',
                 'password': password,
                 'generated': generated_password
@@ -2022,7 +2098,8 @@ def bulk_create_users():
     default_api_config_id = data.get('api_config_id')
     default_password = data.get('default_password')
     assign_extensions = bool(data.get('assign_extensions', False))
-    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password, assign_extensions=assign_extensions)
+    default_country = data.get('country')
+    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password, assign_extensions=assign_extensions, default_country=default_country)
     if result[0] is None:
         # Special case: pre-validation error (e.g. empty pool when assigning)
         if len(result) > 2 and isinstance(result[1], list) and result[1] and result[1][0].get('index') == -1:
@@ -2065,7 +2142,19 @@ def _parse_excel_users(file_storage):
         'usuario': 'username', 'username': 'username', 'user': 'username', 'cuenta': 'username',
         'contrasena': 'password', 'password': 'password', 'clave': 'password', 'pass': 'password',
         'nombre': 'full_name', 'nombre completo': 'full_name', 'nombre_completo': 'full_name', 'fullname': 'full_name', 'name': 'full_name', 'full name': 'full_name',
+        'pais': 'country', 'país': 'country', 'country': 'country',
     }
+
+    def parse_country(val):
+        s = normalize(val)
+        if s in ('mx', 'mexico', 'méxico', '52', '+52'):
+            return 'mx'
+        if s in ('co', 'colombia', '57', '+57'):
+            return 'co'
+        if s in ('pe', 'peru', 'perú', '51', '+51'):
+            return 'pe'
+        return ''
+
     first = rows[0]
     first_norm = [normalize(c) for c in first]
     has_header = any(h in header_map for h in first_norm)
@@ -2088,10 +2177,11 @@ def _parse_excel_users(file_storage):
                 'username': get('username'),
                 'password': get('password'),
                 'full_name': get('full_name'),
+                'country': parse_country(get('country')),
             })
     else:
-        # No header: treat columns as username, password, full_name in order.
-        # A 4th numeric column is ignored (extensions are auto-allocated).
+        # No header: treat columns as username, password, full_name, country in order.
+        # A trailing numeric column (legacy) is ignored (extensions are auto-allocated).
         for row in rows:
             if row is None or all(c is None or str(c).strip() == '' for c in row):
                 continue
@@ -2099,6 +2189,7 @@ def _parse_excel_users(file_storage):
                 'username': '' if row[0] is None else str(row[0]),
                 'password': '' if len(row) < 2 or row[1] is None else str(row[1]),
                 'full_name': '' if len(row) < 3 or row[2] is None else str(row[2]),
+                'country': parse_country('' if len(row) < 4 or row[3] is None else row[3]),
             })
     wb.close()
     return users
@@ -2137,8 +2228,9 @@ def bulk_import_users():
             default_api_config_id = None
     default_password = request.form.get('default_password')
     assign_extensions = request.form.get('assign_extensions', 'false').lower() in ('1', 'true', 'on', 'yes')
+    default_country = request.form.get('country')
 
-    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password, assign_extensions=assign_extensions)
+    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password, assign_extensions=assign_extensions, default_country=default_country)
     if result[0] is None:
         if result[1]:
             return jsonify({'error': result[1][0].get('error', 'Permisos insuficientes')}), 409
@@ -2225,7 +2317,7 @@ def _users_for_export(current_user):
     if current_user['role'] == 'admin':
         rows = db.execute("""
             SELECT u.id, u.username, u.full_name, u.role, u.is_active, u.created_at,
-                   u.team_creator_id, u.last_login_ip, u.last_login_at, u.extnumber,
+                   u.team_creator_id, u.last_login_ip, u.last_login_at, u.extnumber, u.country,
                    c.username as creator_username,
                    tc.api_config_id, sac.name as config_name, sac.country as config_country
             FROM users u
@@ -2273,7 +2365,7 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
     }
     rows = [dict(r) for r in rows]
 
-    headers = ['ID', 'Usuario', 'Nombre Completo', 'Rol', 'Extension', 'Equipo/Admin', 'Pais/Config API', 'Estado', 'Creado', 'Ultimo Login IP', 'Ultimo Login']
+    headers = ['ID', 'Usuario', 'Nombre Completo', 'Rol', 'Extension', 'Pais Agente', 'Equipo/Admin', 'Pais/Config API', 'Estado', 'Creado', 'Ultimo Login IP', 'Ultimo Login']
     if include_passwords:
         headers.append('Contrasena')
 
@@ -2299,12 +2391,14 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
         is_active = r['is_active']
         if hasattr(is_active, 'real'):
             is_active = bool(is_active)
+        agent_country = normalize_country(r.get('country'))
         values = [
             r['id'],
             r['username'],
             r['full_name'] or '',
             role_labels.get(r['role'], r['role']),
             r.get('extnumber') or '',
+            COUNTRY_LABELS.get(agent_country, '') if agent_country else '',
             team_field,
             config_field,
             'Activo' if is_active else 'Inactivo',
@@ -2318,7 +2412,7 @@ def _build_users_workbook(rows, include_passwords=False, password_map=None, view
             ws.cell(row=ri, column=ci, value=v)
 
     # Auto-ish column widths
-    widths = [6, 18, 24, 26, 14, 18, 20, 10, 22, 18, 22]
+    widths = [6, 18, 24, 26, 14, 14, 18, 20, 10, 22, 18, 22]
     if include_passwords:
         widths.append(18)
     for ci, w in enumerate(widths, start=1):
@@ -2341,7 +2435,7 @@ def download_user_template():
     ws = wb.active
     ws.title = 'Usuarios'
 
-    headers = ['usuario', 'contrasena', 'nombre_completo']
+    headers = ['usuario', 'contrasena', 'nombre_completo', 'pais']
     header_fill = PatternFill(start_color='2563EB', end_color='2563EB', fill_type='solid')
     header_font = Font(bold=True, color='FFFFFF')
 
@@ -2361,12 +2455,16 @@ def download_user_template():
     ws.cell(row=1, column=3).comment = Comment(
         'OPCIONAL. Nombre completo del usuario.', 'SMS Platform'
     )
+    ws.cell(row=1, column=4).comment = Comment(
+        'OPCIONAL. Pais del agente para asignar su extension: mx (Mexico), co (Colombia) o pe (Peru).',
+        'SMS Platform'
+    )
 
     # Example rows
     examples = [
-        ['juan.perez', 'Clave1234', 'Juan Perez'],
-        ['maria.lopez', '', 'Maria Lopez'],
-        ['carlos.ruiz', '', 'Carlos Ruiz'],
+        ['juan.perez', 'Clave1234', 'Juan Perez', 'mx'],
+        ['maria.lopez', '', 'Maria Lopez', 'co'],
+        ['carlos.ruiz', '', 'Carlos Ruiz', 'pe'],
     ]
     for row in examples:
         ws.append(row)
@@ -2374,13 +2472,14 @@ def download_user_template():
     ws.column_dimensions['A'].width = 22
     ws.column_dimensions['B'].width = 18
     ws.column_dimensions['C'].width = 28
+    ws.column_dimensions['D'].width = 10
 
     # Note row: extensions are assigned by the system, not from the file.
     note_row = len(examples) + 3
     note_cell = ws.cell(row=note_row, column=1,
-                        value='Nota: las extensiones/telefonos se asignan automaticamente desde el pool (marque "Asignar extension" al importar). No se leen del archivo.')
+                        value='Nota: la columna "pais" define de que pool de extensiones se asigna (mx/co/pe). Las extensiones no se escriben en el archivo; se asignan automaticamente (marque "Asignar extension" al importar).')
     note_cell.font = Font(italic=True, color='B45309')
-    ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=3)
+    ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=4)
 
     buf = BytesIO()
     wb.save(buf)
@@ -4866,6 +4965,9 @@ def get_voice_config():
         'voice_appid': d.get('voice_appid') or '',
         'voice_accesskey': d.get('voice_accesskey') or '',
         'voice_extnumber': d.get('voice_extnumber') or '',
+        'ext_pool_mx': d.get('ext_pool_mx') or '',
+        'ext_pool_co': d.get('ext_pool_co') or '',
+        'ext_pool_pe': d.get('ext_pool_pe') or '',
         'voice_token': d.get('voice_token') or '',
         'voice_token_expiry': int(d.get('voice_token_expiry') or 0),
         'extra': d.get('extra') or '',
@@ -5452,6 +5554,9 @@ def voice_get_config():
         'has_token': bool(cfg['auth_token']),
         'voice_appid': cfg['voice_appid'],
         'voice_extnumber': cfg['voice_extnumber'],
+        'ext_pool_mx': cfg.get('ext_pool_mx') or '',
+        'ext_pool_co': cfg.get('ext_pool_co') or '',
+        'ext_pool_pe': cfg.get('ext_pool_pe') or '',
         'has_accesskey': bool(cfg['voice_accesskey']),
         'configured': is_voice_configured(),
     }})
@@ -5469,6 +5574,9 @@ def voice_save_config():
     voice_appid = (data.get('voice_appid') or '').strip()
     voice_accesskey = (data.get('voice_accesskey') or '').strip()
     voice_extnumber = (data.get('voice_extnumber') or '').strip()
+    ext_pool_mx = (data.get('ext_pool_mx') or '').strip()
+    ext_pool_co = (data.get('ext_pool_co') or '').strip()
+    ext_pool_pe = (data.get('ext_pool_pe') or '').strip()
     if provider not in ('simulation', 'twilio', 'custom', 'infin8linx'):
         return jsonify({'error': 'Proveedor invalido'}), 400
     db = get_db()
@@ -5489,20 +5597,23 @@ def voice_save_config():
         db.execute(
             "UPDATE voice_config SET provider=?, account_sid=?, auth_token=?, from_number=?, api_domain=?, "
             "voice_appid=?, voice_accesskey=?, voice_extnumber=?, "
+            "ext_pool_mx=?, ext_pool_co=?, ext_pool_pe=?, "
             "voice_token=CASE WHEN ? THEN '' ELSE voice_token END, "
             "voice_token_expiry=CASE WHEN ? THEN 0 ELSE voice_token_expiry END, "
             "is_active=1, updated_at=datetime('now') WHERE id=?",
             (provider, account_sid, final_token, from_number, api_domain,
              voice_appid, final_accesskey, voice_extnumber,
+             ext_pool_mx, ext_pool_co, ext_pool_pe,
              1 if token_reset else 0, 1 if token_reset else 0, row['id'])
         )
     else:
         db.execute(
             "INSERT INTO voice_config (provider, account_sid, auth_token, from_number, api_domain, "
-            "voice_appid, voice_accesskey, voice_extnumber, is_active) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            "voice_appid, voice_accesskey, voice_extnumber, ext_pool_mx, ext_pool_co, ext_pool_pe, is_active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
             (provider, account_sid, final_token, from_number, api_domain,
-             voice_appid, final_accesskey, voice_extnumber)
+             voice_appid, final_accesskey, voice_extnumber,
+             ext_pool_mx, ext_pool_co, ext_pool_pe)
         )
     db.commit()
     if token_reset:
