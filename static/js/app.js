@@ -1318,7 +1318,7 @@ async function showAddUserModal() {
             apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais)</label><p class="text-secondary">No hay configuraciones API disponibles</p></div>';
         }
     }
-    var extFieldHtml = '<div class="form-group"><label>Extension / Telefono fijo</label><input type="text" name="extnumber" placeholder="Ej. 8001 (opcional)"><small class="text-secondary">Si se asigna, las llamadas de este agente saldran desde esta extension. Dejar vacio para usar el pool.</small></div>';
+    var extFieldHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool configurado. No se permite escribir el numero manualmente; si no hay extensiones libres, pida al administrador del sistema que agregue mas.</small></div>';
     showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role" id="add-user-role" onchange="toggleApiConfig()">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div>' + apiConfigHtml + extFieldHtml + '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
 }
 
@@ -1332,7 +1332,7 @@ function toggleApiConfig() {
 
 async function handleAddUser(event) {
     event.preventDefault(); var form = event.target;
-    var body = { username: form.username.value.trim(), full_name: form.full_name.value.trim(), password: form.password.value, role: form.role.value, extnumber: form.extnumber.value.trim() };
+    var body = { username: form.username.value.trim(), full_name: form.full_name.value.trim(), password: form.password.value, role: form.role.value, assign_extension: !!form.assign_extension.checked };
     var apiConfigSelect = form.querySelector('select[name="api_config_id"]');
     if (apiConfigSelect && apiConfigSelect.value) {
         body.api_config_id = parseInt(apiConfigSelect.value);
@@ -1344,16 +1344,31 @@ async function handleAddUser(event) {
 function showEditUserModal(id) {
     var u = (window._users || []).find(function(usr) { return usr.id === id; });
     if (!u) return;
-    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Rol</label><input type="text" value="' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '" disabled style="background:var(--bg);"><small class="text-secondary">El rol no se puede cambiar despues de la creacion</small></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div><div class="form-group"><label>Extension / Telefono fijo</label><input type="text" name="extnumber" value="' + escapeHtml(u.extnumber || '') + '" placeholder="Ej. 8001 (dejar vacio para usar el pool)"><small class="text-secondary">Extension fija del agente para las llamadas salientes.</small></div><div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+    var extHtml;
+    if (u.extnumber) {
+        extHtml = '<div class="form-group"><label>Extension / Telefono asignado</label><div style="display:flex;align-items:center;gap:10px;"><span class="badge badge-blue" style="font-size:14px;padding:6px 12px;">' + escapeHtml(u.extnumber) + '</span><button type="button" class="btn btn-secondary btn-sm" onclick="releaseUserExtension(' + id + ')">Liberar extension</button></div><small class="text-secondary">El numero lo asigna el sistema y no se puede editar manualmente.</small></div>';
+    } else {
+        extHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool. Si no hay disponibles, pida al administrador del sistema que agregue mas.</small></div>';
+    }
+    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Rol</label><input type="text" value="' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '" disabled style="background:var(--bg);"><small class="text-secondary">El rol no se puede cambiar despues de la creacion</small></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div>' + extHtml + '<div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
 }
 
 async function handleEditUser(event, id) {
     event.preventDefault(); var form = event.target;
     try {
-        var body = { full_name: form.full_name.value.trim(), is_active: parseInt(form.is_active.value), extnumber: form.extnumber.value.trim() };
+        var body = { full_name: form.full_name.value.trim(), is_active: parseInt(form.is_active.value) };
         if (form.password.value) body.password = form.password.value;
+        if (form.assign_extension) body.assign_extension = !!form.assign_extension.checked;
         await api('/api/users/' + id, { method: 'PUT', body: body });
         hideModal(); showToast('Usuario actualizado', 'success'); renderUsers(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function releaseUserExtension(id) {
+    if (!confirm('Seguro que deseas liberar la extension/telefono de este usuario? Volvera al pool y quedara disponible para otro agente.')) return;
+    try {
+        await api('/api/users/' + id, { method: 'PUT', body: { release_extension: true } });
+        hideModal(); showToast('Extension liberada', 'success'); renderUsers(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -1494,14 +1509,15 @@ async function showBulkCreateModal() {
                 '<a href="/api/users/template" download="plantilla_usuarios.xlsx" class="btn btn-secondary" style="font-size:13px;padding:6px 12px;">⬇ Descargar plantilla Excel</a>' +
             '</div>' +
             '<div class="form-group"><label>Lista de usuarios *</label>' +
-                '<textarea name="users_text" id="bulk-users-text" rows="10" style="width:100%;font-family:monospace;font-size:13px;" placeholder="usuario,contrasena,nombre_completo,extension&#10;jperez,,Juan Perez,8001&#10;mlopez,,Maria Lopez,8002&#10;garcia,," required></textarea>' +
-                '<small class="text-secondary">Formato: <strong>usuario,contrasena,nombre_completo,extension</strong> (una linea por usuario). Solo el <strong>usuario es obligatorio</strong>; contrasena, nombre y extension son opcionales. La <strong>extension</strong> es el telefono fijo del agente (2-10 digitos); si se omite, las llamadas usaran el pool de extensiones. Si omite la contrasena se genera automaticamente una clave de 10 caracteres alfanumericos.' +
+                '<textarea name="users_text" id="bulk-users-text" rows="10" style="width:100%;font-family:monospace;font-size:13px;" placeholder="usuario,contrasena,nombre_completo&#10;jperez,,Juan Perez&#10;mlopez,,Maria Lopez&#10;garcia,," required></textarea>' +
+                '<small class="text-secondary">Formato: <strong>usuario,contrasena,nombre_completo</strong> (una linea por usuario). Solo el <strong>usuario es obligatorio</strong>; contrasena y nombre son opcionales. Las <strong>extensiones no se indican aqui</strong>: se asignan automaticamente marcando la opcion inferior. Si omite la contrasena se genera automaticamente una clave de 10 caracteres alfanumericos.' +
                 '<br>Descargue la plantilla Excel o pegue datos desde Excel/CSV (use coma como separador).</small>' +
             '</div>' +
             '<div class="form-group"><label>Contrasena por defecto (opcional)</label>' +
                 '<input type="text" name="default_password" id="bulk-default-pwd" placeholder="Se usa cuando la linea no trae contrasena" minlength="6">' +
                 '<small class="text-secondary">Si una linea solo tiene usuario (o usuario,nombre), se asignara esta contrasena.</small>' +
             '</div>' +
+            '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="bulk-assign-ext" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar automaticamente una extension/telefono a cada usuario</span></label><small class="text-secondary">El sistema elige una extension libre del pool para cada usuario nuevo. Si no hay suficientes extensiones, las filas restantes se marcan como error para que el administrador agregue mas.</small></div>' +
             apiConfigHtml +
             '<div style="background:var(--light-blue);padding:10px 12px;border-radius:8px;font-size:13px;color:var(--text-secondary);margin-bottom:12px;">' + defaultPwdMsg + ' Maximo 500 usuarios por carga.</div>' +
             '<div id="bulk-result" style="display:none;margin-bottom:12px;"></div>' +
@@ -1524,15 +1540,9 @@ function parseBulkUsersText(text, defaultPassword) {
         var parts = trimmed.split(/[,;\t]/).map(function(p) { return p.trim(); });
         var username = parts[0] || '';
         var password = parts[1] || defaultPassword || '';
-        var extnumber = '';
-        // Optional 4th column: extension/telefono fijo. A trailing token that is a
-        // short numeric code (2-10 digits) is treated as the extension; otherwise
-        // everything after the password is considered the full name (back-compat).
-        var nameParts = parts.slice(2);
-        if (nameParts.length >= 2 && /^\d{2,10}$/.test(nameParts[nameParts.length - 1])) {
-            extnumber = nameParts.pop();
-        }
-        var full_name = nameParts.join(', ').trim();
+        // The rest is the full name; any extra numeric column is ignored because
+        // extensions are auto-allocated by the system, never read from text.
+        var full_name = parts.slice(2).join(', ').trim();
         if (!username) {
             errors.push({ line: idx + 1, error: 'Usuario vacio' });
             return;
@@ -1541,7 +1551,7 @@ function parseBulkUsersText(text, defaultPassword) {
             errors.push({ line: idx + 1, username: username, error: 'Contrasena minima de 6 caracteres' });
             return;
         }
-        users.push({ username: username, password: password, full_name: full_name, extnumber: extnumber });
+        users.push({ username: username, password: password, full_name: full_name });
     });
     return { users: users, errors: errors };
 }
@@ -1553,6 +1563,7 @@ async function handleBulkCreate(event) {
     var defaultPassword = document.getElementById('bulk-default-pwd').value.trim();
     var apiConfigSelect = document.getElementById('bulk-api-config');
     var apiConfigId = apiConfigSelect ? parseInt(apiConfigSelect.value) : null;
+    var assignExtensions = document.getElementById('bulk-assign-ext') ? document.getElementById('bulk-assign-ext').checked : false;
 
     var parsed = parseBulkUsersText(text, defaultPassword);
 
@@ -1584,10 +1595,16 @@ async function handleBulkCreate(event) {
     submitBtn.textContent = 'Creando...';
 
     try {
-        var body = { users: parsed.users };
+        var body = { users: parsed.users, assign_extensions: assignExtensions };
         if (apiConfigId) body.api_config_id = apiConfigId;
         var result = await api('/api/users/bulk', { method: 'POST', body: body });
         var html = '<strong>Creacion completada.</strong> Creados: ' + result.created_count + '.';
+        if (assignExtensions && result.created && result.created.length) {
+            var assigned = result.created.filter(function(u){ return u.extnumber; });
+            if (assigned.length) {
+                html += '<br><small>Extensiones asignadas: ' + assigned.map(function(u){ return escapeHtml(u.username) + '→' + escapeHtml(u.extnumber); }).join(', ') + '</small>';
+            }
+        }
         if (result.error_count > 0) {
             html += ' Errores: ' + result.error_count + '<ul style="margin:6px 0 0;padding-left:18px;">' +
                 result.errors.map(function(e) { return '<li>' + escapeHtml(e.username || ('#' + e.index)) + ': ' + escapeHtml(e.error) + '</li>'; }).join('') + '</ul>';
@@ -1634,11 +1651,12 @@ async function showBulkImportModal() {
                     '</a>' +
                 '</div>' +
                 '<input type="file" name="users_file" id="bulk-import-file" accept=".xlsx" required style="padding:8px;border:1px solid var(--border);border-radius:8px;width:100%;">' +
-                '<small class="text-secondary">Columnas esperadas: <strong>usuario</strong> (obligatorio), <strong>contrasena</strong> (opcional), <strong>nombre_completo</strong> (opcional), <strong>extension</strong> (opcional, telefono fijo del agente). La primera fila se usa como encabezado. Maximo 500 usuarios.</small>' +
+                '<small class="text-secondary">Columnas esperadas: <strong>usuario</strong> (obligatorio), <strong>contrasena</strong> (opcional), <strong>nombre_completo</strong> (opcional). La primera fila se usa como encabezado. Maximo 500 usuarios. Las extensiones no se leen del archivo: se asignan automaticamente marcando la opcion inferior.</small>' +
             '</div>' +
             '<div class="form-group"><label>Contrasena por defecto (opcional)</label>' +
                 '<input type="text" name="default_password" id="bulk-import-default-pwd" minlength="6" placeholder="Se usa cuando la fila no trae contrasena">' +
             '</div>' +
+            '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="bulk-import-assign-ext" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar automaticamente una extension/telefono a cada usuario</span></label><small class="text-secondary">El sistema elige una extension libre del pool para cada usuario nuevo. Si no hay suficientes extensiones, las filas restantes se marcan como error.</small></div>' +
             apiConfigHtml +
             '<div id="bulk-import-result" style="display:none;margin-bottom:12px;"></div>' +
             '<div class="modal-footer" style="padding:16px 0 0;">' +
@@ -1659,6 +1677,8 @@ async function handleBulkImport(event) {
     if (defaultPwd) formData.append('default_password', defaultPwd);
     var apiConfig = document.getElementById('bulk-import-api-config');
     if (apiConfig && apiConfig.value) formData.append('api_config_id', apiConfig.value);
+    var assignExt = document.getElementById('bulk-import-assign-ext');
+    if (assignExt && assignExt.checked) formData.append('assign_extensions', 'true');
 
     var resultEl = document.getElementById('bulk-import-result');
     var submitBtn = document.getElementById('bulk-import-submit');
@@ -3272,7 +3292,7 @@ async function renderVoiceConfig(container) {
                     '<div class="form-group"><label>URL de la API</label><input type="text" id="vc-infin-url" value="' + escapeHtml(cfg.api_domain || '') + '" placeholder="http://IP:puerto (ej: http://1.2.3.4:8080)"></div>' +
                     '<div class="form-group"><label>AppID</label><input type="text" id="vc-infin-appid" value="' + escapeHtml(cfg.voice_appid || '') + '" placeholder="AppID autorizado"></div>' +
                     '<div class="form-group"><label>AccessKey</label><input type="password" id="vc-infin-accesskey" placeholder="' + (cfg.has_accesskey ? '******** (configurada - dejar vacia para conservar)' : 'AccessKey autorizada') + '"></div>' +
-                    '<div class="form-group"><label>Extension(es) atendedoras *</label><input type="text" id="vc-infin-ext" value="' + escapeHtml(cfg.voice_extnumber || '') + '" placeholder="Una o varias separadas por coma, ej: 8001, 8002, 8003"><small class="text-secondary">Si configura varias, cada llamada se asignara aleatoriamente a una de ellas (balanceo entre agentes).</small></div>' +
+                    '<div class="form-group"><label>Pool de extensiones/telefonos *</label><input type="text" id="vc-infin-ext" value="' + escapeHtml(cfg.voice_extnumber || '') + '" placeholder="Una o varias separadas por coma, ej: 8001, 8002, 8003"><small class="text-secondary">Listado de extensiones SIP disponibles. Al crear un usuario y marcar "Asignar extension", el sistema elige automaticamente una de estas que no este en uso. Cada agente recibe una extension fija desde este pool.</small></div>' +
                     '<div class="form-group"><label>Numero remitente (disnumber, opcional)</label><input type="text" id="vc-infin-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="Dejar vacio para asignar uno aleatorio"></div>' +
                     '<div class="alert alert-warning" style="font-size:13px;">infin8linx <strong>MakeCall</strong> conecta primero la extension configurada con el numero destino (click-to-call); no es un broadcast TTS. El guion lo lee el agente. El estado en tiempo real no se expone por API; se actualiza via CDR/callback.</div>' +
                 '</div>' +

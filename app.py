@@ -1249,6 +1249,51 @@ def _find_user_by_extnumber(extnumber, exclude_id=None):
     return db.execute(q, tuple(params)).fetchone()
 
 
+def _get_extension_pool():
+    """Return the list of extensions configured in voice_config (the assignment pool)."""
+    try:
+        cfg = get_voice_config()
+    except Exception:
+        cfg = {}
+    return _parse_extension_pool((cfg or {}).get('voice_extnumber'))
+
+
+def allocate_extension(exclude_id=None):
+    """Auto-assign a free extension from the configured pool.
+
+    Picks a random extension from voice_extnumber that is not currently bound to
+    another active user. Returns the chosen extension, or '' if none is available
+    (pool empty or fully used), in which case the caller should prompt the admin
+    to add more extensions.
+    """
+    import random as _random
+    pool = _get_extension_pool()
+    if not pool:
+        return ''
+    db = get_db()
+    # Extensions already assigned to active users (normalized, lowercase).
+    taken_rows = db.execute(
+        "SELECT extnumber FROM users WHERE is_active = 1 AND extnumber IS NOT NULL AND TRIM(extnumber) <> ''"
+    ).fetchall()
+    taken = set()
+    for row in taken_rows:
+        val = row['extnumber'] if not isinstance(row, tuple) else row[0]
+        if exclude_id:
+            # The excluded user already holds its own extension; when re-assigning
+            # for that user we should not count it as taken.
+            owner = db.execute(
+                "SELECT extnumber FROM users WHERE id = ?", (exclude_id,)
+            ).fetchone()
+            own = owner['extnumber'] if owner and not isinstance(owner, tuple) else ''
+            if own and _normalize_extnumber(own).lower() == _normalize_extnumber(val).lower():
+                continue
+        taken.add(_normalize_extnumber(val).lower())
+    free = [ext for ext in pool if _normalize_extnumber(ext).lower() not in taken]
+    if not free:
+        return ''
+    return _random.choice(free)
+
+
 def apply_template_vars(text, phone, contact_names=None, contact_cache=None):
     """Replace {nombre}/{telefono}/{app_name}/{amount}/{discount}/{payment_link} placeholders."""
     if not text:
@@ -1714,10 +1759,14 @@ def create_user():
     if existing:
         return jsonify({'error': 'El nombre de usuario ya existe'}), 409
     api_config_id = data.get('api_config_id')
-    # Asignar telefono/extension fija (opcional). Vacio o cadena en blanco = sin asignar.
-    extnumber = _normalize_extnumber(data.get('extnumber')) or None
-    if extnumber and _find_user_by_extnumber(extnumber):
-        return jsonify({'error': f'La extension/telefono "{extnumber}" ya esta asignada a otro usuario.'}), 409
+    # Las extensiones NO se asignan manualmente: se elige automaticamente una
+    # libre del pool configurado si el administrador marca "asignar telefono".
+    assign_extension = bool(data.get('assign_extension', False))
+    extnumber = None
+    if assign_extension:
+        extnumber = allocate_extension()
+        if not extnumber:
+            return jsonify({'error': 'No hay extensiones disponibles en el pool. Pida al administrador del sistema que agregue mas extensiones en Configuracion de Voz.'}), 409
     cur = db.execute(
         "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber) VALUES (?, ?, ?, ?, ?, ?)",
         (username, hash_password(password), full_name, role, team_creator_id, extnumber)
@@ -1782,14 +1831,24 @@ def update_user(user_id):
         params.append(hash_password(password))
         updates.append("session_token=?")
         params.append(None)
-    # Asignacion de extension/telefono fijo: cuando la clave esta presente,
-    # una cadena vacia la desasigna; si no viene se conserva el valor actual.
-    if 'extnumber' in data:
-        ext = _normalize_extnumber(data.get('extnumber'))
-        if ext and _find_user_by_extnumber(ext, exclude_id=user_id):
-            return jsonify({'error': f'La extension/telefono "{ext}" ya esta asignada a otro usuario.'}), 409
+    # Gestion de extension: no se permite escribir el numero manualmente.
+    # - assign_extension=true  -> asignar automaticamente una libre del pool
+    # - release_extension=true -> liberar la extension actual
+    # El valor manual de 'extnumber' se ignora deliberadamente.
+    wants_assign = bool(data.get('assign_extension', False))
+    wants_release = bool(data.get('release_extension', False))
+    if wants_release:
         updates.append("extnumber=?")
-        params.append(ext if ext else None)
+        params.append(None)
+    elif wants_assign:
+        # Si ya tenia una extension, se conserva; si no, se asigna una libre.
+        had_ext = _normalize_extnumber(user['extnumber'] if 'extnumber' in user.keys() else None)
+        if not had_ext:
+            new_ext = allocate_extension(exclude_id=user_id)
+            if not new_ext:
+                return jsonify({'error': 'No hay extensiones disponibles en el pool. Pida al administrador del sistema que agregue mas extensiones en Configuracion de Voz.'}), 409
+            updates.append("extnumber=?")
+            params.append(new_ext)
     params.append(user_id)
     db.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", params)
     db.commit()
@@ -1832,12 +1891,15 @@ def delete_user(user_id):
     db.commit()
     return jsonify({'message': 'Usuario eliminado'})
 
-def _bulk_create_users_core(current_user, users, default_api_config_id, default_password=None):
+def _bulk_create_users_core(current_user, users, default_api_config_id, default_password=None, assign_extensions=False):
     """Core bulk-creation logic shared by JSON and Excel upload.
 
     Returns (created, errors). Each created item includes the plain-text
     password used (for the password-list export); existing/hashed passwords
     are never returned elsewhere.
+
+    When assign_extensions is True, each created user gets a free extension
+    auto-allocated from the configured pool (no manual assignment).
     """
     db = get_db()
 
@@ -1848,15 +1910,25 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
         role = 'team_member'
         team_creator_id = current_user['id']
     else:
-        return None, None
+        return None, None, None
 
     created = []
     errors = []
-    existing_rows = db.execute("SELECT username, extnumber FROM users WHERE is_active = 1 AND extnumber IS NOT NULL AND TRIM(extnumber) != ''").fetchall()
     existing_users = set(r['username'].lower() for r in db.execute("SELECT username FROM users").fetchall())
-    existing_extensions = set((r['extnumber'] or '').strip().lower() for r in existing_rows if r['extnumber'])
+    # Extensions already taken in DB (active users).
+    taken_rows = db.execute(
+        "SELECT extnumber FROM users WHERE is_active = 1 AND extnumber IS NOT NULL AND TRIM(extnumber) != ''"
+    ).fetchall()
+    taken_extensions = set(
+        _normalize_extnumber(r['extnumber']).lower() for r in taken_rows if r['extnumber']
+    )
+    # Full pool and remaining free pool (for auto-assignment).
+    all_pool = _get_extension_pool()
+    free_pool = [e for e in all_pool if _normalize_extnumber(e).lower() not in taken_extensions]
+    if assign_extensions and not all_pool:
+        preflight_error = 'No hay extensiones configuradas en el pool. Pida al administrador del sistema que agregue extensiones en Configuracion de Voz antes de asignar.'
+        return None, [{'index': -1, 'username': '', 'error': preflight_error}], role
     seen_usernames = set()
-    seen_extensions = set()
 
     for idx, u in enumerate(users):
         if not isinstance(u, dict):
@@ -1865,8 +1937,8 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
         username = (u.get('username') or '').strip()
         full_name = (u.get('full_name') or '').strip()
         api_config_id = u.get('api_config_id') or default_api_config_id
-        # Extension/telefono fija opcional (por fila). Vacio = sin asignar.
-        extnumber = _normalize_extnumber(u.get('extnumber')) or None
+        # Las extensiones nunca se leen del archivo: se asignan automaticamente.
+        extnumber = None
 
         if not username:
             errors.append({'index': idx, 'username': username, 'error': 'Usuario requerido'})
@@ -1888,17 +1960,15 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
             errors.append({'index': idx, 'username': username, 'error': 'El nombre de usuario ya existe'})
             continue
 
-        # Validacion de extension unica: comprobar contra usuarios existentes
-        # y contra extensiones ya usadas en el mismo lote (primera fila gana).
-        if extnumber:
-            ext_key = extnumber.lower()
-            if ext_key in existing_extensions:
-                errors.append({'index': idx, 'username': username, 'error': f'La extension "{extnumber}" ya esta asignada a otro usuario'})
+        if assign_extensions:
+            if not free_pool:
+                errors.append({'index': idx, 'username': username, 'error': 'No quedan extensiones libres en el pool. Pida al administrador del sistema que agregue mas extensiones.'})
                 continue
-            if ext_key in seen_extensions:
-                errors.append({'index': idx, 'username': username, 'error': f'La extension "{extnumber}" esta duplicada en el archivo'})
-                continue
-            seen_extensions.add(ext_key)
+            import random as _random
+            chosen = _random.choice(free_pool)
+            free_pool.remove(chosen)
+            extnumber = chosen
+            taken_extensions.add(_normalize_extnumber(chosen).lower())
 
         try:
             db.execute(
@@ -1951,8 +2021,12 @@ def bulk_create_users():
 
     default_api_config_id = data.get('api_config_id')
     default_password = data.get('default_password')
-    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password)
+    assign_extensions = bool(data.get('assign_extensions', False))
+    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password, assign_extensions=assign_extensions)
     if result[0] is None:
+        # Special case: pre-validation error (e.g. empty pool when assigning)
+        if len(result) > 2 and isinstance(result[1], list) and result[1] and result[1][0].get('index') == -1:
+            return jsonify({'error': result[1][0]['error']}), 409
         return jsonify({'error': 'Permisos insuficientes'}), 403
     created, errors, role = result
     return jsonify({
@@ -1970,6 +2044,10 @@ def _parse_excel_users(file_storage):
     Accepts columns (case/space/accent insensitive, first row as header):
     usuario/username, contrasena/password, nombre/full_name/nombre completo.
     Also accepts a 3-column sheet without header (username, password, full_name).
+
+    NOTE: extension/telefono columns are intentionally ignored. Extensions are
+    never taken from the file; they are auto-allocated by the system when the
+    caller requests assign_extensions.
     """
     from openpyxl import load_workbook
     wb = load_workbook(filename=file_storage.stream, read_only=True, data_only=True)
@@ -1987,7 +2065,6 @@ def _parse_excel_users(file_storage):
         'usuario': 'username', 'username': 'username', 'user': 'username', 'cuenta': 'username',
         'contrasena': 'password', 'password': 'password', 'clave': 'password', 'pass': 'password',
         'nombre': 'full_name', 'nombre completo': 'full_name', 'nombre_completo': 'full_name', 'fullname': 'full_name', 'name': 'full_name', 'full name': 'full_name',
-        'extension': 'extnumber', 'ext': 'extnumber', 'extnumber': 'extnumber', 'telefono': 'extnumber', 'fono': 'extnumber', 'anexo': 'extnumber'
     }
     first = rows[0]
     first_norm = [normalize(c) for c in first]
@@ -2011,21 +2088,17 @@ def _parse_excel_users(file_storage):
                 'username': get('username'),
                 'password': get('password'),
                 'full_name': get('full_name'),
-                'extnumber': get('extnumber')
             })
     else:
-        # No header: treat columns as username, password, full_name[, extension] in order
+        # No header: treat columns as username, password, full_name in order.
+        # A 4th numeric column is ignored (extensions are auto-allocated).
         for row in rows:
             if row is None or all(c is None or str(c).strip() == '' for c in row):
                 continue
-            ext = ''
-            if len(row) >= 4 and row[3] is not None and re.match(r'^\d{2,10}$', str(row[3]).strip()):
-                ext = str(row[3]).strip()
             users.append({
                 'username': '' if row[0] is None else str(row[0]),
                 'password': '' if len(row) < 2 or row[1] is None else str(row[1]),
                 'full_name': '' if len(row) < 3 or row[2] is None else str(row[2]),
-                'extnumber': ext
             })
     wb.close()
     return users
@@ -2063,9 +2136,12 @@ def bulk_import_users():
         except (TypeError, ValueError):
             default_api_config_id = None
     default_password = request.form.get('default_password')
+    assign_extensions = request.form.get('assign_extensions', 'false').lower() in ('1', 'true', 'on', 'yes')
 
-    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password)
+    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password, assign_extensions=assign_extensions)
     if result[0] is None:
+        if result[1]:
+            return jsonify({'error': result[1][0].get('error', 'Permisos insuficientes')}), 409
         return jsonify({'error': 'Permisos insuficientes'}), 403
     created, errors, role = result
     return jsonify({
@@ -2265,7 +2341,7 @@ def download_user_template():
     ws = wb.active
     ws.title = 'Usuarios'
 
-    headers = ['usuario', 'contrasena', 'nombre_completo', 'extension']
+    headers = ['usuario', 'contrasena', 'nombre_completo']
     header_fill = PatternFill(start_color='2563EB', end_color='2563EB', fill_type='solid')
     header_font = Font(bold=True, color='FFFFFF')
 
@@ -2285,16 +2361,12 @@ def download_user_template():
     ws.cell(row=1, column=3).comment = Comment(
         'OPCIONAL. Nombre completo del usuario.', 'SMS Platform'
     )
-    ws.cell(row=1, column=4).comment = Comment(
-        'OPCIONAL. Extension/telefono fijo asignado al agente. Si se indica, las llamadas saldran desde esta extension; si se deja vacio, se usara el pool de extensiones.',
-        'SMS Platform'
-    )
 
     # Example rows
     examples = [
-        ['juan.perez', 'Clave1234', 'Juan Perez', '8001'],
-        ['maria.lopez', '', 'Maria Lopez', '8002'],
-        ['carlos.ruiz', '', '', ''],
+        ['juan.perez', 'Clave1234', 'Juan Perez'],
+        ['maria.lopez', '', 'Maria Lopez'],
+        ['carlos.ruiz', '', 'Carlos Ruiz'],
     ]
     for row in examples:
         ws.append(row)
@@ -2302,7 +2374,13 @@ def download_user_template():
     ws.column_dimensions['A'].width = 22
     ws.column_dimensions['B'].width = 18
     ws.column_dimensions['C'].width = 28
-    ws.column_dimensions['D'].width = 16
+
+    # Note row: extensions are assigned by the system, not from the file.
+    note_row = len(examples) + 3
+    note_cell = ws.cell(row=note_row, column=1,
+                        value='Nota: las extensiones/telefonos se asignan automaticamente desde el pool (marque "Asignar extension" al importar). No se leen del archivo.')
+    note_cell.font = Font(italic=True, color='B45309')
+    ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=3)
 
     buf = BytesIO()
     wb.save(buf)
