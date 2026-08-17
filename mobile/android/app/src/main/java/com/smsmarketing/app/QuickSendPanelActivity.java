@@ -91,10 +91,6 @@ public class QuickSendPanelActivity extends Activity {
         );
         wp.topMargin = dp(3);
         webView.setLayoutParams(wp);
-        // Use isolated process to avoid leaking the Activity on some OEM ROMs.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            WebView.setDataDirectorySuffix("bubble");
-        }
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
