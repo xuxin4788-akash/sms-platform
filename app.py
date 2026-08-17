@@ -5656,7 +5656,7 @@ def voice_test_config():
         token, err = infin8linx_get_token(cfg, force=True)
         if err:
             return jsonify({'error': err}), 400
-        return jsonify({'success': True, 'message': 'Token de infin8linx obtenido correctamente',
+        return jsonify({'success': True, 'message': 'Token de Infinity (infin8linx) obtenido correctamente',
                         'token_preview': (token[:6] + '...' + token[-4:]) if len(token) > 12 else 'OK'})
     return jsonify({'error': 'Proveedor no soportado'}), 400
 
