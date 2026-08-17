@@ -1879,7 +1879,15 @@ async function renderMyAccount(container) {
         var html = filterHtml + '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen de Cuenta</h3><span class="badge badge-primary header-badge">' + escapeHtml(state.user.username) + '</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Total SMS', myAcct.total || 0) + statCard('Enviados', myAcct.sent || 0, 'var(--success)') + statCard('Fallidos', myAcct.failed || 0, 'var(--danger)') + statCard('Costo Total', formatMoney(myAcct.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', myRate + '%') + '</div><table class="info-table"><tbody><tr><td class="info-label">SMS Pendientes</td><td class="info-value">' + (myAcct.pending || 0) + '</td></tr><tr><td class="info-label">Facturacion</td><td class="info-value">' + billingNote + ' <span class="text-secondary">(se cuenta cada SMS enviado, exitoso o fallido)</span></td></tr></tbody></table></div></div>';
 
         if (window.MobileNative && MobileNative.getFloatingPlugin && MobileNative.getFloatingPlugin()) {
-            html += '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">Widget flotante</h3></div><div class="card-body"><p class="text-secondary" style="margin-top:0;">Muestra un botón flotante sobre otras aplicaciones para abrir el envío rápido de SMS sin volver a la app.</p><button id="bubble-toggle-btn" class="btn btn-primary" onclick="toggleSystemBubble()">Activar widget flotante</button></div></div>';
+            html += '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">Widget flotante</h3></div>' +
+                '<div class="card-body"><p class="text-secondary" style="margin-top:0;">Muestra un botón flotante sobre otras aplicaciones para abrir el envío rápido de SMS sin volver a la app.</p>' +
+                '<div class="callout callout-warning" style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:12px;margin-bottom:12px;color:#92400E;font-size:13px;line-height:1.5;">' +
+                '<strong>Importante:</strong> después de activarlo, abre los ajustes del sistema y permite "Mostrar sobre otras apps". En algunos dispositivos también debes desactivar la optimización de batería para esta app.' +
+                '</div>' +
+                '<button id="bubble-toggle-btn" class="btn btn-primary" onclick="toggleSystemBubble()">Activar widget flotante</button>' +
+                (MobileNative.openOverlaySettings ? ' <button class="btn btn-secondary" onclick="MobileNative.openOverlaySettings()">Ajustes de permiso</button>' : '') +
+                (MobileNative.openBatterySettings ? ' <button class="btn btn-secondary" onclick="MobileNative.openBatterySettings()">Ajustes de batería</button>' : '') +
+                '</div></div>';
         }
 
         container.innerHTML = html;

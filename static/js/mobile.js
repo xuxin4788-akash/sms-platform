@@ -133,6 +133,10 @@
             var p = this.getFloatingPlugin();
             if (p) { try { await p.openOverlaySettings(); } catch (e) {} }
         },
+        openBatterySettings: async function () {
+            var p = this.getFloatingPlugin();
+            if (p) { try { await p.openBatterySettings(); } catch (e) {} }
+        },
         isBubbleRunning: async function () {
             var p = this.getFloatingPlugin();
             if (!p) return false;

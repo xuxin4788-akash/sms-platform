@@ -16,6 +16,7 @@ import android.os.IBinder;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -27,6 +28,7 @@ import androidx.core.app.NotificationCompat;
 
 public class FloatingBubbleService extends Service {
 
+    private static final String TAG = "SMSBubble";
     private static final String CHANNEL_ID = "sms_bubble_channel";
     private static final int NOTIF_ID = 4242;
     private static final String PREFS = "sms_bubble_prefs";
@@ -128,6 +130,12 @@ public class FloatingBubbleService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            Log.w(TAG, "start without SYSTEM_ALERT_WINDOW permission; stopping");
+            prefs.edit().putBoolean(KEY_USER_STOPPED, true).putBoolean(KEY_ENABLED, false).apply();
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         if (intent != null && intent.getStringExtra("serverUrl") != null) {
             serverUrl = intent.getStringExtra("serverUrl");
             prefs.edit()
@@ -145,91 +153,108 @@ public class FloatingBubbleService extends Service {
     }
 
     private void showBubble() {
-        bubbleView = new ImageView(this);
-        bubbleView.setBackgroundResource(R.drawable.bubble_bg);
-        bubbleView.setImageResource(android.R.drawable.ic_dialog_email);
-        int pad = dp(14);
-        bubbleView.setPadding(pad, pad, pad, pad);
-        bubbleView.setContentDescription("SMS Marketing quick send");
+        if (bubbleView != null) return;
+        try {
+            bubbleView = new ImageView(this);
+            bubbleView.setBackgroundResource(R.drawable.bubble_bg);
+            bubbleView.setImageResource(android.R.drawable.ic_dialog_email);
+            int pad = dp(14);
+            bubbleView.setPadding(pad, pad, pad, pad);
+            bubbleView.setContentDescription("SMS Marketing quick send");
 
-        int type;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
-        } else {
-            type = WindowManager.LayoutParams.TYPE_PHONE;
-        }
-        bubbleParams = new WindowManager.LayoutParams(
-            bubbleSizePx, bubbleSizePx,
-            type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        );
-        bubbleParams.gravity = Gravity.TOP | Gravity.START;
-
-        // Restore last position, default to right edge vertically centered.
-        int savedX = prefs.getInt(KEY_X, -1);
-        int savedY = prefs.getInt(KEY_Y, -1);
-        if (savedX >= 0 && savedY >= 0) {
-            bubbleParams.x = clampX(savedX);
-            bubbleParams.y = clampY(savedY);
-        } else {
-            bubbleParams.x = screenWidth - bubbleSizePx - marginPx;
-            bubbleParams.y = screenHeight / 2;
-        }
-
-        bubbleView.setOnTouchListener((v, event) -> {
-            switch (event.getAction()) {
-                case MotionEvent.ACTION_DOWN:
-                    initialX = bubbleParams.x;
-                    initialY = bubbleParams.y;
-                    initialTouchX = event.getRawX();
-                    initialTouchY = event.getRawY();
-                    touchStart = System.currentTimeMillis();
-                    hasMoved = false;
-                    longPressFired = false;
-                    v.setAlpha(0.85f);
-                    v.removeCallbacks(longPressRunnable);
-                    v.postDelayed(longPressRunnable, LONG_PRESS_MS);
-                    return true;
-                case MotionEvent.ACTION_MOVE:
-                    float dx = event.getRawX() - initialTouchX;
-                    float dy = event.getRawY() - initialTouchY;
-                    if (Math.abs(dx) > CLICK_SLOP_PX || Math.abs(dy) > CLICK_SLOP_PX) {
-                        hasMoved = true;
-                        v.removeCallbacks(longPressRunnable);
-                    }
-                    bubbleParams.x = clampX(initialX + (int) dx);
-                    bubbleParams.y = clampY(initialY + (int) dy);
-                    try {
-                        windowManager.updateViewLayout(bubbleView, bubbleParams);
-                    } catch (Exception ignore) {}
-                    return true;
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    v.setAlpha(1f);
-                    v.removeCallbacks(longPressRunnable);
-                    long dt = System.currentTimeMillis() - touchStart;
-                    if (longPressFired) {
-                        // Menu already shown; do nothing.
-                        return true;
-                    }
-                    if (!hasMoved && dt < 400) {
-                        openPanel();
-                    } else {
-                        snapToEdge();
-                    }
-                    return true;
+            int type;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+            } else {
+                type = WindowManager.LayoutParams.TYPE_PHONE;
             }
-            return false;
-        });
+            int wmFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                // Keep the bubble visible above system UI / gestures on modern Android.
+                wmFlags |= WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
+            }
+            bubbleParams = new WindowManager.LayoutParams(
+                bubbleSizePx, bubbleSizePx,
+                type,
+                wmFlags,
+                PixelFormat.TRANSLUCENT
+            );
+            bubbleParams.gravity = Gravity.TOP | Gravity.START;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                bubbleParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            }
 
-        windowManager.addView(bubbleView, bubbleParams);
+            // Restore last position, default to right edge vertically centered.
+            int savedX = prefs.getInt(KEY_X, -1);
+            int savedY = prefs.getInt(KEY_Y, -1);
+            if (savedX >= 0 && savedY >= 0) {
+                bubbleParams.x = clampX(savedX);
+                bubbleParams.y = clampY(savedY);
+            } else {
+                bubbleParams.x = screenWidth - bubbleSizePx - marginPx;
+                bubbleParams.y = screenHeight / 2;
+            }
 
-        // Animate in.
-        bubbleView.setScaleX(0.4f);
-        bubbleView.setScaleY(0.4f);
-        bubbleView.animate().scaleX(1f).scaleY(1f).setDuration(220)
-            .setInterpolator(new DecelerateInterpolator()).start();
+            bubbleView.setOnTouchListener((v, event) -> {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        initialX = bubbleParams.x;
+                        initialY = bubbleParams.y;
+                        initialTouchX = event.getRawX();
+                        initialTouchY = event.getRawY();
+                        touchStart = System.currentTimeMillis();
+                        hasMoved = false;
+                        longPressFired = false;
+                        v.setAlpha(0.85f);
+                        v.removeCallbacks(longPressRunnable);
+                        v.postDelayed(longPressRunnable, LONG_PRESS_MS);
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        float dx = event.getRawX() - initialTouchX;
+                        float dy = event.getRawY() - initialTouchY;
+                        if (Math.abs(dx) > CLICK_SLOP_PX || Math.abs(dy) > CLICK_SLOP_PX) {
+                            hasMoved = true;
+                            v.removeCallbacks(longPressRunnable);
+                        }
+                        bubbleParams.x = clampX(initialX + (int) dx);
+                        bubbleParams.y = clampY(initialY + (int) dy);
+                        try {
+                            windowManager.updateViewLayout(bubbleView, bubbleParams);
+                        } catch (Exception ignore) {}
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        v.setAlpha(1f);
+                        v.removeCallbacks(longPressRunnable);
+                        long dt = System.currentTimeMillis() - touchStart;
+                        if (longPressFired) {
+                            return true;
+                        }
+                        if (!hasMoved && dt < 400) {
+                            openPanel();
+                        } else {
+                            snapToEdge();
+                        }
+                        return true;
+                }
+                return false;
+            });
+
+            windowManager.addView(bubbleView, bubbleParams);
+            Log.i(TAG, "bubble added to window at x=" + bubbleParams.x + " y=" + bubbleParams.y);
+
+            // Animate in.
+            bubbleView.setScaleX(0.4f);
+            bubbleView.setScaleY(0.4f);
+            bubbleView.animate().scaleX(1f).scaleY(1f).setDuration(220)
+                .setInterpolator(new DecelerateInterpolator()).start();
+        } catch (Throwable t) {
+            Log.e(TAG, "failed to add bubble view", t);
+            prefs.edit().putBoolean(KEY_USER_STOPPED, true).putBoolean(KEY_ENABLED, false).apply();
+            stopSelf();
+        }
     }
 
     private void snapToEdge() {
@@ -261,7 +286,10 @@ public class FloatingBubbleService extends Service {
                 .setTitle("SMS Marketing")
                 .setItems(new CharSequence[]{"Abrir panel", "Detener burbuja"}, (d, which) -> {
                     if (which == 0) openPanel();
-                    else stopSelf();
+                    else {
+                        prefs.edit().putBoolean(KEY_USER_STOPPED, true).putBoolean(KEY_ENABLED, false).apply();
+                        stopSelf();
+                    }
                 })
                 .setOnCancelListener(d -> {})
                 .show();

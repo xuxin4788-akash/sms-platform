@@ -146,7 +146,7 @@ public class QuickSendPanelActivity extends Activity {
 
             @android.webkit.JavascriptInterface
             public void stopBubble() {
-                stopService(new Intent(QuickSendPanelActivity.this, FloatingBubbleService.class));
+                FloatingBubbleService.requestStop(QuickSendPanelActivity.this);
                 runOnUiThread(() -> finish());
             }
 
