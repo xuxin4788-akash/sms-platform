@@ -358,8 +358,26 @@ def init_db():
                 ext_pool_mx VARCHAR(500) DEFAULT '',
                 ext_pool_co VARCHAR(500) DEFAULT '',
                 ext_pool_pe VARCHAR(500) DEFAULT '',
+                api_domain_mx VARCHAR(500) DEFAULT '',
+                appid_mx VARCHAR(255) DEFAULT '',
+                accesskey_mx VARCHAR(255) DEFAULT '',
+                from_number_mx VARCHAR(100) DEFAULT '',
+                api_domain_co VARCHAR(500) DEFAULT '',
+                appid_co VARCHAR(255) DEFAULT '',
+                accesskey_co VARCHAR(255) DEFAULT '',
+                from_number_co VARCHAR(100) DEFAULT '',
+                api_domain_pe VARCHAR(500) DEFAULT '',
+                appid_pe VARCHAR(255) DEFAULT '',
+                accesskey_pe VARCHAR(255) DEFAULT '',
+                from_number_pe VARCHAR(100) DEFAULT '',
                 voice_token VARCHAR(255) DEFAULT '',
                 voice_token_expiry BIGINT DEFAULT 0,
+                token_mx VARCHAR(255) DEFAULT '',
+                token_mx_expiry BIGINT DEFAULT 0,
+                token_co VARCHAR(255) DEFAULT '',
+                token_co_expiry BIGINT DEFAULT 0,
+                token_pe VARCHAR(255) DEFAULT '',
+                token_pe_expiry BIGINT DEFAULT 0,
                 extra TEXT DEFAULT '',
                 is_active BOOLEAN DEFAULT TRUE,
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -446,6 +464,26 @@ def init_db():
             ('ext_pool_pe', 'VARCHAR(500)'),
             ('voice_token', 'VARCHAR(255)'),
             ('voice_token_expiry', 'BIGINT'),
+            # Per-country Infinity credentials/pools
+            ('api_domain_mx', 'VARCHAR(500)'),
+            ('appid_mx', 'VARCHAR(255)'),
+            ('accesskey_mx', 'VARCHAR(255)'),
+            ('from_number_mx', 'VARCHAR(100)'),
+            ('api_domain_co', 'VARCHAR(500)'),
+            ('appid_co', 'VARCHAR(255)'),
+            ('accesskey_co', 'VARCHAR(255)'),
+            ('from_number_co', 'VARCHAR(100)'),
+            ('api_domain_pe', 'VARCHAR(500)'),
+            ('appid_pe', 'VARCHAR(255)'),
+            ('accesskey_pe', 'VARCHAR(255)'),
+            ('from_number_pe', 'VARCHAR(100)'),
+            ('token_mx', 'VARCHAR(255)'),
+            ('token_mx_expiry', 'BIGINT'),
+            ('token_co', 'VARCHAR(255)'),
+            ('token_co_expiry', 'BIGINT'),
+            ('token_pe', 'VARCHAR(255)'),
+            ('token_pe_expiry', 'BIGINT'),
+            ('country', "VARCHAR(5) DEFAULT ''"),
         ):
             if not pg_column_exists('voice_config', _col):
                 cur.execute(f"ALTER TABLE voice_config ADD COLUMN {_col} {_type} DEFAULT " + ("0" if "expiry" in _col else "''"))
@@ -645,8 +683,26 @@ def init_db():
                 ext_pool_mx TEXT DEFAULT '',
                 ext_pool_co TEXT DEFAULT '',
                 ext_pool_pe TEXT DEFAULT '',
+                api_domain_mx TEXT DEFAULT '',
+                appid_mx TEXT DEFAULT '',
+                accesskey_mx TEXT DEFAULT '',
+                from_number_mx TEXT DEFAULT '',
+                api_domain_co TEXT DEFAULT '',
+                appid_co TEXT DEFAULT '',
+                accesskey_co TEXT DEFAULT '',
+                from_number_co TEXT DEFAULT '',
+                api_domain_pe TEXT DEFAULT '',
+                appid_pe TEXT DEFAULT '',
+                accesskey_pe TEXT DEFAULT '',
+                from_number_pe TEXT DEFAULT '',
                 voice_token TEXT DEFAULT '',
                 voice_token_expiry INTEGER DEFAULT 0,
+                token_mx TEXT DEFAULT '',
+                token_mx_expiry INTEGER DEFAULT 0,
+                token_co TEXT DEFAULT '',
+                token_co_expiry INTEGER DEFAULT 0,
+                token_pe TEXT DEFAULT '',
+                token_pe_expiry INTEGER DEFAULT 0,
                 extra TEXT DEFAULT '',
                 is_active INTEGER DEFAULT 1,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -762,6 +818,25 @@ def init_db():
             ("ext_pool_pe", "TEXT DEFAULT ''"),
             ("voice_token", "TEXT DEFAULT ''"),
             ("voice_token_expiry", "INTEGER DEFAULT 0"),
+            ("api_domain_mx", "TEXT DEFAULT ''"),
+            ("appid_mx", "TEXT DEFAULT ''"),
+            ("accesskey_mx", "TEXT DEFAULT ''"),
+            ("from_number_mx", "TEXT DEFAULT ''"),
+            ("api_domain_co", "TEXT DEFAULT ''"),
+            ("appid_co", "TEXT DEFAULT ''"),
+            ("accesskey_co", "TEXT DEFAULT ''"),
+            ("from_number_co", "TEXT DEFAULT ''"),
+            ("api_domain_pe", "TEXT DEFAULT ''"),
+            ("appid_pe", "TEXT DEFAULT ''"),
+            ("accesskey_pe", "TEXT DEFAULT ''"),
+            ("from_number_pe", "TEXT DEFAULT ''"),
+            ("token_mx", "TEXT DEFAULT ''"),
+            ("token_mx_expiry", "INTEGER DEFAULT 0"),
+            ("token_co", "TEXT DEFAULT ''"),
+            ("token_co_expiry", "INTEGER DEFAULT 0"),
+            ("token_pe", "TEXT DEFAULT ''"),
+            ("token_pe_expiry", "INTEGER DEFAULT 0"),
+            ("country", "TEXT DEFAULT ''"),
         ):
             try:
                 db.execute(f"ALTER TABLE voice_config ADD COLUMN {_col} {_type}")
@@ -1273,7 +1348,7 @@ def _find_user_by_extnumber(extnumber, exclude_id=None):
 
 
 def _get_extension_pool(country=None):
-    """Return the list of extensions configured in voice_config for a country.
+    """Return the list of extensions configured for a country.
 
     country ∈ 'mx'|'co'|'pe'. If empty/unknown, falls back to the legacy
     voice_extnumber pool (used for unassigned-country setups).
@@ -4949,7 +5024,7 @@ VOICE_STATUS_LABELS = {
 
 
 def get_voice_config():
-    """Return the active voice config row as a dict, or None."""
+    """Return the active voice config row as a dict (raw, all columns), or None."""
     db = get_db()
     row = db.execute("SELECT * FROM voice_config WHERE is_active = 1 ORDER BY id LIMIT 1").fetchone()
     if not row:
@@ -4968,14 +5043,79 @@ def get_voice_config():
         'ext_pool_mx': d.get('ext_pool_mx') or '',
         'ext_pool_co': d.get('ext_pool_co') or '',
         'ext_pool_pe': d.get('ext_pool_pe') or '',
+        # Per-country Infinity credentials
+        'api_domain_mx': d.get('api_domain_mx') or '',
+        'appid_mx': d.get('appid_mx') or '',
+        'accesskey_mx': d.get('accesskey_mx') or '',
+        'from_number_mx': d.get('from_number_mx') or '',
+        'api_domain_co': d.get('api_domain_co') or '',
+        'appid_co': d.get('appid_co') or '',
+        'accesskey_co': d.get('accesskey_co') or '',
+        'from_number_co': d.get('from_number_co') or '',
+        'api_domain_pe': d.get('api_domain_pe') or '',
+        'appid_pe': d.get('appid_pe') or '',
+        'accesskey_pe': d.get('accesskey_pe') or '',
+        'from_number_pe': d.get('from_number_pe') or '',
+        # Per-country tokens
         'voice_token': d.get('voice_token') or '',
         'voice_token_expiry': int(d.get('voice_token_expiry') or 0),
+        'token_mx': d.get('token_mx') or '',
+        'token_mx_expiry': int(d.get('token_mx_expiry') or 0),
+        'token_co': d.get('token_co') or '',
+        'token_co_expiry': int(d.get('token_co_expiry') or 0),
+        'token_pe': d.get('token_pe') or '',
+        'token_pe_expiry': int(d.get('token_pe_expiry') or 0),
         'extra': d.get('extra') or '',
     }
 
 
-def is_voice_configured():
+# Country -> (per-country credential column suffix, extension-pool column)
+_COUNTRY_FIELDS = {
+    'mx': {'domain': 'api_domain_mx', 'appid': 'appid_mx', 'accesskey': 'accesskey_mx',
+           'from': 'from_number_mx', 'pool': 'ext_pool_mx', 'token': 'token_mx',
+           'token_expiry': 'token_mx_expiry'},
+    'co': {'domain': 'api_domain_co', 'appid': 'appid_co', 'accesskey': 'accesskey_co',
+           'from': 'from_number_co', 'pool': 'ext_pool_co', 'token': 'token_co',
+           'token_expiry': 'token_co_expiry'},
+    'pe': {'domain': 'api_domain_pe', 'appid': 'appid_pe', 'accesskey': 'accesskey_pe',
+           'from': 'from_number_pe', 'pool': 'ext_pool_pe', 'token': 'token_pe',
+           'token_expiry': 'token_pe_expiry'},
+}
+
+
+def resolve_voice_config(country=None):
+    """Return a voice config projected for a country (mx/co/pe).
+
+    For a known country, the Infinity credentials/token of that country are
+    mapped onto the generic keys (api_domain/voice_appid/voice_accesskey/
+    from_number/voice_token/voice_token_expiry) and that country's extension
+    pool is mapped onto voice_extnumber, so the downstream infin8linx_* helpers
+    work unchanged. Empty per-country values fall back to the global ones.
+    For unknown/empty country the global (legacy) config is returned as-is.
+    """
     cfg = get_voice_config()
+    if not cfg:
+        return None
+    cc = normalize_country(country)
+    fields = _COUNTRY_FIELDS.get(cc)
+    if not fields:
+        cfg['_country'] = ''
+        return cfg
+    # Project per-country values onto generic keys, falling back to global.
+    projected = dict(cfg)
+    projected['_country'] = cc
+    projected['api_domain'] = cfg.get(fields['domain']) or cfg.get('api_domain') or ''
+    projected['voice_appid'] = cfg.get(fields['appid']) or cfg.get('voice_appid') or ''
+    projected['voice_accesskey'] = cfg.get(fields['accesskey']) or cfg.get('voice_accesskey') or ''
+    projected['from_number'] = cfg.get(fields['from']) or cfg.get('from_number') or ''
+    projected['voice_extnumber'] = cfg.get(fields['pool']) or cfg.get('voice_extnumber') or ''
+    projected['voice_token'] = cfg.get(fields['token']) or ''
+    projected['voice_token_expiry'] = int(cfg.get(fields['token_expiry']) or 0)
+    return projected
+
+
+def is_voice_configured(country=None):
+    cfg = resolve_voice_config(country)
     if not cfg:
         return False
     if cfg['provider'] in ('', 'simulation', 'simulacion', 'none'):
@@ -4985,8 +5125,7 @@ def is_voice_configured():
     if cfg['provider'] == 'custom':
         return bool(cfg['api_domain'] and cfg['account_sid'] and cfg['auth_token'])
     if cfg['provider'] == 'infin8linx':
-        return bool(cfg['api_domain'] and cfg['voice_appid'] and cfg['voice_accesskey']
-                    and _parse_extension_pool(cfg['voice_extnumber']))
+        return bool(cfg['api_domain'] and cfg['voice_appid'] and cfg['voice_accesskey'])
     return False
 
 
@@ -5017,26 +5156,58 @@ def _twilio_tts_xml(script_text, lang='es-MX', voice='alice'):
     )
 
 
-# in-memory cache for infin8linx auth tokens (one per gunicorn worker)
-_INFIN_TOKEN_CACHE = {'token': '', 'expiry': 0}
+# in-memory cache for infin8linx auth tokens (one per gunicorn worker, per country)
+# Keys: '' (global), 'mx', 'co', 'pe'. Each holds {'token': str, 'expiry': int}.
+_INFIN_TOKEN_CACHE = {}
+
+
+def _token_cache_key(config):
+    return (config or {}).get('_country') or ''
+
+
+def _token_db_columns(config):
+    """Return (token_col, expiry_col) for the config's country."""
+    cc = (config or {}).get('_country') or ''
+    if cc == 'mx':
+        return 'token_mx', 'token_mx_expiry'
+    if cc == 'co':
+        return 'token_co', 'token_co_expiry'
+    if cc == 'pe':
+        return 'token_pe', 'token_pe_expiry'
+    return 'voice_token', 'voice_token_expiry'
+
+
+def _country_token_cols(country):
+    """Return (token_col, expiry_col) for a country code (mx/co/pe/general)."""
+    cc = normalize_country(country)
+    if cc == 'mx':
+        return 'token_mx', 'token_mx_expiry'
+    if cc == 'co':
+        return 'token_co', 'token_co_expiry'
+    if cc == 'pe':
+        return 'token_pe', 'token_pe_expiry'
+    return 'voice_token', 'voice_token_expiry'
 
 
 def infin8linx_get_token(config, force=False):
     """Obtain an auth token from infin8linx (service App.Sip_Auth.Login).
 
     Tokens last 12h per docs; we refresh 10 minutes early. The token is also
-    persisted on the voice_config row so that multiple workers share it.
+    persisted on the voice_config row (in the country-specific column) so that
+    multiple workers share it.
     """
     import time as _time
     now = int(time.time())
+    cache_key = _token_cache_key(config)
     if not force:
         # Prefer the value freshly read from DB (shared across workers)
         db_token = (config or {}).get('voice_token') or ''
         db_expiry = int((config or {}).get('voice_token_expiry') or 0)
         if db_token and db_expiry - 600 > now:
             return db_token, None
-        cached = _INFIN_TOKEN_CACHE.get('token') or ''
-        if cached and int(_INFIN_TOKEN_CACHE.get('expiry') or 0) - 600 > now:
+        entry = _INFIN_TOKEN_CACHE.get(cache_key) or {}
+        cached = entry.get('token') or ''
+        if cached and int(entry.get('expiry') or 0) - 600 > now:
             return cached, None
     api_url = (config or {}).get('api_domain') or ''
     appid = (config or {}).get('voice_appid') or ''
@@ -5065,11 +5236,11 @@ def infin8linx_get_token(config, force=False):
         if not token:
             return '', 'El servidor no devolvio token'
         expiry = now + 12 * 3600
-        _INFIN_TOKEN_CACHE['token'] = token
-        _INFIN_TOKEN_CACHE['expiry'] = expiry
+        _INFIN_TOKEN_CACHE[cache_key] = {'token': token, 'expiry': expiry}
         try:
             db = get_db()
-            db.execute("UPDATE voice_config SET voice_token=?, voice_token_expiry=? WHERE id=?",
+            tok_col, exp_col = _token_db_columns(config)
+            db.execute("UPDATE voice_config SET %s=?, %s=? WHERE id=?" % (tok_col, exp_col),
                        (token, expiry, config.get('id')))
             db.commit()
         except Exception:
@@ -5344,8 +5515,12 @@ def voice_place_call_route():
     if len(phones) > 200:
         return jsonify({'error': 'Maximo 200 numeros por llamada masiva'}), 400
 
-    cfg = get_voice_config()
-    simulated = not is_voice_configured()
+    # Resolve the voice config for the calling agent's country. Each country
+    # (mx/co/pe) has its own Infinity credentials/extension pool; agents
+    # without a country use the global (legacy) config.
+    caller_country = normalize_country(g.user.get('country')) if hasattr(g, 'user') else ''
+    cfg = resolve_voice_config(caller_country)
+    simulated = not is_voice_configured(caller_country)
     provider = (cfg or {}).get('provider', 'simulation')
     # Extension fija del agente que realiza la llamada.
     caller_ext = (g.user.get('extnumber') or '').strip() if hasattr(g, 'user') else ''
@@ -5495,9 +5670,11 @@ def voice_statistics():
         ).fetchone()['c']
         last7.append({'date': day, 'count': c})
     answer_rate = (completed / total * 100) if total else 0
-    provider = (get_voice_config() or {}).get('provider', 'simulation')
+    caller_country = normalize_country(g.user.get('country')) if hasattr(g, 'user') else ''
+    vcfg = resolve_voice_config(caller_country)
+    provider = (vcfg or {}).get('provider', 'simulation')
     caller_ext = (g.user.get('extnumber') or '').strip() if hasattr(g, 'user') else ''
-    configured = is_voice_configured()
+    configured = is_voice_configured(caller_country)
     # Con infin8linx, el agente debe tener extension fija propia para llamar.
     can_call = True if not configured or provider != 'infin8linx' else bool(caller_ext)
     return jsonify({
@@ -5508,6 +5685,7 @@ def voice_statistics():
         'last_7_days': last7,
         'configured': configured,
         'provider': provider,
+        'caller_country': caller_country,
         'caller_ext': caller_ext,
         'can_call': can_call,
     })
@@ -5543,23 +5721,43 @@ def voice_query_status_route():
 @app.route('/api/config/voice', methods=['GET'])
 @admin_required
 def voice_get_config():
+    country = normalize_country(request.args.get('country'))
     cfg = get_voice_config()
     if not cfg:
         return jsonify({'config': None})
-    # Do not leak auth_token/accesskey in full; return masked flags.
+    # Resolve the selected country's credentials onto the base keys used by the
+    # form (api_domain/voice_appid/from_number/ext_pool) so one form can edit
+    # any country. Secrets are never returned, only a masked has_accesskey flag.
+    dom_c, appid_c, ak_c, from_c, pool_c = _COUNTRY_CONFIG_COLS.get(
+        country, _COUNTRY_CONFIG_COLS['mx'])[:5]
     return jsonify({'config': {
-        'id': cfg['id'], 'provider': cfg['provider'],
-        'account_sid': cfg['account_sid'], 'from_number': cfg['from_number'],
-        'api_domain': cfg['api_domain'],
-        'has_token': bool(cfg['auth_token']),
-        'voice_appid': cfg['voice_appid'],
-        'voice_extnumber': cfg['voice_extnumber'],
+        'id': cfg['id'], 'provider': cfg['provider'], 'country': country,
+        # Selected country (exposed under base keys for the form)
+        'api_domain': (cfg.get(dom_c) or ''),
+        'voice_appid': (cfg.get(appid_c) or ''),
+        'from_number': (cfg.get(from_c) or ''),
+        'ext_pool': (cfg.get(pool_c) or ''),
+        'has_accesskey': bool(cfg.get(ak_c)),
+        # Per-country pools (for the extension allocation overview)
         'ext_pool_mx': cfg.get('ext_pool_mx') or '',
         'ext_pool_co': cfg.get('ext_pool_co') or '',
         'ext_pool_pe': cfg.get('ext_pool_pe') or '',
-        'has_accesskey': bool(cfg['voice_accesskey']),
-        'configured': is_voice_configured(),
+        'configured': is_voice_configured(country),
+        'configured_mx': is_voice_configured('mx'),
+        'configured_co': is_voice_configured('co'),
+        'configured_pe': is_voice_configured('pe'),
     }})
+
+
+# Column mapping for per-country Infinity config in voice_config.
+_COUNTRY_CONFIG_COLS = {
+    'mx': ('api_domain_mx', 'appid_mx', 'accesskey_mx', 'from_number_mx', 'ext_pool_mx',
+           'token_mx', 'token_mx_expiry'),
+    'co': ('api_domain_co', 'appid_co', 'accesskey_co', 'from_number_co', 'ext_pool_co',
+           'token_co', 'token_co_expiry'),
+    'pe': ('api_domain_pe', 'appid_pe', 'accesskey_pe', 'from_number_pe', 'ext_pool_pe',
+           'token_pe', 'token_pe_expiry'),
+}
 
 
 @app.route('/api/config/voice', methods=['POST'])
@@ -5567,96 +5765,89 @@ def voice_get_config():
 def voice_save_config():
     data = request.get_json() or {}
     provider = (data.get('provider') or 'simulation').strip().lower()
-    account_sid = (data.get('account_sid') or '').strip()
-    auth_token = (data.get('auth_token') or '').strip()
-    from_number = (data.get('from_number') or '').strip()
-    api_domain = (data.get('api_domain') or '').strip()
-    voice_appid = (data.get('voice_appid') or '').strip()
-    voice_accesskey = (data.get('voice_accesskey') or '').strip()
-    voice_extnumber = (data.get('voice_extnumber') or '').strip()
-    ext_pool_mx = (data.get('ext_pool_mx') or '').strip()
-    ext_pool_co = (data.get('ext_pool_co') or '').strip()
-    ext_pool_pe = (data.get('ext_pool_pe') or '').strip()
-    if provider not in ('simulation', 'twilio', 'custom', 'infin8linx'):
+    if provider not in ('simulation', 'infin8linx'):
         return jsonify({'error': 'Proveedor invalido'}), 400
+    country = normalize_country(data.get('country'))
     db = get_db()
-    row = db.execute("SELECT id, auth_token, voice_accesskey, voice_appid FROM voice_config ORDER BY id LIMIT 1").fetchone()
-    # If the client sent an empty secret and one is already stored, keep it.
-    final_token = auth_token
-    final_accesskey = voice_accesskey
-    prev_appid = ''
-    if row:
-        if not final_token:
-            final_token = row['auth_token'] or ''
-        if not final_accesskey:
-            final_accesskey = row['voice_accesskey'] or ''
-        prev_appid = row['voice_appid'] or ''
-    # Changing AppID/AccessKey/URL invalidates any cached token.
-    token_reset = bool(prev_appid and (voice_appid != prev_appid or voice_accesskey))
-    if row:
+    row = db.execute("SELECT id FROM voice_config ORDER BY id LIMIT 1").fetchone()
+    if not row:
         db.execute(
-            "UPDATE voice_config SET provider=?, account_sid=?, auth_token=?, from_number=?, api_domain=?, "
-            "voice_appid=?, voice_accesskey=?, voice_extnumber=?, "
-            "ext_pool_mx=?, ext_pool_co=?, ext_pool_pe=?, "
-            "voice_token=CASE WHEN ? THEN '' ELSE voice_token END, "
-            "voice_token_expiry=CASE WHEN ? THEN 0 ELSE voice_token_expiry END, "
-            "is_active=1, updated_at=datetime('now') WHERE id=?",
-            (provider, account_sid, final_token, from_number, api_domain,
-             voice_appid, final_accesskey, voice_extnumber,
-             ext_pool_mx, ext_pool_co, ext_pool_pe,
-             1 if token_reset else 0, 1 if token_reset else 0, row['id'])
+            "INSERT INTO voice_config (provider, is_active) VALUES (?, 1)", (provider,)
         )
-    else:
-        db.execute(
-            "INSERT INTO voice_config (provider, account_sid, auth_token, from_number, api_domain, "
-            "voice_appid, voice_accesskey, voice_extnumber, ext_pool_mx, ext_pool_co, ext_pool_pe, is_active) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
-            (provider, account_sid, final_token, from_number, api_domain,
-             voice_appid, final_accesskey, voice_extnumber,
-             ext_pool_mx, ext_pool_co, ext_pool_pe)
-        )
+        db.commit()
+        row = db.execute("SELECT id FROM voice_config ORDER BY id LIMIT 1").fetchone()
+    row_id = row['id']
+
+    # provider is global (simulation/infin8linx). The UI edits ONE country at a
+    # time and sends base keys (api_domain/voice_appid/voice_accesskey/
+    # from_number/ext_pool) together with a `country`. We map those onto the
+    # selected country's columns; empty secrets preserve the stored value
+    # (write-only).
+    sets = ["provider=?", "is_active=1", "updated_at=datetime('now')"]
+    params = [provider]
+    token_reset_any = False
+
+    col_map = _COUNTRY_CONFIG_COLS.get(country)
+    if not col_map:
+        return jsonify({'error': 'Pais invalido'}), 400
+    domain_col, appid_col, accesskey_col, from_col, pool_col = col_map[:5]
+
+    if 'api_domain' in data:
+        sets.append(domain_col + "=?")
+        params.append((data.get('api_domain') or '').strip())
+    if 'voice_appid' in data:
+        new_appid = (data.get('voice_appid') or '').strip()
+        sets.append(appid_col + "=?")
+        params.append(new_appid)
+        # Changing the AppID invalidates the cached token.
+        token_reset_any = True
+    if 'voice_accesskey' in data:
+        new_ak = (data.get('voice_accesskey') or '').strip()
+        if new_ak:
+            sets.append(accesskey_col + "=?")
+            params.append(new_ak)
+            token_reset_any = True
+        # empty -> keep stored secret (omitted from UPDATE)
+    if 'from_number' in data:
+        sets.append(from_col + "=?")
+        params.append((data.get('from_number') or '').strip())
+    if 'ext_pool' in data:
+        sets.append(pool_col + "=?")
+        params.append((data.get('ext_pool') or '').strip())
+
+    if token_reset_any:
+        # Clear the cached token for the affected country only.
+        token_col, token_exp_col = _country_token_cols(country)
+        sets.extend([token_col + "=''", token_exp_col + "=0"])
+    params.append(row_id)
+    db.execute("UPDATE voice_config SET " + ", ".join(sets) + " WHERE id=?", params)
     db.commit()
-    if token_reset:
-        _INFIN_TOKEN_CACHE['token'] = ''
-        _INFIN_TOKEN_CACHE['expiry'] = 0
-    return jsonify({'message': 'Configuracion de voz guardada', 'configured': is_voice_configured()})
+    if token_reset_any:
+        _INFIN_TOKEN_CACHE.pop(country, None)
+    return jsonify({
+        'message': 'Configuracion de voz guardada',
+        'configured': is_voice_configured(),
+        'configured_mx': is_voice_configured('mx'),
+        'configured_co': is_voice_configured('co'),
+        'configured_pe': is_voice_configured('pe'),
+    })
 
 
 @app.route('/api/config/voice/test', methods=['POST'])
 @admin_required
 def voice_test_config():
-    """Validate credentials by fetching account info (Twilio), auth token (infin8linx) or a lightweight ping."""
-    cfg = get_voice_config()
-    if not cfg or not is_voice_configured():
-        return jsonify({'error': 'API de voz no configurada'}), 400
-    if cfg['provider'] == 'twilio':
-        try:
-            from twilio.rest import Client
-            client = Client(cfg['account_sid'], cfg['auth_token'])
-            account = client.api.accounts(cfg['account_sid']).fetch()
-            return jsonify({
-                'success': True,
-                'message': 'Conectado a Twilio',
-                'account_name': getattr(account, 'friendly_name', ''),
-                'status': getattr(account, 'status', ''),
-            })
-        except ImportError:
-            return jsonify({'error': 'Paquete twilio no instalado'}), 500
-        except Exception as e:
-            return jsonify({'error': getattr(e, 'msg', None) or str(e)}), 400
-    if cfg['provider'] == 'custom':
-        try:
-            url = cfg['api_domain'].rstrip('/') + '/ping'
-            resp = http_requests.get(url, timeout=10,
-                                     headers={'Authorization': 'Bearer ' + cfg['auth_token']})
-            return jsonify({'success': resp.status_code < 300, 'status_code': resp.status_code})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 400
+    """Validate Infinity credentials for a given country (?country=mx|co|pe)."""
+    country = normalize_country(request.args.get('country') or (request.get_json(silent=True) or {}).get('country'))
+    cfg = resolve_voice_config(country)
+    if not cfg or not is_voice_configured(country):
+        return jsonify({'error': 'API de voz no configurada para este pais'}), 400
     if cfg['provider'] == 'infin8linx':
         token, err = infin8linx_get_token(cfg, force=True)
         if err:
             return jsonify({'error': err}), 400
-        return jsonify({'success': True, 'message': 'Token de Infinity (infin8linx) obtenido correctamente',
+        label = COUNTRY_LABELS.get(country, 'General')
+        return jsonify({'success': True,
+                        'message': 'Token de Infinity (%s) obtenido correctamente' % label,
                         'token_preview': (token[:6] + '...' + token[-4:]) if len(token) > 12 else 'OK'})
     return jsonify({'error': 'Proveedor no soportado'}), 400
 

@@ -3307,42 +3307,44 @@ function handleVoiceDateTo(d) { state.calls.dateTo = d; state.calls.page = 1; lo
 // ============================================================
 // Voice Config (admin)
 // ============================================================
-async function renderVoiceConfig(container) {
-    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+var VOICE_COUNTRIES = [
+    { code: 'mx', label: 'Mexico' },
+    { code: 'co', label: 'Colombia' },
+    { code: 'pe', label: 'Peru' },
+    { code: '', label: 'General (sin pais)' }
+];
+var VOICE_CFG_CACHE = null;
+
+async function loadVoiceCountryConfig(code) {
+    // GET returns the selected country's credentials under base keys.
+    var data = await api('/api/config/voice?country=' + encodeURIComponent(code || 'mx'));
+    VOICE_CFG_CACHE = data.config || { provider: 'simulation' };
+    return VOICE_CFG_CACHE;
+}
+
+async function renderVoiceCountryFields() {
+    var code = document.getElementById('vc-country').value;
+    var wrap = document.getElementById('vc-country-fields');
+    if (!wrap) return;
+    wrap.innerHTML = '<div class="text-secondary" style="padding:8px 0;">Cargando...</div>';
+    var cfg;
     try {
-        var data = await api('/api/config/voice');
-        var cfg = data.config || { provider: 'simulation', account_sid: '', from_number: '', api_domain: '', has_token: false, voice_appid: '', voice_extnumber: '', ext_pool_mx: '', ext_pool_co: '', ext_pool_pe: '', has_accesskey: false, configured: false };
-        container.innerHTML =
-            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Configuracion de Voz (电呼)</h1>' +
-            '<div class="card"><div class="card-body">' +
-                '<div class="alert alert-info" style="margin-bottom:16px;">Define el proveedor de llamadas de voz. En <strong>modo simulacion</strong> no se realizan llamadas reales (util para pruebas). <strong>Infinity</strong> (infin8linx) usa la API del conmutador (click-to-call por extension).</div>' +
-                '<div class="form-group"><label>Proveedor</label><select id="vc-provider" onchange="toggleVoiceProviderFields()"><option value="simulation"' + (cfg.provider==='simulation'?' selected':'') + '>Simulacion (sin llamadas reales)</option><option value="infin8linx"' + (cfg.provider==='infin8linx'?' selected':'') + '>Infinity (infin8linx - SIP / extension)</option></select></div>' +
-                '<div id="vc-infin-fields" style="display:none;">' +
-                    '<div class="form-group"><label>URL de la API</label><input type="text" id="vc-infin-url" value="' + escapeHtml(cfg.api_domain || '') + '" placeholder="http://IP:puerto (ej: http://1.2.3.4:8080)"></div>' +
-                    '<div class="form-group"><label>AppID</label><input type="text" id="vc-infin-appid" value="' + escapeHtml(cfg.voice_appid || '') + '" placeholder="AppID autorizado"></div>' +
-                    '<div class="form-group"><label>AccessKey</label><input type="password" id="vc-infin-accesskey" placeholder="' + (cfg.has_accesskey ? '******** (configurada - dejar vacia para conservar)' : 'AccessKey autorizada') + '"></div>' +
-                    '<div class="form-group"><label>Numero remitente (disnumber, opcional)</label><input type="text" id="vc-infin-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="Dejar vacio para asignar uno aleatorio"></div>' +
-                    '<div class="alert alert-warning" style="font-size:13px;"><strong>Infinity</strong> (infin8linx) <strong>MakeCall</strong> conecta primero la extension configurada con el numero destino (click-to-call); no es un broadcast TTS. El guion lo lee el agente. El estado en tiempo real no se expone por API; se actualiza via CDR/callback.</div>' +
-                '</div>' +
-                '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:16px;">' +
-                    '<div class="form-group" style="margin-bottom:8px;"><label style="font-size:15px;font-weight:700;">Extensiones / Telefonos de los agentes</label>' +
-                        '<small class="text-secondary" style="display:block;margin-top:2px;">Listado de extensiones SIP disponibles por pais. Se usa para asignar una extension fija a cada agente al crear usuarios, independientemente del proveedor de llamadas seleccionado arriba. Separe varias por coma.</small></div>' +
-                    '<div class="form-group"><label>Pools de extensiones por pais</label>' +
-                        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">' +
-                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Mexico</label><input type="text" id="vc-infin-ext-mx" value="' + escapeHtml(cfg.ext_pool_mx || '') + '" placeholder="8001, 8002"></div>' +
-                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Colombia</label><input type="text" id="vc-infin-ext-co" value="' + escapeHtml(cfg.ext_pool_co || '') + '" placeholder="9001, 9002"></div>' +
-                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Peru</label><input type="text" id="vc-infin-ext-pe" value="' + escapeHtml(cfg.ext_pool_pe || '') + '" placeholder="7001, 7002"></div>' +
-                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">General (sin pais)</label><input type="text" id="vc-infin-ext" value="' + escapeHtml(cfg.voice_extnumber || '') + '" placeholder="6001, 6002"></div>' +
-                        '</div>' +
-                        '<small class="text-secondary">Cada agente se asocia a un pais y recibe una extension fija del pool correspondiente; los agentes sin pais usan el pool general. El sistema elige automaticamente una libre y no permite asignar manualmente ni duplicar. Cuando se acaban las extensiones de un pais, la creacion falla pidiendo que se agreguen mas.</small></div>' +
-                '</div>' +
-                '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary" onclick="saveVoiceConfig()">Guardar</button><button class="btn btn-secondary" onclick="testVoiceConfig()">Probar conexion</button><a class="btn btn-outline" href="#/calls">Ir a Llamadas</a></div>' +
-                '<div id="vc-result" style="margin-top:12px;"></div>' +
-            '</div></div>';
-        toggleVoiceProviderFields();
+        cfg = await loadVoiceCountryConfig(code);
     } catch (e) {
-        container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(e.message) + '</p></div>';
+        wrap.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>';
+        return;
     }
+    var country = (VOICE_COUNTRIES.find(function(c){ return c.code === code; }) || {}).label || code;
+    var hasAk = !!cfg.has_accesskey;
+    wrap.innerHTML =
+        '<div class="form-group"><label>URL de la API</label><input type="text" id="vc-infin-url" value="' + escapeHtml(cfg.api_domain || '') + '" placeholder="http://IP:puerto (ej: http://mex.infin8link.com:4434)"></div>' +
+        '<div class="form-group"><label>AppID</label><input type="text" id="vc-infin-appid" value="' + escapeHtml(cfg.voice_appid || '') + '" placeholder="AppID autorizado"></div>' +
+        '<div class="form-group"><label>AccessKey</label><input type="password" id="vc-infin-accesskey" placeholder="' + (hasAk ? '******** (configurada - dejar vacia para conservar)' : 'AccessKey autorizada') + '"></div>' +
+        '<div class="form-group"><label>Numero remitente (disnumber, opcional)</label><input type="text" id="vc-infin-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="Dejar vacio para asignar uno aleatorio"></div>' +
+        '<div class="form-group"><label>Pool de extensiones / telefonos de ' + escapeHtml(country) + '</label>' +
+            '<input type="text" id="vc-infin-ext" value="' + escapeHtml(cfg.ext_pool || '') + '" placeholder="8001, 8002, 8003">' +
+            '<small class="text-secondary">Extensiones SIP disponibles para <strong>' + escapeHtml(country) + '</strong>, separadas por coma. Cada agente de este pais recibe una fija (no se asigna manualmente ni se duplica); al agotarse, la creacion de usuarios pide agregarlas.</small></div>' +
+        '<div class="alert alert-warning" style="font-size:13px;"><strong>Infinity</strong> (infin8linx) <strong>MakeCall</strong> conecta primero la extension del agente con el numero destino (click-to-call); no es un broadcast TTS. El guion lo lee el agente. El estado en tiempo real no se expone por API; se actualiza via CDR/callback.</div>';
 }
 
 function toggleVoiceProviderFields() {
@@ -3351,26 +3353,55 @@ function toggleVoiceProviderFields() {
     if (i) i.style.display = (p === 'infin8linx') ? 'block' : 'none';
 }
 
+async function renderVoiceConfig(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var data = await loadVoiceCountryConfig('mx');
+        var cfg = data || { provider: 'simulation' };
+        var provider = cfg.provider || 'simulation';
+        var countryOpts = VOICE_COUNTRIES.map(function(c) {
+            var sel = c.code === 'mx' ? ' selected' : '';
+            return '<option value="' + c.code + '"' + sel + '>' + escapeHtml(c.label) + '</option>';
+        }).join('');
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Configuracion de Voz (电呼)</h1>' +
+            '<div class="card"><div class="card-body">' +
+                '<div class="alert alert-info" style="margin-bottom:16px;">Proveedor de llamadas de voz. En <strong>modo simulacion</strong> no se realizan llamadas reales (util para pruebas). <strong>Infinity</strong> (infin8linx) usa la API del conmutador (click-to-call por extension). Cada pais (Mexico/Colombia/Peru) tiene su propia configuracion de Infinity y su propio pool de extensiones.</div>' +
+                '<div class="form-group"><label>Proveedor</label><select id="vc-provider" onchange="toggleVoiceProviderFields()"><option value="simulation"' + (provider==='simulation'?' selected':'') + '>Simulacion (sin llamadas reales)</option><option value="infin8linx"' + (provider==='infin8linx'?' selected':'') + '>Infinity (infin8linx - SIP / extension)</option></select></div>' +
+                '<div id="vc-infin-fields" style="display:none;">' +
+                    '<div class="form-group"><label>Pais</label><select id="vc-country" onchange="renderVoiceCountryFields()"><option value="mx">Mexico</option><option value="co">Colombia</option><option value="pe">Peru</option></select><small class="text-secondary">Seleccione el pais para configurar sus credenciales de Infinity y su pool de extensiones. Los agentes de ese pais usan automaticamente estos datos al llamar.</small></div>' +
+                    '<div id="vc-country-fields"></div>' +
+                '</div>' +
+                '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;"><button class="btn btn-primary" onclick="saveVoiceConfig()">Guardar</button><button class="btn btn-secondary" onclick="testVoiceConfig()">Probar conexion</button><a class="btn btn-outline" href="#/calls">Ir a Llamadas</a></div>' +
+                '<div id="vc-result" style="margin-top:12px;"></div>' +
+            '</div></div>';
+        // Set the selected country option to match cached default (mx) and render
+        document.getElementById('vc-country').value = 'mx';
+        toggleVoiceProviderFields();
+        if (provider === 'infin8linx') renderVoiceCountryFields();
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(e.message) + '</p></div>';
+    }
+}
+
 async function saveVoiceConfig() {
     var provider = document.getElementById('vc-provider').value;
-    var body = { provider: provider, account_sid: '', auth_token: '', from_number: '', api_domain: '',
-                 voice_appid: '', voice_accesskey: '', voice_extnumber: '',
-                 ext_pool_mx: '', ext_pool_co: '', ext_pool_pe: '' };
+    var body = { provider: provider };
     if (provider === 'infin8linx') {
+        var code = document.getElementById('vc-country').value;
+        body.country = code;
+        // Base keys; the backend maps them onto the selected country's columns.
         body.api_domain = document.getElementById('vc-infin-url').value.trim();
         body.voice_appid = document.getElementById('vc-infin-appid').value.trim();
-        body.voice_accesskey = document.getElementById('vc-infin-accesskey').value;
+        var ak = document.getElementById('vc-infin-accesskey').value;
+        if (ak) body.voice_accesskey = ak;
         body.from_number = document.getElementById('vc-infin-from').value.trim();
+        body.ext_pool = document.getElementById('vc-infin-ext').value.trim();
     }
-    // Los pools de extensiones son independientes del proveedor y siempre se guardan.
-    body.voice_extnumber = document.getElementById('vc-infin-ext').value.trim();
-    body.ext_pool_mx = document.getElementById('vc-infin-ext-mx').value.trim();
-    body.ext_pool_co = document.getElementById('vc-infin-ext-co').value.trim();
-    body.ext_pool_pe = document.getElementById('vc-infin-ext-pe').value.trim();
     var result = document.getElementById('vc-result');
     try {
         var res = await api('/api/config/voice', { method: 'POST', body: body });
-        result.innerHTML = '<div class="alert alert-success">' + escapeHtml(res.message || 'Guardado') + (res.configured ? ' (configurado correctamente)' : ' (modo simulacion)') + '</div>';
+        result.innerHTML = '<div class="alert alert-success">' + escapeHtml(res.message || 'Guardado') + '</div>';
     } catch (e) {
         result.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>';
     }
@@ -3378,10 +3409,16 @@ async function saveVoiceConfig() {
 
 async function testVoiceConfig() {
     var result = document.getElementById('vc-result');
+    var provider = document.getElementById('vc-provider') ? document.getElementById('vc-provider').value : 'simulation';
+    if (provider !== 'infin8linx') {
+        result.innerHTML = '<div class="alert alert-error">Seleccione el proveedor Infinity para probar la conexion.</div>';
+        return;
+    }
+    var code = document.getElementById('vc-country').value;
     result.innerHTML = '<div class="text-secondary">Probando conexion...</div>';
     try {
-        var res = await api('/api/config/voice/test', { method: 'POST' });
-        result.innerHTML = '<div class="alert alert-success">OK: ' + escapeHtml(res.message || 'Conectado') + (res.account_name ? ' / ' + escapeHtml(res.account_name) : '') + '</div>';
+        var res = await api('/api/config/voice/test?country=' + encodeURIComponent(code), { method: 'POST' });
+        result.innerHTML = '<div class="alert alert-success">OK: ' + escapeHtml(res.message || 'Conectado') + '</div>';
     } catch (e) {
         result.innerHTML = '<div class="alert alert-error">Fallo: ' + escapeHtml(e.message) + '</div>';
     }
