@@ -188,6 +188,22 @@
             var p = this.getFloatingPlugin();
             if (p) { try { return await p.stop(); } catch (e) {} }
         },
+        // Hide the in-app FAB when the native system bubble is running,
+        // otherwise the user sees two floating buttons.
+        syncInAppFab: async function () {
+            var fab = document.getElementById('quick-sms-fab');
+            if (!fab) return;
+            if (!this.isApp()) { fab.style.display = ''; return; }
+            var p = this.getFloatingPlugin();
+            if (!p) { fab.style.display = ''; return; }
+            try {
+                var r = await p.isRunning();
+                var running = !!(r && r.running);
+                fab.style.display = running ? 'none' : '';
+            } catch (e) {
+                fab.style.display = '';
+            }
+        },
         closePanel: function () {
             try {
                 if (window.AndroidBubble && typeof window.AndroidBubble.closePanel === 'function') {

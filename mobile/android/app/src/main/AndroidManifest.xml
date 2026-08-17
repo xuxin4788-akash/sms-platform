@@ -38,7 +38,7 @@
         <activity
             android:name=".QuickSendPanelActivity"
             android:exported="false"
-            android:theme="@style/Theme.AppCompat.Translucent.NoTitleBar"
+            android:theme="@style/Theme.QuickSendPanel"
             android:launchMode="singleTask"
             android:excludeFromRecents="true"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode" />

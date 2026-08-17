@@ -2744,6 +2744,8 @@ async function refreshBubbleToggle() {
         var running = await MobileNative.isBubbleRunning();
         btn.textContent = running ? 'Desactivar widget flotante' : 'Activar widget flotante';
         btn.className = running ? 'btn btn-danger' : 'btn btn-primary';
+        // Hide the in-app FAB while the native system bubble is active (avoid two FABs).
+        if (typeof MobileNative.syncInAppFab === 'function') MobileNative.syncInAppFab();
     } catch (e) {}
 }
 
@@ -2964,6 +2966,10 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') closeQuickSms();
     });
+    // If the native system bubble is running, hide the in-app FAB to avoid duplicates.
+    if (window.MobileNative && typeof MobileNative.syncInAppFab === 'function') {
+        setTimeout(() => MobileNative.syncInAppFab(), 600);
+    }
 });
 
 // ============================================================
