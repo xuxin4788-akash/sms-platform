@@ -5123,9 +5123,13 @@ def voice_place_call_route():
 
     cfg = get_voice_config()
     simulated = not is_voice_configured()
-    # Extension fija del agente que realiza la llamada (si la tiene asignada).
-    # Si no, voice_place_call elige una al azar del pool configurado.
+    provider = (cfg or {}).get('provider', 'simulation')
+    # Extension fija del agente que realiza la llamada.
     caller_ext = (g.user.get('extnumber') or '').strip() if hasattr(g, 'user') else ''
+    # Con infin8linx (click-to-call real) cada agente DEBE tener su propia
+    # extension fija asignada. Quien no la tiene no puede llamar.
+    if not simulated and provider == 'infin8linx' and not caller_ext:
+        return jsonify({'error': 'No tienes una extension/telefono fijo asignado. Contacta a un administrador para asignar tu extension antes de realizar llamadas.'}), 403
     db = get_db()
     contact_cache = build_contact_template_cache(db, phones)
     results = []
@@ -5268,14 +5272,21 @@ def voice_statistics():
         ).fetchone()['c']
         last7.append({'date': day, 'count': c})
     answer_rate = (completed / total * 100) if total else 0
+    provider = (get_voice_config() or {}).get('provider', 'simulation')
+    caller_ext = (g.user.get('extnumber') or '').strip() if hasattr(g, 'user') else ''
+    configured = is_voice_configured()
+    # Con infin8linx, el agente debe tener extension fija propia para llamar.
+    can_call = True if not configured or provider != 'infin8linx' else bool(caller_ext)
     return jsonify({
         'today_calls': today_calls, 'total': total, 'completed': completed,
         'failed': failed, 'pending': pending,
         'total_duration': int(total_duration),
         'answer_rate': round(answer_rate, 1),
         'last_7_days': last7,
-        'configured': is_voice_configured(),
-        'provider': (get_voice_config() or {}).get('provider', 'simulation'),
+        'configured': configured,
+        'provider': provider,
+        'caller_ext': caller_ext,
+        'can_call': can_call,
     })
 
 

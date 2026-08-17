@@ -3055,10 +3055,16 @@ async function renderCalls(container) {
         var simBanner = stats.configured
             ? ''
             : '<div class="alert alert-warning" style="margin-bottom:16px;">La API de voz no esta configurada. Las llamadas se procesan en <strong>modo simulacion</strong>. Configurela en <a href="#/voice-config" style="color:inherit;text-decoration:underline;">Configuracion Voz</a>.</div>';
+        var extBanner = (stats.configured && stats.provider === 'infin8linx' && !stats.can_call)
+            ? '<div class="alert alert-error" style="margin-bottom:16px;"><strong>No tienes extension asignada.</strong> Para realizar llamadas reales un administrador debe asignarte una extension/telefono fijo en <a href="#/users" style="color:inherit;text-decoration:underline;">Gestion de Usuarios</a>.</div>'
+            : '';
+        var callerExtTag = (stats.configured && stats.provider === 'infin8linx' && stats.can_call)
+            ? '<span class="badge badge-blue" style="margin-left:8px;">Extension: ' + escapeHtml(stats.caller_ext) + '</span>'
+            : '';
 
         container.innerHTML =
-            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Llamadas de Voz</h1>' +
-            simBanner +
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Llamadas de Voz' + callerExtTag + '</h1>' +
+            simBanner + extBanner +
             '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));margin-bottom:20px;">' +
                 '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div><div class="stat-label">Hoy</div><div class="stat-value" style="font-size:22px;">' + stats.today_calls + '</div></div>' +
                 '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div><div class="stat-label">Completadas</div><div class="stat-value" style="font-size:22px;">' + stats.completed + '</div></div>' +
@@ -3081,12 +3087,17 @@ async function renderCalls(container) {
                 '<div class="form-group mt-3"><label>Plantilla de guion (opcional)</label><select id="voice-template" onchange="loadVoiceTemplate(this.value)"><option value="">-- Personalizado --</option>' + tplOpts + '</select></div>' +
                 '<div class="form-group"><label>Guion de la llamada *</label><textarea id="voice-script" rows="5" placeholder="Hola {nombre}, le llamamos para..."></textarea><small class="text-secondary">Variables: {nombre}, {telefono}, {app_name}, {amount}, {discount}, {payment_link}. Con Twilio el guion se reproduce con voz (TTS); con infin8linx lo lee el agente de la extension.</small></div>' +
                 '<div id="voice-error" class="alert alert-error" style="display:none;"></div>' +
-                '<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-primary" onclick="handlePlaceCalls()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Iniciar Llamada(s)</button><span class="text-secondary text-sm" style="align-self:center;">Maximo 200 numeros por tanda.</span></div>' +
+                '<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-primary" id="voice-place-btn" onclick="handlePlaceCalls()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Iniciar Llamada(s)</button><span class="text-secondary text-sm" style="align-self:center;">Maximo 200 numeros por tanda.</span></div>' +
             '</div></div>' +
             '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;"><input type="text" id="voice-search" placeholder="Buscar telefono, nombre o guion..." value="' + escapeHtml(state.calls.search) + '" onkeydown="if(event.key===\'Enter\')triggerVoiceSearch()" style="flex:1;min-width:200px;"><button class="btn btn-primary btn-sm" onclick="triggerVoiceSearch()">Buscar</button><select id="voice-status-filter" onchange="handleVoiceStatus(this.value)"><option value="">Todos los estados</option>' + Object.keys(VOICE_STATUS_LABELS).map(function(s){return '<option value="'+s+'"'+(state.calls.status===s?' selected':'')+'>'+VOICE_STATUS_LABELS[s]+'</option>';}).join('') + '</select><input type="date" lang="es" value="' + state.calls.dateFrom + '" onchange="handleVoiceDateFrom(this.value)"><input type="date" lang="es" value="' + state.calls.dateTo + '" onchange="handleVoiceDateTo(this.value)"></div></div><div id="voice-records-container"><div class="text-center text-secondary" style="padding:24px;">Cargando registros...</div></div></div>';
 
         loadVoiceContactsForSelection();
         loadVoiceRecords();
+        // Bloquear el boton de llamada si el agente no tiene extension (infin8linx real)
+        if (stats.configured && stats.provider === 'infin8linx' && !stats.can_call) {
+            var placeBtn = document.getElementById('voice-place-btn');
+            if (placeBtn) { placeBtn.disabled = true; placeBtn.style.opacity = '0.5'; placeBtn.style.cursor = 'not-allowed'; }
+        }
     } catch (err) {
         container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
     }
