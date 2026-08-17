@@ -312,6 +312,7 @@ function showMainApp() {
         el.style.display = show ? 'flex' : 'none';
     });
     navigateTo(state.currentPage || 'dashboard');
+    syncSystemBubble();
 }
 
 async function logout() {
@@ -2670,6 +2671,15 @@ function updateEmbedCounter() {
     var sc = document.getElementById('embed-sms-count');
     if (cc) cc.textContent = len;
     if (sc) sc.textContent = parts;
+}
+
+async function syncSystemBubble() {
+    if (!window.MobileNative || !MobileNative.getFloatingPlugin) return;
+    try {
+        if (await MobileNative.isBubbleRunning()) return;
+        if (!await MobileNative.canDrawOverlays()) return;
+        await MobileNative.startBubble(window.location.origin);
+    } catch (e) {}
 }
 
 async function toggleSystemBubble() {

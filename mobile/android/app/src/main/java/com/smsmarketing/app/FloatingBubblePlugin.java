@@ -61,8 +61,7 @@ public class FloatingBubblePlugin extends Plugin {
 
     @PluginMethod
     public void stop(PluginCall call) {
-        Intent intent = new Intent(getContext(), FloatingBubbleService.class);
-        getContext().stopService(intent);
+        FloatingBubbleService.requestStop(getContext());
         call.resolve();
     }
 

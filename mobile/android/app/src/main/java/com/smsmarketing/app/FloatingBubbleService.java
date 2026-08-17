@@ -15,6 +15,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -31,6 +32,9 @@ public class FloatingBubbleService extends Service {
     private static final String PREFS = "sms_bubble_prefs";
     private static final String KEY_X = "bubble_x";
     private static final String KEY_Y = "bubble_y";
+    private static final String KEY_ENABLED = "bubble_enabled";
+    private static final String KEY_SERVER_URL = "server_url";
+    private static final String KEY_USER_STOPPED = "bubble_user_stopped";
     private static final int CLICK_SLOP_PX = 12;       // 小于该位移视为点击
     private static final int LONG_PRESS_MS = 500;      // 长按阈值
     private static final int BUBBLE_SIZE_DP = 56;
@@ -62,8 +66,39 @@ public class FloatingBubbleService extends Service {
         }
     };
 
+    public static void requestStop(Context ctx) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, MODE_PRIVATE);
+        sp.edit().putBoolean(KEY_USER_STOPPED, true).putBoolean(KEY_ENABLED, false).apply();
+        ctx.stopService(new Intent(ctx, FloatingBubbleService.class));
+    }
+
     public static boolean isRunning() {
         return running;
+    }
+
+    public static boolean isEnabled(Context ctx) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, MODE_PRIVATE);
+        return sp.getBoolean(KEY_ENABLED, false) && !sp.getBoolean(KEY_USER_STOPPED, false);
+    }
+
+    public static String getServerUrl(Context ctx) {
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, MODE_PRIVATE);
+        return sp.getString(KEY_SERVER_URL, "");
+    }
+
+    public static void startIfEnabled(Context ctx) {
+        if (!isEnabled(ctx)) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(ctx)) {
+            return;
+        }
+        Intent intent = new Intent(ctx, FloatingBubbleService.class);
+        String url = getServerUrl(ctx);
+        if (url != null && !url.isEmpty()) intent.putExtra("serverUrl", url);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ctx.startForegroundService(intent);
+        } else {
+            ctx.startService(intent);
+        }
     }
 
     @Override
@@ -95,6 +130,13 @@ public class FloatingBubbleService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.getStringExtra("serverUrl") != null) {
             serverUrl = intent.getStringExtra("serverUrl");
+            prefs.edit()
+                .putBoolean(KEY_ENABLED, true)
+                .putBoolean(KEY_USER_STOPPED, false)
+                .putString(KEY_SERVER_URL, serverUrl)
+                .apply();
+        } else {
+            serverUrl = prefs.getString(KEY_SERVER_URL, serverUrl);
         }
         if (bubbleView == null) {
             showBubble();
