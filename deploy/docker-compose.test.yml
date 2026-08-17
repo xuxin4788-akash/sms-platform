@@ -1,0 +1,43 @@
+# Override para el servidor de PRUEBAS (1-2 usuarios, 2 vCPU / 2 GB).
+# Uso:
+#   cd /opt/sms-platform-test
+#   cp deploy/docker-compose.test.yml docker-compose.override.yml
+#   docker compose up -d --build
+#
+# Este archivo ajusta los recursos de cada contenedor a un perfil de prueba.
+# docker compose lo carga automaticamente si se llama docker-compose.override.yml.
+
+services:
+  db:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.8'
+    # PostgreSQL no impone su propio limite, el del contenedor basta.
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c effective_cache_size=384MB
+      -c max_connections=40
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+
+  app:
+    environment:
+      # 2 workers son suficientes para 1-2 testers; reduce ~300 MB vs el default.
+      GUNICORN_WORKERS: "2"
+      GUNICORN_TIMEOUT: "120"
+      APP_ENVIRONMENT: "test"
+    deploy:
+      resources:
+        limits:
+          memory: 1200M
+          cpus: '1.2'
+
+  nginx:
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: '0.3'
