@@ -3321,14 +3321,6 @@ async function renderVoiceConfig(container) {
                     '<div class="form-group"><label>URL de la API</label><input type="text" id="vc-infin-url" value="' + escapeHtml(cfg.api_domain || '') + '" placeholder="http://IP:puerto (ej: http://1.2.3.4:8080)"></div>' +
                     '<div class="form-group"><label>AppID</label><input type="text" id="vc-infin-appid" value="' + escapeHtml(cfg.voice_appid || '') + '" placeholder="AppID autorizado"></div>' +
                     '<div class="form-group"><label>AccessKey</label><input type="password" id="vc-infin-accesskey" placeholder="' + (cfg.has_accesskey ? '******** (configurada - dejar vacia para conservar)' : 'AccessKey autorizada') + '"></div>' +
-                    '<div class="form-group"><label>Pools de extensiones por pais *</label>' +
-                        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">' +
-                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Mexico</label><input type="text" id="vc-infin-ext-mx" value="' + escapeHtml(cfg.ext_pool_mx || '') + '" placeholder="8001, 8002"></div>' +
-                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Colombia</label><input type="text" id="vc-infin-ext-co" value="' + escapeHtml(cfg.ext_pool_co || '') + '" placeholder="9001, 9002"></div>' +
-                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Peru</label><input type="text" id="vc-infin-ext-pe" value="' + escapeHtml(cfg.ext_pool_pe || '') + '" placeholder="7001, 7002"></div>' +
-                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">General (sin pais)</label><input type="text" id="vc-infin-ext" value="' + escapeHtml(cfg.voice_extnumber || '') + '" placeholder="6001, 6002"></div>' +
-                        '</div>' +
-                        '<small class="text-secondary">Extensiones SIP disponibles separadas por coma. Cada agente se asocia a un pais y recibe una extension fija del pool correspondiente. Los agentes sin pais usan el pool general. El sistema elige automaticamente una libre y no permite asignar manualmente ni duplicar.</small></div>' +
                     '<div class="form-group"><label>Numero remitente (disnumber, opcional)</label><input type="text" id="vc-infin-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="Dejar vacio para asignar uno aleatorio"></div>' +
                     '<div class="alert alert-warning" style="font-size:13px;">infin8linx <strong>MakeCall</strong> conecta primero la extension configurada con el numero destino (click-to-call); no es un broadcast TTS. El guion lo lee el agente. El estado en tiempo real no se expone por API; se actualiza via CDR/callback.</div>' +
                 '</div>' +
@@ -3341,6 +3333,18 @@ async function renderVoiceConfig(container) {
                     '<div class="form-group"><label>API URL base</label><input type="text" id="vc-domain" value="' + escapeHtml(cfg.api_domain || '') + '" placeholder="https://api.voz-proveedor.com/v1"></div>' +
                     '<div class="form-group"><label>Clave/Token de API</label><input type="password" id="vc-custom-token" placeholder="Bearer token"></div>' +
                     '<div class="form-group"><label>Numero remitente</label><input type="text" id="vc-custom-from" value="' + escapeHtml(cfg.from_number || '') + '" placeholder="+52..."></div>' +
+                '</div>' +
+                '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:16px;">' +
+                    '<div class="form-group" style="margin-bottom:8px;"><label style="font-size:15px;font-weight:700;">Extensiones / Telefonos de los agentes</label>' +
+                        '<small class="text-secondary" style="display:block;margin-top:2px;">Listado de extensiones SIP disponibles por pais. Se usa para asignar una extension fija a cada agente al crear usuarios, independientemente del proveedor de llamadas seleccionado arriba. Separe varias por coma.</small></div>' +
+                    '<div class="form-group"><label>Pools de extensiones por pais</label>' +
+                        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">' +
+                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Mexico</label><input type="text" id="vc-infin-ext-mx" value="' + escapeHtml(cfg.ext_pool_mx || '') + '" placeholder="8001, 8002"></div>' +
+                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Colombia</label><input type="text" id="vc-infin-ext-co" value="' + escapeHtml(cfg.ext_pool_co || '') + '" placeholder="9001, 9002"></div>' +
+                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">Peru</label><input type="text" id="vc-infin-ext-pe" value="' + escapeHtml(cfg.ext_pool_pe || '') + '" placeholder="7001, 7002"></div>' +
+                            '<div><label style="font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:4px;display:block;">General (sin pais)</label><input type="text" id="vc-infin-ext" value="' + escapeHtml(cfg.voice_extnumber || '') + '" placeholder="6001, 6002"></div>' +
+                        '</div>' +
+                        '<small class="text-secondary">Cada agente se asocia a un pais y recibe una extension fija del pool correspondiente; los agentes sin pais usan el pool general. El sistema elige automaticamente una libre y no permite asignar manualmente ni duplicar. Cuando se acaban las extensiones de un pais, la creacion falla pidiendo que se agreguen mas.</small></div>' +
                 '</div>' +
                 '<div class="alert alert-warning" id="vc-twilio-note" style="font-size:13px;display:none;">Nota: Para llamadas en Mexico/Latinoamerica con Twilio, las numeraciones pueden requerir registro de marca (A2P) o numero geografico habilitado para voz.</div>' +
                 '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary" onclick="saveVoiceConfig()">Guardar</button><button class="btn btn-secondary" onclick="testVoiceConfig()">Probar conexion</button><a class="btn btn-outline" href="#/calls">Ir a Llamadas</a></div>' +
@@ -3381,12 +3385,13 @@ async function saveVoiceConfig() {
         body.api_domain = document.getElementById('vc-infin-url').value.trim();
         body.voice_appid = document.getElementById('vc-infin-appid').value.trim();
         body.voice_accesskey = document.getElementById('vc-infin-accesskey').value;
-        body.voice_extnumber = document.getElementById('vc-infin-ext').value.trim();
-        body.ext_pool_mx = document.getElementById('vc-infin-ext-mx').value.trim();
-        body.ext_pool_co = document.getElementById('vc-infin-ext-co').value.trim();
-        body.ext_pool_pe = document.getElementById('vc-infin-ext-pe').value.trim();
         body.from_number = document.getElementById('vc-infin-from').value.trim();
     }
+    // Los pools de extensiones son independientes del proveedor y siempre se guardan.
+    body.voice_extnumber = document.getElementById('vc-infin-ext').value.trim();
+    body.ext_pool_mx = document.getElementById('vc-infin-ext-mx').value.trim();
+    body.ext_pool_co = document.getElementById('vc-infin-ext-co').value.trim();
+    body.ext_pool_pe = document.getElementById('vc-infin-ext-pe').value.trim();
     var result = document.getElementById('vc-result');
     try {
         var res = await api('/api/config/voice', { method: 'POST', body: body });
