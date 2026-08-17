@@ -31,6 +31,11 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
 app.config['DATABASE'] = os.path.join(app.instance_path, 'sms_platform.db')
 app.config['DATABASE_URL'] = os.environ.get('DATABASE_URL', '')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
+# Deployment environment label. Use APP_ENVIRONMENT=test on the test server to
+# show a persistent warning ribbon so users do not mistake it for production.
+app.config['APP_ENVIRONMENT'] = (os.environ.get('APP_ENVIRONMENT') or 'production').strip().lower()
+app.config['APP_LABEL'] = os.environ.get('APP_LABEL') or (
+    'ENTORNO DE PRUEBAS' if app.config['APP_ENVIRONMENT'] == 'test' else '')
 
 # Cache for recently generated plaintext passwords.
 # The database only stores bcrypt hashes; existing passwords cannot be recovered.
@@ -1270,7 +1275,11 @@ def add_cache_headers(response):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template(
+        'index.html',
+        app_environment=app.config['APP_ENVIRONMENT'],
+        app_label=app.config['APP_LABEL'],
+    )
 
 # ============================================================
 # Auth API
@@ -1407,7 +1416,9 @@ def get_me():
             'role_label': ROLE_LABELS.get(g.user['role'], g.user['role']),
             'permissions': permissions,
             'permsConfigured': perms_configured,
-            'team_country_code': team_country_code
+            'team_country_code': team_country_code,
+            'environment': app.config['APP_ENVIRONMENT'],
+            'app_label': app.config['APP_LABEL'],
         }
     })
 

@@ -41,6 +41,8 @@ services:
       - FLASK_ENV=production
       - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-change_me_in_production_use_random_hex}
       - DATABASE_URL=postgresql://sms_user:${DB_PASSWORD:-sms_secure_password_2024}@db:5432/sms_platform
+      - APP_ENVIRONMENT=${APP_ENVIRONMENT:-production}
+      - APP_LABEL=${APP_LABEL:-}
     volumes:
       - app-logs:/app/logs
     deploy:

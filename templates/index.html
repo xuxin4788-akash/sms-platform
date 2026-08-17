@@ -7,9 +7,19 @@
     <link rel="preconnect" href="https://fonts.googleapis.cn">
     <link rel="preconnect" href="https://fonts.gstatic.cn" crossorigin>
     <link href="https://fonts.googleapis.cn/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260817m24">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260818m25">
 </head>
 <body>
+    {% if app_environment == 'test' %}
+    <div id="env-ribbon" style="position:fixed;top:0;left:0;right:0;z-index:9999;background:#F59E0B;color:#1F2937;font-size:12px;font-weight:700;text-align:center;letter-spacing:1px;padding:4px 8px;text-transform:uppercase;pointer-events:none;">
+        {{ app_label or 'ENTORNO DE PRUEBAS' }}
+    </div>
+    <style>
+        body { padding-top: 26px; }
+        /* When the mobile sidebar opens, keep body padding stable */
+        @media (max-width: 768px) { body { padding-top: 26px; } }
+    </style>
+    {% endif %}
     <div id="app">
         <!-- Login Screen -->
         <div id="login-screen" class="login-screen">
@@ -198,7 +208,7 @@
         </div>
     </div>
 
-    <script src="/static/js/mobile.js?v=20260817m24"></script>
-    <script src="/static/js/app.js?v=20260817m24"></script>
+    <script src="/static/js/mobile.js?v=20260818m25"></script>
+    <script src="/static/js/app.js?v=20260818m25"></script>
 </body>
 </html>
