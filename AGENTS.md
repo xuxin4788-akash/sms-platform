@@ -75,6 +75,12 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | POST | /api/sms/query-status | User | Query delivery status via API |
 | POST | /api/sms/check-charset | User | Check charset/billing for content |
 | POST | /api/sms/process-scheduled | User | Process scheduled messages |
+| POST | /api/voice/call | User | Place outbound TTS voice call (电呼) |
+| GET | /api/voice/records | User | List voice call records (team scoped) |
+| GET | /api/voice/statistics | User | Voice call dashboard stats |
+| POST | /api/voice/query-status | User | Refresh a call's live status from provider |
+| GET/PUT | /api/config/voice | Admin | Voice API config (provider twilio/custom/simulation) |
+| POST | /api/config/voice/test | Admin | Test voice API credentials |
 | GET | /api/admin/user-usage | Admin/TeamAdmin | Per-user usage statistics |
 | GET/PUT | /api/config/sms | Admin | SMS API config (domain, spid, api_pwd, sender_name) |
 | POST | /api/config/sms/test | Admin | Test API connection (charset check) |
@@ -94,6 +100,14 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 - Team Admin sees all team data; Team Member sees only their own data
 - Templates are shared across all users regardless of role
 
+## Voice Call Integration (电呼)
+- Feature flag: voice_config.provider ∈ `simulation` | `twilio` | `custom`
+- Simulation is the default on new installs — no external calls, deterministic pseudo-outcomes for demos/tests.
+- Twilio: uses the official `twilio` SDK (in requirements.txt). Calls are placed with `client.calls.create(to, from_, twiml=<Say language="es-MX">script</Say>)`. Status is refreshed with `client.calls(sid).fetch()`.
+- Custom HTTP gateway: POSTs `{to, from, text}` with Bearer auth to `<api_domain>/call`; expected `{code:0, call_id}`.
+- Auth Token is write-only: GET `/api/config/voice` returns `has_token` boolean, never the token. Sending empty token on update preserves the stored one.
+- Role scope mirrors SMS: team_member sees own calls, team_admin sees team calls, admin sees all.
+
 ## SMS API Integration (infin8linx)
 - Provider: infin8linx SMS API
 - Endpoints: /sms/send (single), /sms/rsend (batch), /sms/state (status), /sms/charset (encoding check)
@@ -110,7 +124,7 @@ Dual database support via `DBWrapper` abstraction layer:
 - **Production**: PostgreSQL 16 (via `DATABASE_URL` environment variable)
 - Auto-detection: if `DATABASE_URL` starts with `postgresql://` → PostgreSQL, otherwise SQLite
 
-Tables: users, contacts, contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), send_logs.
+Tables: users, contacts, contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), sms_api_configs (multi-country SMS configs), team_config, voice_config (provider/account_sid/auth_token/from_number for TTS calls), voice_records (phone/script/status/call_sid/duration/price), send_logs.
 
 ## Production Deployment
 ```bash
