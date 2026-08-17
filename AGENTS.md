@@ -126,6 +126,16 @@ Dual database support via `DBWrapper` abstraction layer:
 
 Tables: users, contacts, contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), sms_api_configs (multi-country SMS configs), team_config, voice_config (provider/account_sid/auth_token/from_number for TTS calls), voice_records (phone/script/status/call_sid/duration/price), send_logs.
 
+### Contact fields
+The `contacts` table carries both basic CRM and payment/collection fields:
+- `name`, `phone`, `notes`, `remark` (status tag), `group_id`, `created_by`, `created_at`
+- `app_name` (VARCHAR/TEXT, APP the contact belongs to)
+- `amount` (NUMERIC(14,2)/REAL, owed/transaction amount)
+- `discount_amount` (NUMERIC(14,2)/REAL, discount offered)
+- `payment_link` (TEXT, collection/payment URL)
+
+These fields are available in create/update/list, CSV import/export (columns `app_name, amount, discount_amount, payment_link` — optional, also accept `app, monto, descuento, link_pago/url_pago`), and as SMS/voice template variables: `{app_name}`, `{amount}`, `{discount}`, `{payment_link}` (plus `{nombre}`, `{telefono}`). Variable values are resolved per-recipient at send time via `build_contact_template_cache()` + `apply_template_vars()`. Money values render with two decimals.
+
 ## Production Deployment
 ```bash
 # 1. Copy and configure environment

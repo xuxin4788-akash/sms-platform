@@ -264,6 +264,10 @@ def init_db():
                 notes TEXT DEFAULT '',
                 remark TEXT DEFAULT '',
                 group_id INTEGER REFERENCES contact_groups(id) ON DELETE SET NULL,
+                app_name VARCHAR(255) DEFAULT '',
+                amount NUMERIC(14,2) DEFAULT 0,
+                discount_amount NUMERIC(14,2) DEFAULT 0,
+                payment_link TEXT DEFAULT '',
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
@@ -404,6 +408,14 @@ def init_db():
             cur.execute("ALTER TABLE contacts ADD COLUMN remark TEXT DEFAULT ''")
         if not pg_column_exists('contacts', 'created_by'):
             cur.execute("ALTER TABLE contacts ADD COLUMN created_by INTEGER")
+        if not pg_column_exists('contacts', 'app_name'):
+            cur.execute("ALTER TABLE contacts ADD COLUMN app_name VARCHAR(255) DEFAULT ''")
+        if not pg_column_exists('contacts', 'amount'):
+            cur.execute("ALTER TABLE contacts ADD COLUMN amount NUMERIC(14,2) DEFAULT 0")
+        if not pg_column_exists('contacts', 'discount_amount'):
+            cur.execute("ALTER TABLE contacts ADD COLUMN discount_amount NUMERIC(14,2) DEFAULT 0")
+        if not pg_column_exists('contacts', 'payment_link'):
+            cur.execute("ALTER TABLE contacts ADD COLUMN payment_link TEXT DEFAULT ''")
 
         # sms_records migrations
         if not pg_column_exists('sms_records', 'msgid'):
@@ -522,6 +534,10 @@ def init_db():
                 notes TEXT DEFAULT '',
                 remark TEXT DEFAULT '',
                 group_id INTEGER,
+                app_name TEXT DEFAULT '',
+                amount REAL DEFAULT 0,
+                discount_amount REAL DEFAULT 0,
+                payment_link TEXT DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (group_id) REFERENCES contact_groups(id) ON DELETE SET NULL
             );
@@ -680,6 +696,18 @@ def init_db():
             db.commit()
         except Exception:
             pass
+        # Migration: contact extra fields (app/amount/discount/payment link)
+        for _col, _type in (
+            ("app_name", "TEXT DEFAULT ''"),
+            ("amount", "REAL DEFAULT 0"),
+            ("discount_amount", "REAL DEFAULT 0"),
+            ("payment_link", "TEXT DEFAULT ''"),
+        ):
+            try:
+                db.execute(f"ALTER TABLE contacts ADD COLUMN {_col} {_type}")
+                db.commit()
+            except Exception:
+                pass
         # Migration: add team_creator_id to users if not exists
         try:
             db.execute("ALTER TABLE users ADD COLUMN team_creator_id INTEGER")
@@ -1090,6 +1118,83 @@ def phone_to_das(phone):
     if p.startswith('+'):
         return '00' + p[1:]
     return p
+
+
+def _fmt_money(value):
+    try:
+        v = float(value or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    return f"{v:.2f}"
+
+
+def build_contact_template_cache(db, phones):
+    """Bulk-load contact fields needed for template variable substitution.
+
+    Returns a dict keyed by normalized phone with keys:
+    name, app_name, amount, discount_amount, payment_link.
+    """
+    cache = {}
+    norm_phones = []
+    for raw in phones or []:
+        p = normalize_phone((raw or '').strip())
+        if p:
+            norm_phones.append(p)
+    if not norm_phones:
+        return cache
+    stripped = [p.lstrip('+') for p in norm_phones]
+    placeholders = ','.join('?' for _ in stripped)
+    try:
+        rows = db.execute(
+            "SELECT phone, name, app_name, amount, discount_amount, payment_link "
+            "FROM contacts WHERE REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', '') IN (" + placeholders + ")",
+            stripped
+        ).fetchall()
+    except Exception:
+        rows = []
+    for row in rows:
+        r = dict(row)
+        key = normalize_phone(r.get('phone') or '')
+        entry = {
+            'name': r.get('name') or '',
+            'app_name': r.get('app_name') or '',
+            'amount': r.get('amount') if r.get('amount') is not None else 0,
+            'discount_amount': r.get('discount_amount') if r.get('discount_amount') is not None else 0,
+            'payment_link': r.get('payment_link') or '',
+        }
+        cache[key] = entry
+        cache[key.lstrip('+')] = entry
+    return cache
+
+
+def apply_template_vars(text, phone, contact_names=None, contact_cache=None):
+    """Replace {nombre}/{telefono}/{app_name}/{amount}/{discount}/{payment_link} placeholders."""
+    if not text:
+        return text
+    raw_phone = (phone or '').strip()
+    norm_phone = normalize_phone(raw_phone)
+    name = ''
+    if contact_names:
+        name = contact_names.get(raw_phone, '') or contact_names.get(norm_phone, '') or ''
+    app_name = ''
+    amount = 0
+    discount_amount = 0
+    payment_link = ''
+    if contact_cache:
+        entry = contact_cache.get(norm_phone) or contact_cache.get(norm_phone.lstrip('+'))
+        if entry:
+            if not name:
+                name = entry.get('name', '')
+            app_name = entry.get('app_name', '')
+            amount = entry.get('amount', 0)
+            discount_amount = entry.get('discount_amount', 0)
+            payment_link = entry.get('payment_link', '')
+    msg = text.replace('{nombre}', name).replace('{telefono}', norm_phone)
+    msg = msg.replace('{app_name}', app_name)
+    msg = msg.replace('{amount}', _fmt_money(amount))
+    msg = msg.replace('{discount}', _fmt_money(discount_amount))
+    msg = msg.replace('{payment_link}', payment_link)
+    return msg
 
 
 def is_sms_api_configured(user_id=None):
@@ -2432,6 +2537,17 @@ def _team_member_ids(team_admin_id: int) -> list[int]:
     ).fetchall()]
 
 
+def _parse_money(value):
+    """Parse a numeric money field coming from JSON; return float or 0.0."""
+    if value is None or value == '':
+        return 0.0
+    try:
+        v = float(str(value).replace(',', '').strip())
+        return round(v, 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 @app.route('/api/contacts', methods=['GET'])
 @login_required
 def list_contacts():
@@ -2481,6 +2597,10 @@ def create_contact():
     phone = normalize_phone((data.get('phone') or '').strip())
     notes = (data.get('notes') or '').strip()
     remark = (data.get('remark') or '').strip()
+    app_name = (data.get('app_name') or '').strip()[:255]
+    amount = _parse_money(data.get('amount'))
+    discount_amount = _parse_money(data.get('discount_amount'))
+    payment_link = (data.get('payment_link') or '').strip()
     group_id = data.get('group_id', None)
     if not name or not phone:
         return jsonify({'error': 'Nombre y telefono son requeridos'}), 400
@@ -2498,8 +2618,10 @@ def create_contact():
         if not group:
             group_id = None
     db.execute(
-        "INSERT INTO contacts (name, phone, notes, remark, group_id, created_by) VALUES (?, ?, ?, ?, ?, ?)",
-        (name, phone, notes, remark, group_id, session.get('user_id'))
+        "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, created_by) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link,
+         session.get('user_id'))
     )
     db.commit()
     return jsonify({'message': 'Contacto creado', 'phone': phone}), 201
@@ -2577,9 +2699,13 @@ def update_contact(contact_id):
     notes = data.get('notes', contact['notes'])
     remark = data.get('remark', contact['remark'])
     group_id = data.get('group_id', contact['group_id'])
+    app_name = (str(data.get('app_name', contact['app_name'] or '') or '')).strip()[:255]
+    amount = _parse_money(data.get('amount', contact['amount']))
+    discount_amount = _parse_money(data.get('discount_amount', contact['discount_amount']))
+    payment_link = (str(data.get('payment_link', contact['payment_link'] or '') or '')).strip()
     db.execute(
-        "UPDATE contacts SET name=?, phone=?, notes=?, remark=?, group_id=? WHERE id=?",
-        (name, phone, notes, remark, group_id, contact_id)
+        "UPDATE contacts SET name=?, phone=?, notes=?, remark=?, group_id=?, app_name=?, amount=?, discount_amount=?, payment_link=? WHERE id=?",
+        (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, contact_id)
     )
     db.commit()
     return jsonify({'message': 'Contacto actualizado'})
@@ -2608,24 +2734,36 @@ def download_contact_template():
     # Write UTF-8 BOM so Excel opens the file with correct encoding
     buf.write('\ufeff')
     writer = csv.writer(buf)
-    writer.writerow(['name', 'phone', 'notes', 'remark'])
+    writer.writerow(['name', 'phone', 'notes', 'remark', 'app_name', 'amount', 'discount_amount', 'payment_link'])
     writer.writerow([
         'Juan Perez',
         '5215512345678',
         'Cliente interesado en promo MXN',
         'Dispuesto a pagar sin fondos',
+        'App Recargas',
+        '150.00',
+        '20.00',
+        'https://pago.ejemplo.com/juan',
     ])
     writer.writerow([
         'Maria Lopez',
         '5215587654321',
         'No molestar despues de las 20h',
         'No contactable',
+        '',
+        '',
+        '',
+        '',
     ])
     writer.writerow([
         'Carlos Ruiz',
         '5215511223344',
         '',
         'Promesa de pago',
+        'App Prestamos',
+        '1200.50',
+        '100.00',
+        'https://pago.ejemplo.com/carlos',
     ])
 
     data = buf.getvalue().encode('utf-8')
@@ -2661,12 +2799,17 @@ def import_contacts():
             phone = normalize_phone((row.get('phone') or row.get('telefono') or row.get('tel') or '').strip())
             notes = (row.get('notes') or row.get('notas') or row.get('observaciones') or '').strip()
             remark = (row.get('remark') or row.get('nota') or '').strip()
+            app_name = (row.get('app_name') or row.get('app') or '').strip()[:255]
+            amount = _parse_money(row.get('amount') or row.get('monto'))
+            discount_amount = _parse_money(row.get('discount_amount') or row.get('descuento'))
+            payment_link = (row.get('payment_link') or row.get('link_pago') or row.get('url_pago') or '').strip()
             if not name or not phone:
                 errors.append(f"Fila {i}: nombre y telefono son requeridos")
                 continue
             db.execute(
-                "INSERT INTO contacts (name, phone, notes, remark, group_id) VALUES (?, ?, ?, ?, ?)",
-                (name, phone, notes, remark, group_id)
+                "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link)
             )
             imported += 1
         db.commit()
@@ -2836,6 +2979,7 @@ def send_sms():
     db = get_db()
     api_configured = is_sms_api_configured(g.user['id'])
     sms_config = get_team_sms_config(g.user['id'])
+    contact_cache = build_contact_template_cache(db, phones)
     records = []
     errors = []
 
@@ -2844,7 +2988,7 @@ def send_sms():
         raw_phone = phones[0].strip()
         phone = normalize_phone(raw_phone)
         name = contact_names.get(raw_phone, '') or contact_names.get(phone, '')
-        msg = content.replace('{nombre}', name).replace('{telefono}', phone)
+        msg = apply_template_vars(content, raw_phone, contact_names, contact_cache)
         result = sms_api_send_single(phone, msg)
         api_code = result.get('code', -1)
         api_msg = result.get('msg', '')
@@ -2876,7 +3020,7 @@ def send_sms():
                 continue
             phone = normalize_phone(raw)
             name = contact_names.get(raw, '') or contact_names.get(phone, '')
-            msg = content.replace('{nombre}', name).replace('{telefono}', phone)
+            msg = apply_template_vars(content, raw, contact_names, contact_cache)
             phone_content_pairs.append((phone, msg))
             phone_name_map[phone] = (name, msg)
 
@@ -2932,7 +3076,7 @@ def send_sms():
             if not phone:
                 continue
             name = contact_names.get(phone, '')
-            msg = content.replace('{nombre}', name).replace('{telefono}', phone)
+            msg = apply_template_vars(content, phone, contact_names, contact_cache)
             db.execute(
                 "INSERT INTO sms_records (phone, contact_name, content, status, api_msg, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, datetime('now'), ?)",
                 (phone, name, msg, 'API no configurada - envio simulado', g.user['id'])
@@ -2969,13 +3113,14 @@ def schedule_sms():
     if not phones or not content or not scheduled_at:
         return jsonify({'error': 'Numero(s), contenido y fecha son requeridos'}), 400
     db = get_db()
+    contact_cache = build_contact_template_cache(db, phones)
     count = 0
     for phone in phones:
         phone = phone.strip()
         if not phone:
             continue
         name = contact_names.get(phone, '')
-        msg = content.replace('{nombre}', name).replace('{telefono}', phone)
+        msg = apply_template_vars(content, phone, contact_names, contact_cache)
         db.execute(
             "INSERT INTO sms_records (phone, contact_name, content, status, scheduled_at, created_by) VALUES (?, ?, ?, 'scheduled', ?, ?)",
             (phone, name, msg, scheduled_at, g.user['id'])
@@ -4693,12 +4838,13 @@ def voice_place_call_route():
     cfg = get_voice_config()
     simulated = not is_voice_configured()
     db = get_db()
+    contact_cache = build_contact_template_cache(db, phones)
     results = []
     errors = []
     for raw in phones:
         phone = normalize_phone(raw)
         name = contact_names.get(raw, '') or contact_names.get(phone, '')
-        text = script.replace('{nombre}', name).replace('{telefono}', phone)
+        text = apply_template_vars(script, raw, contact_names, contact_cache)
         res = voice_place_call(phone, text, config=cfg, contact_name=name)
         status = res['status']
         db.execute(
