@@ -129,6 +129,28 @@
                 return !!(r && r.granted);
             } catch (e) { return false; }
         },
+        requestOverlayPermission: async function () {
+            var p = this.getFloatingPlugin();
+            if (!p) return false;
+            try {
+                var r = await p.requestOverlayPermission();
+                return !!(r && r.granted);
+            } catch (e) { return false; }
+        },
+        requestAllBubblePermissions: async function () {
+            var p = this.getFloatingPlugin();
+            if (!p) return null;
+            try { return await p.requestAllPermissions(); }
+            catch (e) { return null; }
+        },
+        isIgnoringBatteryOptimizations: async function () {
+            var p = this.getFloatingPlugin();
+            if (!p) return true;
+            try {
+                var r = await p.isIgnoringBatteryOptimizations();
+                return !!(r && r.ignoring);
+            } catch (e) { return true; }
+        },
         openOverlaySettings: async function () {
             var p = this.getFloatingPlugin();
             if (p) { try { await p.openOverlaySettings(); } catch (e) {} }

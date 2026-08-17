@@ -1881,12 +1881,12 @@ async function renderMyAccount(container) {
         if (window.MobileNative && MobileNative.getFloatingPlugin && MobileNative.getFloatingPlugin()) {
             html += '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">Widget flotante</h3></div>' +
                 '<div class="card-body"><p class="text-secondary" style="margin-top:0;">Muestra un botón flotante sobre otras aplicaciones para abrir el envío rápido de SMS sin volver a la app.</p>' +
-                '<div class="callout callout-warning" style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:12px;margin-bottom:12px;color:#92400E;font-size:13px;line-height:1.5;">' +
-                '<strong>Importante:</strong> después de activarlo, abre los ajustes del sistema y permite "Mostrar sobre otras apps". En algunos dispositivos también debes desactivar la optimización de batería para esta app.' +
+                '<div class="callout callout-warning" style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:12px;margin-bottom:12px;color:#1E40AF;font-size:13px;line-height:1.5;">' +
+                '<strong>Permisos necesarios:</strong> al activar, Android abrirá los ajustes para permitir "Mostrar sobre otras apps". También recomendamos permitir la ejecución en segundo plano / desactivar la optimización de batería.' +
                 '</div>' +
-                '<button id="bubble-toggle-btn" class="btn btn-primary" onclick="toggleSystemBubble()">Activar widget flotante</button>' +
-                (MobileNative.openOverlaySettings ? ' <button class="btn btn-secondary" onclick="MobileNative.openOverlaySettings()">Ajustes de permiso</button>' : '') +
-                (MobileNative.openBatterySettings ? ' <button class="btn btn-secondary" onclick="MobileNative.openBatterySettings()">Ajustes de batería</button>' : '') +
+                '<button id="bubble-toggle-btn" class="btn btn-primary" onclick="toggleSystemBubble()">Activar widget flotante</button> ' +
+                '<button class="btn btn-secondary" onclick="ensureBubblePermissions()">Solicitar permisos</button> ' +
+                '<button class="btn btn-secondary" onclick="MobileNative.openBatterySettings()">Ajustes de batería</button>' +
                 '</div></div>';
         }
 
@@ -2685,9 +2685,33 @@ async function syncSystemBubble() {
     if (!window.MobileNative || !MobileNative.getFloatingPlugin) return;
     try {
         if (await MobileNative.isBubbleRunning()) return;
-        if (!await MobileNative.canDrawOverlays()) return;
-        await MobileNative.startBubble(window.location.origin);
+        if (await MobileNative.canDrawOverlays()) {
+            await MobileNative.startBubble(window.location.origin);
+        }
     } catch (e) {}
+}
+
+async function ensureBubblePermissions() {
+    if (!window.MobileNative || !MobileNative.getFloatingPlugin) {
+        showToast('El widget flotante solo está disponible en la app Android', 'warning');
+        return false;
+    }
+    try {
+        var granted = await MobileNative.requestOverlayPermission();
+        if (!granted) {
+            showToast('Concede el permiso de "mostrar sobre otras apps"', 'warning');
+            return false;
+        }
+        var batteryOk = await MobileNative.isIgnoringBatteryOptimizations();
+        if (!batteryOk && MobileNative.openBatterySettings) {
+            await MobileNative.openBatterySettings();
+            showToast('Permite la ejecución en segundo plano para mantener el widget', 'info');
+        }
+        return true;
+    } catch (e) {
+        showToast(e.message || 'No se pudieron solicitar los permisos', 'error');
+        return false;
+    }
 }
 
 async function toggleSystemBubble() {
@@ -2701,12 +2725,8 @@ async function toggleSystemBubble() {
             await MobileNative.stopBubble();
             showToast('Widget flotante desactivado', 'success');
         } else {
-            var granted = await MobileNative.canDrawOverlays();
-            if (!granted) {
-                showToast('Concede el permiso de "mostrar sobre otras apps"', 'warning');
-                await MobileNative.openOverlaySettings();
-                return;
-            }
+            var ok = await ensureBubblePermissions();
+            if (!ok) return;
             await MobileNative.startBubble(window.location.origin);
             showToast('Widget flotante activado', 'success');
         }
