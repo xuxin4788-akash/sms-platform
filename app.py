@@ -4299,15 +4299,8 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
         group_row = group_cur.fetchone()
         group_count = int((group_row['c'] if isinstance(group_row, dict) else group_row[0]) if group_row else 0)
 
-        # Delete dependent memberships first, then groups, then contacts.
-        if get_db_type() == 'postgres':
-            db.execute("DELETE FROM contact_group_members")
-        else:
-            # SQLite creates implicit index for this junction; table exists.
-            try:
-                db.execute("DELETE FROM contact_group_members")
-            except sqlite3.OperationalError:
-                pass
+        # The schema uses contacts.group_id FK (no junction table). Delete
+        # groups first (ON DELETE SET NULL handles the FK), then contacts.
         db.execute("DELETE FROM contact_groups")
         db.execute("DELETE FROM contacts")
         db.commit()
