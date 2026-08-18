@@ -6819,8 +6819,17 @@ def voice_recording_url():
     if not rid:
         return jsonify({'error': 'id requerido'}), 400
     db = get_db()
+    scope_where = '1=1'
+    scope_params = []
+    if g.user['role'] == 'team_member':
+        scope_where = 'created_by = ?'
+        scope_params = [g.user['id']]
+    elif g.user['role'] == 'team_admin':
+        scope_where = 'created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)'
+        scope_params = [g.user['id'], g.user['id']]
     row = db.execute(
-        "SELECT id, record_file, country, created_by FROM voice_records WHERE id=?", (rid,)
+        f"SELECT id, record_file, country, created_by FROM voice_records WHERE id=? AND {scope_where}",
+        [rid] + scope_params
     ).fetchone()
     if not row:
         return jsonify({'error': 'Llamada no encontrada'}), 404
