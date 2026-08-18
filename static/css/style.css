@@ -1704,3 +1704,61 @@ html.embed, body.embed-body {
 .phone-add-row .btn-sm:active {
     background: var(--primary-hover) !important;
 }
+
+/* Extensiones bulk upload */
+.ext-upload-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e2e8f0);
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 16px;
+}
+.ext-dropzone {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 14px;
+    padding: 26px 16px;
+    border: 2px dashed var(--border, #cbd5e1);
+    border-radius: 10px;
+    background: var(--light, #f8fafc);
+    color: var(--text-secondary, #64748b);
+    cursor: pointer;
+    text-align: center;
+    transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.ext-dropzone:hover { border-color: var(--primary, #2563eb); color: var(--primary, #2563eb); }
+.ext-dropzone.dragover {
+    border-color: var(--primary, #2563eb);
+    background: var(--light-blue, #eff6ff);
+    color: var(--primary, #2563eb);
+}
+.ext-dropzone-inner { display: flex; flex-direction: column; align-items: center; }
+.ext-dropzone i { stroke-width: 1.8; }
+.ext-file-status {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    border: 1px solid transparent;
+}
+.ext-status-uploading { background: #f1f5f9; color: #475569; border-color: #e2e8f0; }
+.ext-status-ok { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.ext-status-error { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+.ext-manual {
+    border: 1px solid var(--border, #e2e8f0);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    background: #fff;
+}
+.ext-manual summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text, #1e293b);
+    list-style: none;
+}
+.ext-manual summary::-webkit-details-marker { display: none; }
+.ext-manual summary::before { content: "▸ "; color: var(--text-secondary, #64748b); }
+.ext-manual[open] summary::before { content: "▾ "; }

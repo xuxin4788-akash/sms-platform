@@ -3456,18 +3456,36 @@ function renderExtensionsBody() {
             '<div class="stat-mini"><div class="stat-num" style="color:var(--success);">' + d.free + '</div><div class="stat-label">Libres</div></div>' +
             '<div class="stat-mini"><div class="stat-num" style="color:var(--primary);">' + d.assigned + '</div><div class="stat-label">Asignadas</div></div>' +
         '</div>' +
-        '<div class="card" style="margin-bottom:20px;background:var(--light);padding:16px;">' +
-            '<label style="font-weight:600;display:block;margin-bottom:8px;">Cargar extensiones para ' + escapeHtml(d.country_label) + '</label>' +
-            '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">' +
-                '<input type="file" id="ext-file" accept=".txt,.csv,text/plain,text/csv" style="display:none;">' +
-                '<button type="button" id="ext-pick-file" class="btn btn-ghost"><i data-lucide="upload"></i> Seleccionar archivo (.txt/.csv)</button>' +
-                '<span id="ext-file-name" style="font-size:13px;color:var(--text-secondary);"></span>' +
+
+        '<div class="ext-upload-card">' +
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">' +
+                '<div>' +
+                    '<div style="font-weight:600;font-size:15px;">Cargar extensiones para ' + escapeHtml(d.country_label) + '</div>' +
+                    '<div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">Formatos admitidos: Excel (.xlsx), CSV, TXT. Una extension por fila o separadas por coma.</div>' +
+                '</div>' +
+                '<a href="/api/extensions/template" class="btn btn-ghost btn-sm" download>' +
+                    '<i data-lucide="download"></i> Descargar plantilla' +
+                '</a>' +
             '</div>' +
-            '<textarea id="ext-bulk" rows="4" style="width:100%;font-family:monospace;" placeholder="8001, 8002, 8003&#10;8004&#10;8005"></textarea>' +
-            '<p style="font-size:12px;color:var(--text-secondary);margin:8px 0 12px;">Pegue las extensiones o seleccione un archivo. Separe por comas, saltos de linea o espacios. Las extensiones duplicadas se omiten.</p>' +
-            '<button type="button" id="ext-upload-btn" class="btn btn-primary">Subir extensiones</button>' +
-            '<span id="ext-upload-result" style="margin-left:12px;font-size:13px;"></span>' +
+            '<label id="ext-dropzone" class="ext-dropzone" for="ext-file">' +
+                '<input type="file" id="ext-file" accept=".xlsx,.xls,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain" style="display:none;">' +
+                '<div class="ext-dropzone-inner">' +
+                    '<i data-lucide="upload-cloud" style="width:32px;height:32px;"></i>' +
+                    '<div style="font-weight:600;margin-top:8px;">Haga clic para seleccionar un archivo</div>' +
+                    '<div style="font-size:12px;color:var(--text-secondary);">o arrastrelo aqui</div>' +
+                '</div>' +
+            '</label>' +
+            '<div id="ext-file-status" class="ext-file-status" style="display:none;"></div>' +
         '</div>' +
+
+        '<details class="ext-manual">' +
+            '<summary>Pegar extensiones manualmente</summary>' +
+            '<textarea id="ext-bulk" rows="4" style="width:100%;font-family:monospace;margin-top:10px;" placeholder="8001, 8002, 8003&#10;8004&#10;8005"></textarea>' +
+            '<p style="font-size:12px;color:var(--text-secondary);margin:8px 0 12px;">Separe por comas, saltos de linea o espacios. Las extensiones duplicadas se omiten.</p>' +
+            '<button type="button" id="ext-upload-btn" class="btn btn-primary">Subir extensiones</button>' +
+        '</details>' +
+        '<span id="ext-upload-result" style="display:inline-block;margin:12px 0;font-size:13px;"></span>' +
+
         '<div class="table-wrap">' +
             '<table class="data-table"><thead><tr>' +
                 '<th>Extension</th><th>Estado</th><th>Agente</th><th style="text-align:right;">Acciones</th>' +
@@ -3475,31 +3493,67 @@ function renderExtensionsBody() {
                 (rows || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:24px;">No hay extensiones. Carguelas arriba.</td></tr>') +
             '</tbody></table>' +
         '</div>';
-    var upBtn = document.getElementById('ext-upload-btn');
-    if (upBtn) upBtn.addEventListener('click', uploadExtensions);
-    var pickBtn = document.getElementById('ext-pick-file');
-    var fileInput = document.getElementById('ext-file');
-    if (pickBtn && fileInput) {
-        pickBtn.addEventListener('click', function() { fileInput.click(); });
-        fileInput.addEventListener('change', function() {
-            var file = fileInput.files && fileInput.files[0];
-            var nameSpan = document.getElementById('ext-file-name');
-            if (!file) return;
-            if (nameSpan) nameSpan.textContent = file.name;
-            var reader = new FileReader();
-            reader.onload = function() {
-                var ta = document.getElementById('ext-bulk');
-                if (ta) {
-                    var existing = ta.value.trim();
-                    ta.value = (existing ? existing + '\n' : '') + String(reader.result || '').trim();
-                }
-            };
-            reader.readAsText(file);
-        });
-    }
+
+    // Icons in freshly injected markup
+    if (window.lucide) { try { window.lucide.createIcons(); } catch (e) {} }
+
+    wireExtensionsUpload();
     body.querySelectorAll('[data-del]').forEach(function(b) {
         b.addEventListener('click', function() { deleteExtension(b.dataset.del); });
     });
+}
+
+function wireExtensionsUpload() {
+    var fileInput = document.getElementById('ext-file');
+    var dropzone = document.getElementById('ext-dropzone');
+    var fileStatus = document.getElementById('ext-file-status');
+    if (!fileInput || !dropzone) return;
+
+    function handleFile(file) {
+        if (!file) return;
+        if (fileStatus) {
+            fileStatus.style.display = 'block';
+            fileStatus.className = 'ext-file-status ext-status-uploading';
+            fileStatus.textContent = 'Subiendo ' + file.name + '...';
+        }
+        var fd = new FormData();
+        fd.append('file', file);
+        fd.append('country', extState.country);
+        api('/api/extensions', { method: 'POST', body: fd }).then(function(d) {
+            if (fileStatus) {
+                fileStatus.className = 'ext-file-status ext-status-ok';
+                var msg = 'Archivo: ' + file.name + ' — Agregadas: ' + d.added_count + ', duplicadas: ' + d.duplicate_count;
+                if (d.invalid_count) msg += ', invalidas: ' + d.invalid_count;
+                fileStatus.textContent = msg;
+            }
+            fileInput.value = '';
+            loadExtensions();
+        }).catch(function(e) {
+            if (fileStatus) {
+                fileStatus.className = 'ext-file-status ext-status-error';
+                fileStatus.textContent = 'Error: ' + (e.message || 'No se pudo subir el archivo');
+            }
+            fileInput.value = '';
+        });
+    }
+
+    fileInput.addEventListener('change', function() {
+        handleFile(fileInput.files && fileInput.files[0]);
+    });
+    ['dragenter', 'dragover'].forEach(function(evt) {
+        dropzone.addEventListener(evt, function(e) { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('dragover'); });
+    });
+    ['dragleave', 'dragend', 'drop'].forEach(function(evt) {
+        dropzone.addEventListener(evt, function(e) { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('dragover'); });
+    });
+    dropzone.addEventListener('drop', function(e) {
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+            handleFile(e.dataTransfer.files[0]);
+        }
+    });
+
+    var upBtn = document.getElementById('ext-upload-btn');
+    if (upBtn) upBtn.addEventListener('click', uploadExtensions);
 }
 
 function uploadExtensions() {

@@ -1447,6 +1447,9 @@ def _normalize_extnumber(value):
     if value is None:
         return ''
     ext = ' '.join(str(value).strip().split())
+    # Drop a header row such as "Extension" / "extension" / "ext".
+    if ext.lower() in ('extension', 'extensiones', 'ext', 'extnumber', 'telefono', 'phone', '分机号'):
+        return ''
     return ext
 
 
@@ -6120,22 +6123,81 @@ def list_extensions():
     })
 
 
-@app.route('/api/extensions', methods=['POST'])
+@app.route('/api/extensions/template', methods=['GET'])
 @admin_required
-def add_extensions():
-    """Bulk add extensions for a country.
+def download_extensions_template():
+    """Download an Excel template (.xlsx) listing extensions to upload.
 
-    Body: {country, extensions: "8001, 8002\\n8003"} or {country, extensions:[...]}.
-    Accepts comma, semicolon, newline or whitespace separators. Duplicates
-    (within the request or already stored) are reported and skipped.
+    The file has a single column 'Extension' with a few example rows. The
+    uploaded country is taken from the active tab, so the template itself
+    does not carry a country.
     """
-    data = request.get_json(silent=True) or {}
-    country = normalize_country(data.get('country'))
-    raw = data.get('extensions', '')
-    if isinstance(raw, list):
-        candidates = [str(x) for x in raw]
-    else:
-        candidates = str(raw).replace(';', ',').replace('\n', ',').replace('\t', ',').split(',')
+    import io
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Extensiones'
+    ws.append(['Extension'])
+    for sample in ('8001', '8002', '8003'):
+        ws.append([sample])
+    ws.column_dimensions['A'].width = 18
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name='plantilla_extensiones.xlsx'
+    )
+
+
+def _parse_extensions_from_upload(file_storage):
+    """Parse an uploaded file (.xlsx/.xls/.csv/.txt) into a list of raw extension
+    strings. Raises ValueError with a user-facing Spanish message on failure.
+    """
+    filename = (file_storage.filename or '').lower()
+    if filename.endswith('.xlsx'):
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            raise ValueError('El servidor no tiene openpyxl instalado')
+        try:
+            wb = load_workbook(file_storage, read_only=True, data_only=True)
+        except Exception as e:
+            raise ValueError('No se pudo leer el archivo Excel: %s' % e)
+        values = []
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(values_only=True):
+                for cell in row:
+                    if cell is None:
+                        continue
+                    val = str(cell).strip()
+                    # Excel may store whole numbers as floats (8001.0)
+                    if val.endswith('.0') and val[:-2].isdigit():
+                        val = val[:-2]
+                    # A single cell may hold several comma/semicolon-separated values
+                    for piece in val.replace(';', ',').replace('\t', ',').split(','):
+                        values.append(piece)
+        return values
+    if filename.endswith('.xls'):
+        raise ValueError('El formato .xls (Excel antiguo) no es compatible. Guarde el archivo como .xlsx y vuelva a intentarlo.')
+    # .csv / .txt / any text
+    try:
+        raw = file_storage.read()
+        text = raw.decode('utf-8-sig', errors='replace') if isinstance(raw, (bytes, bytearray)) else str(raw)
+    except Exception as e:
+        raise ValueError('No se pudo leer el archivo: %s' % e)
+    return text.replace(';', ',').replace('\n', ',').replace('\r', ',').replace('\t', ',').split(',')
+
+
+def _bulk_insert_extensions(country, candidates):
+    """Shared insertion logic for bulk-adding extensions.
+
+    Returns (added, duplicates, invalid). Each candidate is normalized,
+    de-duplicated (case-insensitive, globally across countries), and linked
+    to an existing active user that already holds the extension.
+    """
     parsed = []
     seen = set()
     for c in candidates:
@@ -6147,16 +6209,12 @@ def add_extensions():
             continue
         seen.add(key)
         parsed.append(ext)
-    if not parsed:
-        return jsonify({'error': 'Debe proporcionar al menos una extension valida'}), 400
     _extensions_seed_from_config()
     db = get_db()
     added = []
     duplicates = []
     invalid = []
     for ext in parsed:
-        # Reject anything that collides in ANY country (a phone/extension is
-        # globally unique to avoid an agent dialing the wrong endpoint).
         clash = db.execute(
             "SELECT country FROM extensions WHERE LOWER(TRIM(extnumber))=LOWER(?)",
             (ext,)
@@ -6174,6 +6232,41 @@ def add_extensions():
         except Exception as e:
             invalid.append({'extnumber': ext, 'error': str(e)})
     db.commit()
+    return added, duplicates, invalid
+
+
+@app.route('/api/extensions', methods=['POST'])
+@admin_required
+def add_extensions():
+    """Bulk add extensions for a country.
+
+    Accepts either:
+      - multipart/form-data with an uploaded file (file=<...>) plus country;
+        supports .xlsx, .csv and .txt (one column/list of extensions).
+      - JSON {country, extensions: "8001, 8002"} or {country, extensions:[...]}.
+    Duplicates (within the request or already stored) are reported and skipped.
+    """
+    country = normalize_country(
+        request.form.get('country') if request.files else (request.get_json(silent=True) or {}).get('country')
+    )
+    if request.files and 'file' in request.files:
+        up = request.files['file']
+        if not up or not up.filename:
+            return jsonify({'error': 'No se selecciono ningun archivo'}), 400
+        try:
+            candidates = _parse_extensions_from_upload(up)
+        except ValueError as ve:
+            return jsonify({'error': str(ve)}), 400
+    else:
+        data = request.get_json(silent=True) or {}
+        raw = data.get('extensions', '')
+        if isinstance(raw, list):
+            candidates = [str(x) for x in raw]
+        else:
+            candidates = str(raw).replace(';', ',').replace('\n', ',').replace('\t', ',').split(',')
+    added, duplicates, invalid = _bulk_insert_extensions(country, candidates)
+    if not added and not duplicates and not invalid:
+        return jsonify({'error': 'Debe proporcionar al menos una extension valida'}), 400
     return jsonify({
         'message': 'Extensiones procesadas',
         'added_count': len(added),
