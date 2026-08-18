@@ -3907,28 +3907,14 @@ def send_sms():
     data = request.get_json()
     phones = data.get('phones', [])
 
-    # Check daily limit for team members
-    if g.user['role'] == 'team_member':
-        db = get_db()
-        team_cfg = db.execute(
-            "SELECT daily_sms_limit FROM team_config WHERE team_admin_id=?",
-            (g.user['team_creator_id'],)
-        ).fetchone()
-        daily_limit = team_cfg['daily_sms_limit'] if team_cfg and team_cfg['daily_sms_limit'] else 0
-        if daily_limit > 0:
-            today_count = db.execute(
-                "SELECT COUNT(*) as cnt FROM sms_records WHERE created_by=? AND date(created_at)=date('now') AND status IN ('sent','pending')",
-                (g.user['id'],)
-            ).fetchone()
-            cnt = today_count['cnt'] if today_count else 0
-            if cnt >= daily_limit:
-                return jsonify({'error': f'Has alcanzado tu limite diario de {daily_limit} SMS. Intenta manana.'}), 429
+    # NOTE: Los limites de envio (limite diario por miembro y tope de 500
+    # numeros por envio) estan desactivados en produccion. El campo
+    # team_config.daily_sms_limit y su pantalla de configuracion se conservan
+    # para poder reactivarlos en el futuro sin perder datos.
     content = data.get('content', '').strip()
     contact_names = data.get('contact_names', {})
     if not phones or not content:
         return jsonify({'error': 'Numero(s) y contenido son requeridos'}), 400
-    if len(phones) > 500:
-        return jsonify({'error': 'Maximo 500 numeros por envio'}), 400
     db = get_db()
     api_configured = is_sms_api_configured(g.user['id'])
     sms_config = get_team_sms_config(g.user['id'])
