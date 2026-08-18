@@ -378,6 +378,7 @@ def init_db():
                 token_co_expiry BIGINT DEFAULT 0,
                 token_pe VARCHAR(255) DEFAULT '',
                 token_pe_expiry BIGINT DEFAULT 0,
+                country VARCHAR(5) DEFAULT '',
                 extra TEXT DEFAULT '',
                 is_active BOOLEAN DEFAULT TRUE,
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -454,7 +455,11 @@ def init_db():
         if not pg_column_exists('sms_records', 'api_msg'):
             cur.execute("ALTER TABLE sms_records ADD COLUMN api_msg TEXT DEFAULT ''")
 
-        # voice_config migrations (infin8linx provider fields)
+        # voice_config migrations (infin8linx provider fields).
+        # Each entry is (column, base SQL type). The DEFAULT is appended below
+        # (BIGINT -> 0, everything else -> '') so the type must NOT already
+        # contain a DEFAULT clause (that would yield "TYPE DEFAULT x DEFAULT y",
+        # invalid SQL, which crashes worker startup on existing PostgreSQL DBs).
         for _col, _type in (
             ('voice_appid', 'VARCHAR(255)'),
             ('voice_accesskey', 'VARCHAR(255)'),
@@ -483,10 +488,11 @@ def init_db():
             ('token_co_expiry', 'BIGINT'),
             ('token_pe', 'VARCHAR(255)'),
             ('token_pe_expiry', 'BIGINT'),
-            ('country', "VARCHAR(5) DEFAULT ''"),
+            ('country', 'VARCHAR(5)'),
         ):
             if not pg_column_exists('voice_config', _col):
-                cur.execute(f"ALTER TABLE voice_config ADD COLUMN {_col} {_type} DEFAULT " + ("0" if "expiry" in _col else "''"))
+                _default = '0' if _type.upper().startswith('BIGINT') else "''"
+                cur.execute(f"ALTER TABLE voice_config ADD COLUMN {_col} {_type} DEFAULT {_default}")
         if not pg_column_exists('voice_records', 'extnumber'):
             cur.execute("ALTER TABLE voice_records ADD COLUMN extnumber VARCHAR(100) DEFAULT ''")
 
