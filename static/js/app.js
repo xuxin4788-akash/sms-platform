@@ -3621,8 +3621,18 @@ var retentionState = { categories: [], autoClear: null };
 
 function retentionLabel(days) {
     var n = parseInt(days, 10);
-    if (!n || n <= 0) return 'Permanente';
     return n + (n === 1 ? ' dia' : ' dias');
+}
+
+function retentionDaysOptions(selected) {
+    var sel = parseInt(selected, 10);
+    if (!sel || sel < 1 || sel > 7) sel = 7;
+    var opts = '';
+    for (var d = 1; d <= 7; d++) {
+        opts += '<option value="' + d + '"' + (d === sel ? ' selected' : '') + '>' +
+            d + (d === 1 ? ' dia' : ' dias') + '</option>';
+    }
+    return opts;
 }
 
 async function renderRetention(container) {
@@ -3750,11 +3760,11 @@ function showCategoryModal(id) {
     }
     var title = cat ? 'Editar categoria' : 'Nueva categoria';
     var nameVal = cat ? escapeHtml(cat.name) : '';
-    var daysVal = cat ? cat.retention_days : 30;
+    var daysVal = cat ? cat.retention_days : 7;
     var body =
         '<form id="category-form" onsubmit="saveCategory(event, ' + (id || 'null') + ')">' +
             '<div class="form-group"><label>Nombre de la categoria</label><input type="text" name="name" class="form-control" required maxlength="100" value="' + nameVal + '" placeholder="Ej. Ventas, Cobranza, Administrador"></div>' +
-            '<div class="form-group"><label>Dias de retencion de contactos</label><input type="number" name="retention_days" class="form-control" min="0" step="1" required value="' + daysVal + '"><small style="color:var(--text-secondary);">Cuantos dias se conservan los contactos de los empleados de esta categoria. 0 = permanente.</small></div>' +
+            '<div class="form-group"><label>Dias de retencion de contactos</label><select name="retention_days" class="form-control" required>' + retentionDaysOptions(daysVal) + '</select><small style="color:var(--text-secondary);">Cuantos dias se conservan los contactos de los empleados de esta categoria (de 1 a 7 dias).</small></div>' +
             '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Guardar</button></div>' +
         '</form>';
     showModal(title, body);
@@ -3765,7 +3775,7 @@ async function saveCategory(event, id) {
     var form = event.target;
     var payload = { name: form.name.value.trim(), retention_days: parseInt(form.retention_days.value, 10) };
     if (!payload.name) { showToast('El nombre es obligatorio', 'error'); return; }
-    if (isNaN(payload.retention_days) || payload.retention_days < 0) { showToast('Dias invalidos', 'error'); return; }
+    if (isNaN(payload.retention_days) || payload.retention_days < 1 || payload.retention_days > 7) { showToast('Los dias deben estar entre 1 y 7', 'error'); return; }
     try {
         if (id) {
             await api('/api/user-categories/' + id, { method: 'PUT', body: payload });

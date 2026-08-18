@@ -468,8 +468,17 @@ def init_db():
         if cur.fetchone() is None:
             cur.execute(
                 "INSERT INTO user_categories (name, retention_days, is_default) VALUES (%s, %s, TRUE)",
-                ('General', 30)
+                ('General', 7)
             )
+
+        # Migration: retention days must be within 1..7. Clamp existing rows.
+        try:
+            cur.execute(
+                "UPDATE user_categories SET retention_days = 7 WHERE retention_days > 7 "
+                "OR retention_days < 1 OR retention_days IS NULL"
+            )
+        except Exception:
+            db.rollback()
 
         # users migrations
         if not pg_column_exists('users', 'team_creator_id'):
@@ -1068,7 +1077,16 @@ def init_db():
         try:
             row = db.execute("SELECT id FROM user_categories WHERE is_default=1 LIMIT 1").fetchone()
             if not row:
-                db.execute("INSERT INTO user_categories (name, retention_days, is_default) VALUES (?, ?, 1)", ('General', 30))
+                db.execute("INSERT INTO user_categories (name, retention_days, is_default) VALUES (?, ?, 1)", ('General', 7))
+            db.commit()
+        except Exception:
+            db.rollback()
+        # Migration: retention days must be within 1..7. Clamp existing rows.
+        try:
+            db.execute(
+                "UPDATE user_categories SET retention_days = 7 "
+                "WHERE retention_days > 7 OR retention_days < 1 OR retention_days IS NULL"
+            )
             db.commit()
         except Exception:
             db.rollback()
@@ -2187,11 +2205,11 @@ def create_user_category():
     if len(name) > 100:
         return jsonify({'error': 'El nombre es demasiado largo'}), 400
     try:
-        retention_days = int(data.get('retention_days', 0))
+        retention_days = int(data.get('retention_days', 7))
     except (TypeError, ValueError):
         return jsonify({'error': 'Dias de retencion invalidos'}), 400
-    if retention_days < 0:
-        return jsonify({'error': 'Los dias de retencion no pueden ser negativos'}), 400
+    if retention_days < 1 or retention_days > 7:
+        return jsonify({'error': 'Los dias de retencion deben estar entre 1 y 7'}), 400
     db = get_db()
     existing = db.execute("SELECT id FROM user_categories WHERE name=?", (name,)).fetchone()
     if existing:
@@ -2219,8 +2237,8 @@ def update_user_category(cat_id):
             retention_days = int(data.get('retention_days'))
         except (TypeError, ValueError):
             return jsonify({'error': 'Dias de retencion invalidos'}), 400
-        if retention_days < 0:
-            return jsonify({'error': 'Los dias de retencion no pueden ser negativos'}), 400
+        if retention_days < 1 or retention_days > 7:
+            return jsonify({'error': 'Los dias de retencion deben estar entre 1 y 7'}), 400
     else:
         retention_days = cat['retention_days']
     if not name:
