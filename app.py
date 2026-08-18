@@ -5932,7 +5932,9 @@ def infin8linx_get_token(config, force=False):
         return '', 'Faltan datos de acceso (URL, AppID o AccessKey)'
 
     # First attempt with the stored (or default https) scheme.
+    t0 = _time.time()
     try:
+        app.logger.warning('[voice-token] trying %s (scheme=%s)', api_url, (config or {}).get('voice_scheme'))
         resp = http_requests.post(api_url, data={
             'service': 'App.Sip_Auth.Login',
             'appid': appid,
@@ -5940,6 +5942,7 @@ def infin8linx_get_token(config, force=False):
         }, timeout=15)
         token, err = _parse_infin_login_response(resp)
         if token:
+            app.logger.warning('[voice-token] OK via %s in %.2fs', api_url, _time.time() - t0)
             expiry = now + 12 * 3600
             _persist_voice_scheme_and_token(
                 config, (config or {}).get('voice_scheme') or 'https', token, expiry)
@@ -5947,9 +5950,11 @@ def infin8linx_get_token(config, force=False):
         # Business-level error (bad credentials etc.) — re-probing schemes
         # won't help; surface the provider message.
         if err and not err.startswith('Respuesta no JSON'):
+            app.logger.warning('[voice-token] business error via %s: %s', api_url, err[:200])
             return '', err
     except Exception as e:
         msg = str(e)
+        app.logger.warning('[voice-token] exception via %s in %.2fs: %s', api_url, _time.time() - t0, msg[:200])
         # If the stored scheme cannot even connect / fails SSL (e.g. config
         # saved as https but the gateway speaks plain http like port 4434),
         # fall through to probing both schemes and persist the one that works.
@@ -5960,12 +5965,16 @@ def infin8linx_get_token(config, force=False):
             return '', 'Error de conexion: ' + msg[:200]
 
     # Auto-detect http/https and persist the working scheme (self-healing).
+    app.logger.warning('[voice-token] probing both http/https schemes...')
     scheme, resp, err = _voice_probe_host(config or {}, appid, accesskey, timeout=10)
     if not scheme or resp is None:
+        app.logger.warning('[voice-token] probe failed: %s', (err or '')[:200])
         return '', err or 'No se pudo conectar con la URL de la API (revisar IP/puerto/firewall)'
     token, perr = _parse_infin_login_response(resp)
     if not token:
+        app.logger.warning('[voice-token] parse error after probe: %s', (perr or err or '')[:200])
         return '', perr or err or 'No se pudo obtener el token'
+    app.logger.warning('[voice-token] OK via probe scheme=%s in %.2fs', scheme, _time.time() - t0)
     expiry = now + 12 * 3600
     _persist_voice_scheme_and_token(config, scheme, token, expiry)
     return token, None
@@ -6083,10 +6092,10 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext='', customuui
     for idx, scheme in enumerate(schemes_to_try):
         try:
             call_url = _voice_api_url({**(config or {}), 'voice_scheme': scheme})
-            app.logger.info('[voice-makecall] POST %s ext=%s dest=%s scheme=%s payload=%s',
+            app.logger.warning('[voice-makecall] POST %s ext=%s dest=%s scheme=%s payload=%s',
                             call_url, extnumber, dest_digits, scheme, safe_payload)
             resp = _post_makecall(scheme)
-            app.logger.info('[voice-makecall] resp status=%s body=%s',
+            app.logger.warning('[voice-makecall] resp status=%s body=%s',
                             resp.status_code, (resp.text or '')[:800])
             try:
                 data = resp.json()
@@ -6103,14 +6112,14 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext='', customuui
                     if token2 and not err2:
                         payload['token'] = token2
                         resp = _post_makecall(scheme)
-                        app.logger.info('[voice-makecall] retry resp status=%s body=%s',
+                        app.logger.warning('[voice-makecall] retry resp status=%s body=%s',
                                         resp.status_code, (resp.text or '')[:800])
                         data = resp.json()
                         if int(data.get('ret', 0)) == 200:
                             body = data.get('data') or {}
                             if int(body.get('status', 1)) == 0:
                                 ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
-                                app.logger.info('[voice-makecall] success(ext retry) ref=%s ext=%s', ref, extnumber)
+                                app.logger.warning('[voice-makecall] success(ext retry) ref=%s ext=%s', ref, extnumber)
                                 return True, ref, '', extnumber
                             return False, '', str(body.get('desc') or 'Error al iniciar llamada')[:300], extnumber
                 return False, '', msg[:300], extnumber
@@ -6128,7 +6137,7 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext='', customuui
                 except Exception:
                     pass
             ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
-            app.logger.info('[voice-makecall] success ref=%s ext=%s dest=%s', ref, extnumber, dest_digits)
+            app.logger.warning('[voice-makecall] success ref=%s ext=%s dest=%s', ref, extnumber, dest_digits)
             return True, ref, '', extnumber
         except Exception as e:
             msg = str(e)
@@ -6770,9 +6779,13 @@ def voice_cdr_callback():
     recent initiated record. Updates status, durations and recording file.
     """
     cdr = request.get_json(silent=True) or request.form.to_dict() or {}
-    app.logger.info('[voice-cdr] received: %s', json.dumps(cdr, ensure_ascii=False)[:800])
+    app.logger.warning('[voice-cdr] received raw: %s', json.dumps(cdr, ensure_ascii=False)[:1200])
     try:
         customuuid = str(cdr.get('customuuid') or '').strip()
+        # Infinity may echo customuuid as "0" when it was not set/accepted; treat
+        # such placeholder values as "absent" so we fall back to dest+ext matching.
+        if customuuid in ('0', '-', 'none', 'null'):
+            customuuid = ''
         dest = ''.join(ch for ch in str(cdr.get('destnumber') or '') if ch.isdigit())
         ext = str(cdr.get('extnumber') or '').strip()
         provider_uuid = str(cdr.get('uuid') or '').strip()
