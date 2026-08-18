@@ -3351,6 +3351,10 @@ function toggleVoiceProviderFields() {
     var p = document.getElementById('vc-provider').value;
     var i = document.getElementById('vc-infin-fields');
     if (i) i.style.display = (p === 'infin8linx') ? 'block' : 'none';
+    // When Infinity is selected, render the selected country's fields (URL,
+    // AppID, AccessKey, from number, extension pool). Without this, switching
+    // from Simulacion only shows the country selector but not the credentials.
+    if (p === 'infin8linx') renderVoiceCountryFields();
 }
 
 async function renderVoiceConfig(container) {
