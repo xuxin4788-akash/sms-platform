@@ -3198,7 +3198,7 @@ async function renderCalls(container) {
                 '<div id="voice-contacts" class="form-group" style="display:none;"><label>Seleccionar contactos</label><div id="voice-contacts-list" class="contact-select-list"></div></div>' +
                 '<div id="voice-group" class="form-group" style="display:none;"><label>Grupo</label><select id="voice-group-select" onchange="loadVoiceGroupContacts(this.value)"><option value="">-- Seleccione --</option>' + groupOpts + '</select><div id="voice-group-preview" class="mt-2 text-secondary text-sm"></div></div>' +
                 '<div class="form-group mt-3"><label>Plantilla de guion (opcional)</label><select id="voice-template" onchange="loadVoiceTemplate(this.value)"><option value="">-- Personalizado --</option>' + tplOpts + '</select></div>' +
-                '<div class="form-group"><label>Guion de la llamada *</label><textarea id="voice-script" rows="5" placeholder="Hola {nombre}, le llamamos para..."></textarea><div class="var-chips">' + variableChips('voice-script') + '</div><small class="text-secondary">El guion lo lee el agente de la extension Infinity (infin8linx).</small></div>' +
+                '<div class="form-group"><label>Guion de la llamada (opcional)</label><textarea id="voice-script" rows="5" placeholder="Hola {nombre}, le llamamos para... (opcional)"></textarea><div class="var-chips">' + variableChips('voice-script') + '</div><small class="text-secondary">El guion lo lee el agente de la extension Infinity (infin8linx). Puede dejarlo vacio para marcar directamente.</small></div>' +
                 '<div id="voice-error" class="alert alert-error" style="display:none;"></div>' +
                 '<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-primary" id="voice-place-btn" onclick="handlePlaceCalls()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Iniciar Llamada(s)</button><span class="text-secondary text-sm" style="align-self:center;">Maximo 200 numeros por tanda.</span></div>' +
             '</div></div>' +
@@ -3309,7 +3309,6 @@ async function handlePlaceCalls() {
     var script = (document.getElementById('voice-script').value || '').trim();
     var phones = collectVoicePhones();
     if (!phones.length) { errBox.textContent = 'Seleccione o ingrese al menos un numero.'; errBox.style.display='block'; return; }
-    if (!script) { errBox.textContent = 'El guion es requerido.'; errBox.style.display='block'; return; }
     if (phones.length > 200) { errBox.textContent = 'Maximo 200 numeros por tanda.'; errBox.style.display='block'; return; }
     if (!confirm('Se iniciaran ' + phones.length + ' llamada(s). Continuar?')) return;
     try {

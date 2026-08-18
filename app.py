@@ -6081,8 +6081,10 @@ def voice_place_call_route():
     if isinstance(phones, str):
         phones = [phones]
     phones = [str(p).strip() for p in phones if str(p).strip()]
-    if not phones or not script:
-        return jsonify({'error': 'Telefono(s) y guion son requeridos'}), 400
+    if not phones:
+        return jsonify({'error': 'Telefono(s) requerido(s)'}), 400
+    if not script:
+        script = '(sin guion)'
     if len(phones) > 200:
         return jsonify({'error': 'Maximo 200 numeros por llamada masiva'}), 400
 
