@@ -3313,7 +3313,14 @@ async function handlePlaceCalls() {
     if (!confirm('Se iniciaran ' + phones.length + ' llamada(s). Continuar?')) return;
     try {
         var result = await api('/api/voice/call', { method: 'POST', body: { phones: phones, script: script } });
-        showToast(result.message || 'Llamadas iniciadas', (result.errors && result.errors.length) ? 'warning' : 'success');
+        if (result.errors && result.errors.length) {
+            errBox.innerHTML = '<strong>' + (result.message || 'Algunas llamadas fallaron') + '</strong><ul style="margin:6px 0 0 18px;padding:0;">' +
+                result.errors.map(function(e) { return '<li>' + escapeHtml(e) + '</li>'; }).join('') + '</ul>';
+            errBox.style.display = 'block';
+            showToast((result.message || 'Llamadas con errores') + (result.simulated ? ' (simulacion)' : ''), 'warning');
+        } else {
+            showToast((result.message || 'Llamadas iniciadas') + (result.simulated ? ' (modo simulacion - API de voz no configurada)' : ''), 'success');
+        }
         state.voiceCall.phones = [];
         state.voiceCall.selectedContacts = [];
         state.voiceCall.groupPhones = [];
