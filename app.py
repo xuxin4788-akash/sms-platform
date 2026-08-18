@@ -2023,7 +2023,7 @@ def get_me():
         role = g.user['role']
         if role == 'admin':
             # Admin always has all permissions
-            permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'voice-config', 'role-permissions']
+            permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'voice-config', 'retention', 'role-permissions']
             perms_configured = True
         else:
             # Get permissions from role_permissions table
@@ -2170,14 +2170,15 @@ def resolve_category_id(raw):
 @app.route('/api/user-categories', methods=['GET'])
 @login_required
 def list_user_categories():
-    # Managers need the list to populate user forms; include user counts for admins.
-    counts = g.user['role'] == 'admin'
+    # Managers configure retention; members only need the list for user forms.
+    # Include user counts for any manager.
+    counts = g.user['role'] in ('admin', 'team_admin')
     return jsonify({'categories': get_user_categories(only_active_counts=counts)})
 
 
 @app.route('/api/user-categories', methods=['POST'])
 @login_required
-@admin_required
+@manager_required
 def create_user_category():
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
@@ -2205,7 +2206,7 @@ def create_user_category():
 
 @app.route('/api/user-categories/<int:cat_id>', methods=['PUT'])
 @login_required
-@admin_required
+@manager_required
 def update_user_category(cat_id):
     data = request.get_json() or {}
     db = get_db()
@@ -2245,7 +2246,7 @@ def update_user_category(cat_id):
 
 @app.route('/api/user-categories/<int:cat_id>', methods=['DELETE'])
 @login_required
-@admin_required
+@manager_required
 def delete_user_category(cat_id):
     db = get_db()
     cat = db.execute("SELECT * FROM user_categories WHERE id=?", (cat_id,)).fetchone()
@@ -3264,6 +3265,7 @@ AVAILABLE_PAGES = [
     {'id': 'all-teams', 'label': 'Todos los Equipos', 'icon': 'bar-chart'},
     {'id': 'config', 'label': 'Configuracion API SMS', 'icon': 'settings'},
     {'id': 'voice-config', 'label': 'Configuracion Voz', 'icon': 'settings'},
+    {'id': 'retention', 'label': 'Retencion de Contactos', 'icon': 'shield'},
 ]
 
 # Default permissions per role when the role_permissions table has no explicit
@@ -3275,6 +3277,7 @@ DEFAULT_ROLE_PERMISSIONS = {
     'team_admin': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
         'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams',
+        'retention',
     ],
     'team_member': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',

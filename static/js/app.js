@@ -305,7 +305,7 @@ function showMainApp() {
         if (role === 'team_admin') {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
                      'records', 'calls', 'content-search', 'users', 'my-account',
-                     'my-team', 'all-teams'];
+                     'my-team', 'all-teams', 'retention'];
         } else {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
                      'records', 'calls', 'my-account'];
@@ -402,7 +402,7 @@ function navigateTo(page) {
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
             renderExtensions(content); break;
         case 'retention':
-            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            if (state.user.role !== 'admin' && state.user.role !== 'team_admin') { renderDashboard(content); break; }
             renderRetention(content); break;
         case 'content-search': renderContentSearch(content); break;
         case 'users': renderUsers(content); break;
@@ -1288,14 +1288,14 @@ async function renderUsers(container) {
             var countryLabels = {mx: 'Mexico', co: 'Colombia', pe: 'Peru'};
             var countryCell = u.country ? '<span class="text-sm">' + escapeHtml(countryLabels[u.country] || u.country) + '</span>' : '<span class="text-sm text-secondary">-</span>';
             var categoryCell = '<span class="text-sm text-secondary">-</span>';
-            if (myRole === 'admin') {
+            if (myRole === 'admin' || myRole === 'team_admin') {
                 if (u.category_name) {
                     categoryCell = '<span class="badge badge-gray">' + escapeHtml(u.category_name) + ' · ' + retentionLabel(u.category_retention_days) + '</span>';
                 } else {
                     categoryCell = '<span class="text-sm text-secondary">Por defecto</span>';
                 }
             }
-            return '<tr><td style="width:40px;">' + checkbox + '</td><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td>' + extCell + '</td><td>' + countryCell + '</td>' + (myRole === 'admin' ? '<td>' + categoryCell + '</td>' : '') + '<td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + roleBtn + deleteBtn + '</td></tr>';
+            return '<tr><td style="width:40px;">' + checkbox + '</td><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td>' + extCell + '</td><td>' + countryCell + '</td>' + ((myRole === 'admin' || myRole === 'team_admin') ? '<td>' + categoryCell + '</td>' : '') + '<td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + roleBtn + deleteBtn + '</td></tr>';
         }).join('');
 
         // Role filter options based on current user role
@@ -1306,7 +1306,8 @@ async function renderUsers(container) {
             roleOptions += '<option value="team_member">Miembro de Equipo</option>';
         }
 
-        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="showBulkCreateModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg> Creacion Masiva</button><button class="btn btn-secondary btn-sm" onclick="showBulkImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Importar Excel</button><button class="btn btn-secondary btn-sm" onclick="showBulkPasswordModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg> Clave Masiva</button><button class="btn btn-secondary btn-sm" onclick="exportUsers()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Exportar</button><button class="btn btn-danger btn-sm" id="bulk-delete-btn" onclick="bulkDeleteUsers()" disabled style="opacity:0.5;cursor:not-allowed;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Eliminar (<span id="bulk-selected-count">0</span>)</button><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div></div><div id="bulk-action-bar" class="card mb-3" style="display:none;padding:10px 16px;background:var(--light-blue);border-color:var(--primary);"></div><div class="card mb-3"><div style="display:flex;gap:12px;align-items:center;padding:12px 16px;flex-wrap:wrap;"><div style="flex:1;min-width:200px;position:relative;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input type="text" id="user-search" class="form-control" placeholder="Buscar por usuario o nombre..." value="' + escapeHtml(searchVal) + '" style="padding-left:36px;" oninput="debounceRenderUsers()"></div><select id="user-role-filter" class="form-control" style="width:auto;min-width:180px;" onchange="renderUsers(document.getElementById(\'page-content\'))">' + roleOptions + '</select></div></div><div class="card"><div class="table-container"><table><thead><tr><th style="width:40px;"><input type="checkbox" id="user-select-all" onchange="toggleAllUsers(this)" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;"></th><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Equipo</th><th>Extension</th><th>Pais</th><th>Categoria</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="11" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
+        var userCols = (myRole === 'admin' || myRole === 'team_admin') ? 11 : 10;
+        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="showBulkCreateModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg> Creacion Masiva</button><button class="btn btn-secondary btn-sm" onclick="showBulkImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Importar Excel</button><button class="btn btn-secondary btn-sm" onclick="showBulkPasswordModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg> Clave Masiva</button><button class="btn btn-secondary btn-sm" onclick="exportUsers()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Exportar</button><button class="btn btn-danger btn-sm" id="bulk-delete-btn" onclick="bulkDeleteUsers()" disabled style="opacity:0.5;cursor:not-allowed;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Eliminar (<span id="bulk-selected-count">0</span>)</button><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div></div><div id="bulk-action-bar" class="card mb-3" style="display:none;padding:10px 16px;background:var(--light-blue);border-color:var(--primary);"></div><div class="card mb-3"><div style="display:flex;gap:12px;align-items:center;padding:12px 16px;flex-wrap:wrap;"><div style="flex:1;min-width:200px;position:relative;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input type="text" id="user-search" class="form-control" placeholder="Buscar por usuario o nombre..." value="' + escapeHtml(searchVal) + '" style="padding-left:36px;" oninput="debounceRenderUsers()"></div><select id="user-role-filter" class="form-control" style="width:auto;min-width:180px;" onchange="renderUsers(document.getElementById(\'page-content\'))">' + roleOptions + '</select></div></div><div class="card"><div class="table-container"><table><thead><tr><th style="width:40px;"><input type="checkbox" id="user-select-all" onchange="toggleAllUsers(this)" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;"></th><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Equipo</th><th>Extension</th><th>Pais</th>' + (userCols === 11 ? '<th>Categoria</th>' : '') + '<th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="' + userCols + '" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
         window._users = data.users;
         // Restore role filter selection
         if (roleFilterVal) { var sel = document.getElementById('user-role-filter'); if (sel) sel.value = roleFilterVal; }
@@ -1364,7 +1365,7 @@ async function loadUserCategories() {
 }
 
 async function categoryFieldHtml(selectedId) {
-    if (state.user.role !== 'admin') return '';
+    if (state.user.role !== 'admin' && state.user.role !== 'team_admin') return '';
     var cats = await loadUserCategories();
     if (!cats.length) return '';
     var options = cats.map(function(c) {
@@ -1447,6 +1448,7 @@ var PERM_ITEMS = [
     { key: 'config', label: 'Configuracion API SMS', icon: 'settings' },
     { key: 'voice-config', label: 'Configuracion Voz', icon: 'settings' },
     { key: 'extensions', label: 'Extensiones', icon: 'phone' },
+    { key: 'retention', label: 'Retencion de Contactos', icon: 'shield' },
     { key: 'team-api-select', label: 'Seleccionar API de Equipo', icon: 'server' }
 ];
 
@@ -3624,12 +3626,23 @@ function retentionLabel(days) {
 }
 
 async function renderRetention(container) {
+    var isAdmin = state.user.role === 'admin';
+    var newBtn = isAdmin
+        ? '<button class="btn btn-primary btn-sm" onclick="showCategoryModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nueva categoria</button>'
+        : '';
+    var clearCard = isAdmin
+        ? '<div class="card" id="retention-clear-card"><div class="card-header"><h3>Limpieza automatica</h3></div><div class="card-body"><div class="loading">Cargando...</div></div></div>'
+        : '';
     container.innerHTML =
         '<h1 style="margin-bottom:4px;">Retencion de Contactos por Categoria</h1>' +
         '<p style="color:var(--text-secondary);margin-bottom:20px;">Clasifique a los empleados y defina cuantos dias se conservan sus contactos. Esta regla reemplaza la limpieza diaria total: cada dia se eliminan solo los contactos mas antiguos que el plazo de la categoria de su propietario.</p>' +
-        '<div class="card mb-4" id="retention-cats-card"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;"><h3>Categorias de empleados</h3><button class="btn btn-primary btn-sm" onclick="showCategoryModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nueva categoria</button></div><div class="card-body" style="padding:0;"><div class="loading">Cargando...</div></div></div>' +
-        '<div class="card" id="retention-clear-card"><div class="card-header"><h3>Limpieza automatica</h3></div><div class="card-body"><div class="loading">Cargando...</div></div></div>';
-    await Promise.all([loadCategoriesForRetention(), loadAutoClearForRetention()]);
+        '<div class="card mb-4" id="retention-cats-card"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;"><h3>Categorias de empleados</h3>' + newBtn + '</div><div class="card-body" style="padding:0;"><div class="loading">Cargando...</div></div></div>' +
+        clearCard;
+    if (isAdmin) {
+        await Promise.all([loadCategoriesForRetention(), loadAutoClearForRetention()]);
+    } else {
+        await loadCategoriesForRetention();
+    }
 }
 
 function loadCategoriesForRetention() {
@@ -3660,17 +3673,19 @@ function renderRetentionCategories() {
         body.innerHTML = '<div class="empty-state">Sin categorias</div>';
         return;
     }
+    var canManage = (state.user.role === 'admin' || state.user.role === 'team_admin');
     var rows = cats.map(function(c) {
         var isDefault = c.is_default;
         var count = (typeof c.user_count === 'number') ? c.user_count : null;
+        var actions = canManage
+            ? '<button class="btn btn-ghost btn-sm" onclick="showCategoryModal(' + c.id + ')">Editar</button>' +
+              (isDefault ? '' : ' <button class="btn btn-danger btn-sm" onclick="deleteCategory(' + c.id + ')">Eliminar</button>')
+            : '';
         return '<tr>' +
             '<td style="font-weight:600;">' + escapeHtml(c.name) + (isDefault ? ' <span class="badge badge-blue">por defecto</span>' : '') + '</td>' +
             '<td>' + retentionLabel(c.retention_days) + '</td>' +
             '<td>' + (count !== null ? count : '-') + '</td>' +
-            '<td style="text-align:right;white-space:nowrap;">' +
-                '<button class="btn btn-ghost btn-sm" onclick="showCategoryModal(' + c.id + ')">Editar</button>' +
-                (isDefault ? '' : ' <button class="btn btn-danger btn-sm" onclick="deleteCategory(' + c.id + ')">Eliminar</button>') +
-            '</td>' +
+            '<td style="text-align:right;white-space:nowrap;">' + actions + '</td>' +
         '</tr>';
     }).join('');
     body.innerHTML =

@@ -60,8 +60,8 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET | /api/auth/me | User | Current user info |
 | GET/POST | /api/users | Admin/TeamAdmin | List/Create users (role-based scope) |
 | PUT/DELETE | /api/users/<id> | Admin/TeamAdmin | Update/Delete user (role-based scope) |
-| GET | /api/user-categories | User | List employee categories + retention days (counts for admin) |
-| POST/PUT/DELETE | /api/user-categories[/<id>] | Admin | CRUD employee categories (default category cannot be deleted) |
+| GET | /api/user-categories | User | List employee categories + retention days (counts for managers) |
+| POST/PUT/DELETE | /api/user-categories[/<id>] | Admin/TeamAdmin | CRUD employee categories (default category cannot be deleted; categories are shared across teams) |
 | GET/POST | /api/contacts | User | List/Create contacts (team: all, member: own) |
 | PUT/DELETE | /api/contacts/<id> | User | Update/Delete contact (team: all, member: own) |
 | POST | /api/contacts/import | User | Import CSV contacts |
@@ -137,6 +137,7 @@ Tables: users (with `category_id` FK to user_categories, `extnumber` for per-age
 - The daily background job (`run_auto_clear_contacts`, scheduled at `auto_clear_time`, default 03:00) deletes ONLY contacts whose owning user belongs to a category with a finite window AND whose `created_at` is older than `now - retention_days`. Contacts without a creator or whose creator has no category are never deleted, and groups are never deleted. This replaces the previous behavior that deleted ALL contacts and groups every day.
 - The same rule runs on-demand via POST /api/config/auto-clear/run-now and is configured on the "Retencion de Contactos" admin page.
 - `users.category_id` is set on create/update (admin-managed); if omitted it defaults to the default category. Users without a category retain contacts permanently.
+- Employee categories are **shared across all teams** (not per-team): both system admins and team admins can create/edit/delete them (POST/PUT/DELETE `/api/user-categories` use `@manager_required`). The daily auto-clear schedule (`/api/config/auto-clear`, run-now) remains system-admin only; team admins see the Retención page without the scheduler card.
 
 
 ### Contact fields
