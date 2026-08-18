@@ -5977,15 +5977,24 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext=''):
     except Exception:
         pass
     extnumber = resolved_ext
+    # Infinity expects plain digits (no '+', spaces or separators) for both the
+    # destination and the caller id. "+52722..." -> "52722...".
+    def _digits(value):
+        return ''.join(ch for ch in str(value or '') if ch.isdigit())
+
+    dest_digits = _digits(phone)
+    if not dest_digits:
+        return False, '', f'Numero de destino invalido: {phone}', extnumber
     disnumber = (config or {}).get('from_number') or ''
+    dis_digits = _digits(disnumber)
     payload = {
         'service': 'App.Sip_Call.MakeCall',
         'token': token,
         'extnumber': extnumber,
-        'destnumber': phone,
+        'destnumber': dest_digits,
     }
-    if disnumber:
-        payload['disnumber'] = disnumber
+    if dis_digits:
+        payload['disnumber'] = dis_digits
 
     def _post_makecall(scheme):
         url = _voice_api_url({**(config or {}), 'voice_scheme': scheme})
