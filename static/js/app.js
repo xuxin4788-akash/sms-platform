@@ -3348,7 +3348,7 @@ async function loadVoiceRecords() {
         var rows = data.records.length === 0
             ? '<tr><td colspan="9" class="text-center text-secondary" style="padding:32px;">No hay llamadas registradas</td></tr>'
             : data.records.map(function(r) {
-                var isReal = r.call_sid && r.call_sid.indexOf('SIM') !== 0;
+                var isReal = r.provider === 'infin8linx' || r.provider === 'twilio' || r.provider === 'custom' || (r.call_sid && r.call_sid.indexOf('SIM') !== 0);
                 var active = ['pending', 'initiated', 'ringing', 'answered'].indexOf(r.status) !== -1;
                 var actions = '';
                 if (isReal) {
