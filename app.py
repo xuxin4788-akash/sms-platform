@@ -403,6 +403,7 @@ def init_db():
                 voice_appid VARCHAR(255) DEFAULT '',
                 voice_accesskey VARCHAR(255) DEFAULT '',
                 from_number VARCHAR(100) DEFAULT '',
+                voice_scheme VARCHAR(10) NOT NULL DEFAULT 'https',
                 voice_token VARCHAR(255) DEFAULT '',
                 voice_token_expiry BIGINT DEFAULT 0,
                 is_active BOOLEAN DEFAULT TRUE,
@@ -563,6 +564,10 @@ def init_db():
                 cur.execute(f"ALTER TABLE voice_config ADD COLUMN {_col} {_type} DEFAULT {_default}")
         if not pg_column_exists('voice_records', 'extnumber'):
             cur.execute("ALTER TABLE voice_records ADD COLUMN extnumber VARCHAR(100) DEFAULT ''")
+        # voice_configs: detected protocol (https by default; test connection
+        # may persist 'http' if the provider answers plaintext on the port).
+        if not pg_column_exists('voice_configs', 'voice_scheme'):
+            cur.execute("ALTER TABLE voice_configs ADD COLUMN voice_scheme VARCHAR(10) NOT NULL DEFAULT 'https'")
 
         # users: per-user fixed extension (asignacion de telefono/ext fija)
         if not pg_column_exists('users', 'extnumber'):
@@ -835,6 +840,7 @@ def init_db():
                 voice_appid TEXT DEFAULT '',
                 voice_accesskey TEXT DEFAULT '',
                 from_number TEXT DEFAULT '',
+                voice_scheme TEXT NOT NULL DEFAULT 'https',
                 voice_token TEXT DEFAULT '',
                 voice_token_expiry INTEGER DEFAULT 0,
                 is_active INTEGER DEFAULT 1,
@@ -1019,6 +1025,12 @@ def init_db():
         # Migration: record the extension used per call
         try:
             db.execute("ALTER TABLE voice_records ADD COLUMN extnumber TEXT DEFAULT ''")
+            db.commit()
+        except Exception:
+            pass
+        # Migration: voice_configs detected protocol (https default)
+        try:
+            db.execute("ALTER TABLE voice_configs ADD COLUMN voice_scheme TEXT NOT NULL DEFAULT 'https'")
             db.commit()
         except Exception:
             pass
@@ -5761,20 +5773,52 @@ def _token_db_columns(config):
     return 'voice_token', 'voice_token_expiry'
 
 
-def _voice_api_url(config):
-    """Normalize the Infinity base URL: strip spaces/trailing slash and ensure
-    it has an http(s) scheme. The UI stores just 'host:port' (e.g.
-    'mex.infin8link.com:4434'), which requests rejects with 'No connection
-    adapters were found'; we default to https:// like the SMS integration does.
+def _voice_api_url(config, scheme=None):
+    """Build the Infinity base URL. Honors a detected/stored scheme
+    (config['voice_scheme'] = 'http'|'https') so the test connection can
+    persist whichever protocol the provider actually answers on.
     """
     raw = ((config or {}).get('api_domain') or '').strip()
     if not raw:
         return ''
-    if raw.startswith(('http://', 'https://')):
-        base = raw
-    else:
-        base = 'https://' + raw
-    return base.rstrip('/')
+    raw = re.sub(r'^https?://', '', raw)
+    sch = scheme or (config or {}).get('voice_scheme') or 'https'
+    return (sch or 'https').lower() + '://' + raw.rstrip('/')
+
+
+def _voice_probe_host(config, appid, accesskey, timeout=10):
+    """Try the Infinity Login endpoint over https then http.
+
+    Returns (working_scheme, response_or_none, error_message). Used by the
+    connection test to distinguish a wrong protocol (http vs https) from a
+    network/firewall block.
+    """
+    raw = ((config or {}).get('api_domain') or '').strip()
+    if not raw:
+        return None, None, 'URL de la API vacia'
+    host = re.sub(r'^https?://', '', raw).rstrip('/')
+    last_err = ''
+    for scheme in ('https', 'http'):
+        url = scheme + '://' + host
+        try:
+            resp = http_requests.post(url, data={
+                'service': 'App.Sip_Auth.Login',
+                'appid': appid,
+                'accesskey': accesskey,
+            }, timeout=timeout)
+            return scheme, resp, ''
+        except http_requests.exceptions.ConnectTimeout:
+            last_err = 'Tiempo de espera agotado al conectar (%s://%s)' % (scheme, host)
+        except http_requests.exceptions.ReadTimeout:
+            # Connected but the server did not answer in time; treat as reachable
+            return scheme, None, 'El servidor respondio lento (%s://%s)' % (scheme, host)
+        except http_requests.exceptions.SSLError as e:
+            last_err = 'Error SSL/TLS en %s://%s: %s' % (scheme, host, str(e)[:120])
+        except http_requests.exceptions.ConnectionError as e:
+            last_err = 'No se pudo conectar a %s://%s: %s' % (scheme, host, str(e)[:120])
+        except Exception as e:  # noqa: BLE001
+            last_err = '%s en %s://%s' % (type(e).__name__, scheme, host)
+    return None, None, (last_err or 'No se pudo conectar al servidor')
 
 
 def infin8linx_get_token(config, force=False):
@@ -6419,12 +6463,49 @@ def voice_test_config():
     if not cfg or not is_voice_configured(cfg.get('country')):
         return jsonify({'error': 'API de voz no configurada para este pais'}), 400
     if cfg['provider'] == 'infin8linx':
-        token, err = infin8linx_get_token(cfg, force=True)
-        if err:
-            return jsonify({'error': err}), 400
+        raw_domain = (cfg.get('api_domain') or '').strip()
+        appid = (cfg.get('voice_appid') or '').strip()
+        accesskey = (cfg.get('voice_accesskey') or '').strip()
+        if not (raw_domain and appid and accesskey):
+            return jsonify({'error': 'Faltan URL, AppID o AccessKey para probar'}), 400
+        # Probe connectivity over https then http (whichever answers first).
+        scheme, resp, conn_err = _voice_probe_host(cfg, appid, accesskey, timeout=10)
+        if not scheme:
+            return jsonify({
+                'error': (conn_err or 'No se pudo conectar') +
+                         '. Verifique que el servidor tenga salida al host/puerto '
+                         '(firewall/security group) y que la URL sea correcta.'
+            }), 400
+        # Parse the answer from the reachable endpoint.
+        try:
+            data = resp.json() if resp is not None else {}
+        except Exception:
+            return jsonify({'error': 'Respuesta no JSON en %s://%s (revisar URL/puerto)'
+                                     % (scheme, re.sub(r'^https?://', '', raw_domain))}), 400
+        if int(data.get('ret', 0)) != 200:
+            return jsonify({'error': str(data.get('msg') or ('HTTP %s - revisar credenciales/URL' % (resp.status_code if resp else '?')))[:300]}), 400
+        body = data.get('data') or {}
+        if int(body.get('status', 1)) != 0:
+            errs = body.get('errors') or {}
+            return jsonify({'error': str(body.get('desc') or errs.get('codemsg') or 'Credenciales rechazadas')[:300]}), 400
+        token = ((body.get('result') or {}).get('token') or '').strip()
+        if not token:
+            return jsonify({'error': 'El servidor no devolvio token'}), 400
+        # Persist the working scheme + token so real calls use the right protocol.
+        try:
+            db.execute(
+                "UPDATE voice_configs SET voice_scheme = ?, voice_token = ?, "
+                "voice_token_expiry = ? WHERE id = ?",
+                (scheme, token, int(time.time()) + 12 * 3600, cfg['id']))
+            db.commit()
+        except Exception:
+            pass
+        _INFIN_TOKEN_CACHE[_token_cache_key(cfg)] = {
+            'token': token, 'expiry': int(time.time()) + 12 * 3600}
         label = COUNTRY_LABELS.get(cfg.get('country'), 'General')
         return jsonify({'success': True,
-                        'message': 'Token de Infinity (%s) obtenido correctamente' % label,
+                        'message': 'Conexion OK con Infinity (%s) via %s' % (label, scheme.upper()),
+                        'scheme': scheme,
                         'token_preview': (token[:6] + '...' + token[-4:]) if len(token) > 12 else 'OK'})
     return jsonify({'error': 'Proveedor no soportado'}), 400
 
