@@ -388,6 +388,9 @@ function navigateTo(page) {
         case 'voice-config':
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
             renderVoiceConfig(content); break;
+        case 'extensions':
+            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            renderExtensions(content); break;
         case 'content-search': renderContentSearch(content); break;
         case 'users': renderUsers(content); break;
         case 'my-account': renderMyAccount(content); break;
@@ -1393,6 +1396,7 @@ var PERM_ITEMS = [
     { key: 'all-teams', label: 'Todos los Equipos', icon: 'bar-chart' },
     { key: 'config', label: 'Configuracion API SMS', icon: 'settings' },
     { key: 'voice-config', label: 'Configuracion Voz', icon: 'settings' },
+    { key: 'extensions', label: 'Extensiones', icon: 'phone' },
     { key: 'team-api-select', label: 'Seleccionar API de Equipo', icon: 'server' }
 ];
 
@@ -3426,6 +3430,121 @@ async function testVoiceConfig() {
     } catch (e) {
         result.innerHTML = '<div class="alert alert-error">Fallo: ' + escapeHtml(e.message) + '</div>';
     }
+}
+
+// ============================================================
+// Extensions (分机号) management page - admin only
+// ============================================================
+
+var EXT_COUNTRIES = [
+    { code: 'mx', label: 'Mexico' },
+    { code: 'co', label: 'Colombia' },
+    { code: 'pe', label: 'Peru' }
+];
+var extState = { country: 'mx', data: null };
+
+function renderExtensions(content) {
+    content.innerHTML =
+        '<h1 style="margin-bottom:4px;">Extensiones / Telefonos de agentes (分机号)</h1>' +
+        '<p style="color:var(--text-secondary);margin-bottom:20px;">Cargue y administre las extensiones SIP por pais. Las extensiones se asignan automaticamente a los agentes de ese pais; no se pueden ingresar manualmente.</p>' +
+        '<div class="card" style="padding:0;overflow:hidden;">' +
+            '<div style="display:flex;gap:4px;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;">' +
+                EXT_COUNTRIES.map(function(c) {
+                    return '<button type="button" data-exttab="' + c.code + '" class="btn btn-' + (c.code === extState.country ? 'primary' : 'ghost') + '" style="min-width:130px;">' + c.label + '</button>';
+                }).join('') +
+            '</div>' +
+            '<div id="ext-body" style="padding:20px;"><div class="loading">Cargando...</div></div>' +
+        '</div>';
+    content.querySelectorAll('[data-exttab]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            extState.country = btn.dataset.exttab;
+            renderExtensions(content);
+        });
+    });
+    loadExtensions();
+}
+
+function loadExtensions() {
+    api('/api/extensions?country=' + encodeURIComponent(extState.country)).then(function(d) {
+        extState.data = d;
+        renderExtensionsBody();
+    }).catch(function(e) {
+        var body = document.getElementById('ext-body');
+        if (body) body.innerHTML = '<div class="alert alert-danger">' + escapeHtml(e.message || 'Error al cargar') + '</div>';
+    });
+}
+
+function renderExtensionsBody() {
+    var body = document.getElementById('ext-body');
+    if (!body || !extState.data) return;
+    var d = extState.data;
+    var rows = (d.extensions || []).map(function(e) {
+        var assigned = e.status === 'assigned';
+        var agent = assigned ? escapeHtml(e.agent_full_name || e.agent_username || ('#' + e.assigned_to)) : '';
+        return '<tr>' +
+            '<td style="font-weight:600;">' + escapeHtml(e.extnumber) + '</td>' +
+            '<td>' + (assigned
+                ? '<span class="badge badge-green">Asignada</span>'
+                : '<span class="badge badge-gray">Libre</span>') + '</td>' +
+            '<td>' + (agent || '<span style="color:var(--text-muted);">—</span>') + '</td>' +
+            '<td style="text-align:right;">' +
+                (assigned ? '' : '<button type="button" data-del="' + e.id + '" class="btn btn-ghost btn-sm" style="color:var(--danger);">Eliminar</button>') +
+            '</td>' +
+        '</tr>';
+    }).join('');
+    body.innerHTML =
+        '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;">' +
+            '<div class="stat-mini"><div class="stat-num">' + d.total + '</div><div class="stat-label">Total</div></div>' +
+            '<div class="stat-mini"><div class="stat-num" style="color:var(--success);">' + d.free + '</div><div class="stat-label">Libres</div></div>' +
+            '<div class="stat-mini"><div class="stat-num" style="color:var(--primary);">' + d.assigned + '</div><div class="stat-label">Asignadas</div></div>' +
+        '</div>' +
+        '<div class="card" style="margin-bottom:20px;background:var(--light);padding:16px;">' +
+            '<label style="font-weight:600;display:block;margin-bottom:8px;">Cargar extensiones para ' + escapeHtml(d.country_label) + '</label>' +
+            '<textarea id="ext-bulk" rows="4" style="width:100%;font-family:monospace;" placeholder="8001, 8002, 8003&#10;8004&#10;8005"></textarea>' +
+            '<p style="font-size:12px;color:var(--text-secondary);margin:8px 0 12px;">Separe por comas, saltos de linea o espacios. Las extensiones duplicadas se omiten.</p>' +
+            '<button type="button" id="ext-upload-btn" class="btn btn-primary">Subir extensiones</button>' +
+            '<span id="ext-upload-result" style="margin-left:12px;font-size:13px;"></span>' +
+        '</div>' +
+        '<div class="table-wrap">' +
+            '<table class="data-table"><thead><tr>' +
+                '<th>Extension</th><th>Estado</th><th>Agente</th><th style="text-align:right;">Acciones</th>' +
+            '</tr></thead><tbody>' +
+                (rows || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:24px;">No hay extensiones. Carguelas arriba.</td></tr>') +
+            '</tbody></table>' +
+        '</div>';
+    var upBtn = document.getElementById('ext-upload-btn');
+    if (upBtn) upBtn.addEventListener('click', uploadExtensions);
+    body.querySelectorAll('[data-del]').forEach(function(b) {
+        b.addEventListener('click', function() { deleteExtension(b.dataset.del); });
+    });
+}
+
+function uploadExtensions() {
+    var ta = document.getElementById('ext-bulk');
+    var result = document.getElementById('ext-upload-result');
+    var raw = ta ? ta.value.trim() : '';
+    if (!raw) { if (result) result.textContent = 'Escriba al menos una extension.'; return; }
+    if (result) { result.style.color = 'var(--text-secondary)'; result.textContent = 'Subiendo...'; }
+    api('/api/extensions', {
+        method: 'POST',
+        body: { country: extState.country, extensions: raw }
+    }).then(function(d) {
+        if (result) {
+            result.style.color = 'var(--success)';
+            result.textContent = 'Agregadas: ' + d.added_count + '. Duplicadas: ' + d.duplicate_count + (d.invalid_count ? '. Invalidas: ' + d.invalid_count : '');
+        }
+        if (ta) ta.value = '';
+        loadExtensions();
+    }).catch(function(e) {
+        if (result) { result.style.color = 'var(--danger)'; result.textContent = e.message || 'Error'; }
+    });
+}
+
+function deleteExtension(id) {
+    if (!confirm('Eliminar esta extension? Solo se pueden eliminar extensiones libres.')) return;
+    api('/api/extensions/' + id, { method: 'DELETE' }).then(function() {
+        loadExtensions();
+    }).catch(function(e) { alert(e.message || 'Error al eliminar'); });
 }
 
 // ============================================================

@@ -493,6 +493,19 @@ table tbody tr:nth-child(even):hover {
 .badge-orange { background: #FFF7ED; color: #C2410C; }
 
 /* ============================================================
+   Extension management
+   ============================================================ */
+.stat-mini {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 16px;
+    min-width: 96px;
+}
+.stat-mini .stat-num { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1.1; }
+.stat-mini .stat-label { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+/* ============================================================
    Pagination
    ============================================================ */
 

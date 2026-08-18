@@ -80,7 +80,9 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET | /api/voice/statistics | User | Voice call dashboard stats |
 | POST | /api/voice/query-status | User | Refresh a call's live status from provider |
 | GET/PUT | /api/config/voice | Admin | Voice config (provider simulation/infin8linx; per-country Infinity via ?country=) |
-| POST | /api/config/voice/test | Admin | Test voice API credentials |
+| POST | /api/config/voice/test | Admin | Test Infinity credentials per country (?country=mx|co|pe) |
+| GET/POST | /api/extensions | Admin | List/add SIP extensions per country (?country=); bulk-upload comma/newline separated |
+| DELETE | /api/extensions/<id> | Admin | Delete a single extension (only when free/unassigned) |
 | GET | /api/admin/user-usage | Admin/TeamAdmin | Per-user usage statistics |
 | GET/PUT | /api/config/sms | Admin | SMS API config (domain, spid, api_pwd, sender_name) |
 | POST | /api/config/sms/test | Admin | Test API connection (charset check) |
@@ -124,7 +126,7 @@ Dual database support via `DBWrapper` abstraction layer:
 - **Production**: PostgreSQL 16 (via `DATABASE_URL` environment variable)
 - Auto-detection: if `DATABASE_URL` starts with `postgresql://` → PostgreSQL, otherwise SQLite
 
-Tables: users (with `extnumber` for per-agent fixed SIP extension and `country` mx/co/pe), contacts (with `app_name`, `amount`, `discount_amount`, `payment_link`), contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), sms_api_configs (multi-country SMS configs), team_config, voice_config (provider/account_sid/auth_token/from_number/voice_appid/voice_accesskey/voice_extnumber/ext_pool_mx/ext_pool_co/ext_pool_pe), voice_records (phone/script/status/call_sid/extnumber/duration/price), send_logs.
+Tables: users (with `extnumber` for per-agent fixed SIP extension and `country` mx/co/pe), contacts (with `app_name`, `amount`, `discount_amount`, `payment_link`), contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), sms_api_configs (multi-country SMS configs), team_config, voice_config (provider/account_sid/auth_token/from_number/voice_appid/voice_accesskey/voice_extnumber/ext_pool_mx/ext_pool_co/ext_pool_pe), voice_records (phone/script/status/call_sid/extnumber/duration/price), extensions (extnumber+country unique, assigned_to FK users; the authoritative extension catalog managed from the Extensiones page, seeded once from legacy ext_pool_* strings), send_logs.
 
 ### Contact fields
 The `contacts` table carries both basic CRM and payment/collection fields:

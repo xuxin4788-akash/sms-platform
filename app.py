@@ -403,6 +403,18 @@ def init_db():
             );
         """)
 
+        # extensions catalog (per-country extension numbers)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS extensions (
+                id SERIAL PRIMARY KEY,
+                extnumber VARCHAR(100) NOT NULL,
+                country VARCHAR(5) NOT NULL DEFAULT '',
+                assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                UNIQUE(extnumber, country)
+            );
+        """)
+
         # Migrations for existing databases - add missing columns
         def pg_column_exists(table, column):
             cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name=%s AND column_name=%s", (table, column))
@@ -734,6 +746,16 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_voice_records_created_by ON voice_records(created_by);
             CREATE INDEX IF NOT EXISTS idx_voice_records_created_at ON voice_records(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_voice_records_status_created_at ON voice_records(status, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS extensions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                extnumber TEXT NOT NULL,
+                country TEXT NOT NULL DEFAULT '',
+                assigned_to INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(extnumber, country),
+                FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL
+            );
         ''')
         # Create default admin if not exists
         cursor = db.execute("SELECT id FROM users WHERE username='admin'")
@@ -1378,14 +1400,21 @@ def normalize_country(country):
 
 
 def allocate_extension(exclude_id=None, country=None):
-    """Auto-assign a free extension from the configured pool for a country.
+    """Auto-assign a free extension for a country.
 
-    Picks a random extension from the country's pool (ext_pool_mx/co/pe, or the
-    legacy voice_extnumber fallback) that is not currently bound to another
-    active user. Returns the chosen extension, or '' if none is available, in
-    which case the caller should prompt the admin to add more extensions.
+    Prefers the extensions catalog (managed from the Extensiones page); when
+    the catalog is empty (older installs that only configured pool strings),
+    falls back to the voice_config pool strings. Returns the chosen extension
+    or '' if none is available. The caller must invoke
+    _extensions_mark_assigned(ext, user_id, country) after the user is created.
     """
     import random as _random
+    _extensions_seed_from_config()
+    country = normalize_country(country)
+    if _extensions_table_ready():
+        picked = _extensions_allocate(country, exclude_id=exclude_id)
+        if picked:
+            return picked
     pool = _get_extension_pool(country)
     if not pool:
         return ''
@@ -1411,6 +1440,135 @@ def allocate_extension(exclude_id=None, country=None):
     if not free:
         return ''
     return _random.choice(free)
+
+
+# ---------------------------------------------------------------------------
+# Extensions catalog (separate management page)
+# ---------------------------------------------------------------------------
+
+EXT_COUNTRIES = ('', 'mx', 'co', 'pe')
+
+
+def _extensions_table_ready():
+    """Return True if the extensions table exists."""
+    db = get_db()
+    if db.db_type == 'postgresql':
+        row = db.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name='extensions'"
+        ).fetchone()
+    else:
+        row = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='extensions'"
+        ).fetchone()
+    return row is not None
+
+
+def _extensions_seed_from_config(force=False):
+    """Import legacy pool strings (ext_pool_mx/co/pe, voice_extnumber) into the
+    extensions table on first use. Idempotent: only seeds when the table is empty
+    (or force=True). Already-assigned extensions (found in users.extnumber) are
+    linked via assigned_to.
+    """
+    if not _extensions_table_ready():
+        return
+    db = get_db()
+    if not force:
+        cnt = db.execute("SELECT COUNT(*) AS c FROM extensions").fetchone()
+        if cnt and (cnt['c'] if not isinstance(cnt, tuple) else cnt[0]):
+            return
+    try:
+        cfg = get_voice_config()
+    except Exception:
+        cfg = {}
+    country_map = [
+        ('mx', cfg.get('ext_pool_mx')),
+        ('co', cfg.get('ext_pool_co')),
+        ('pe', cfg.get('ext_pool_pe')),
+        ('', cfg.get('voice_extnumber')),
+    ]
+    for country, raw in country_map:
+        for ext in _parse_extension_pool(raw):
+            norm = _normalize_extnumber(ext)
+            if not norm:
+                continue
+            exists = db.execute(
+                "SELECT id FROM extensions WHERE LOWER(TRIM(extnumber))=LOWER(?) AND country=?",
+                (norm, country)
+            ).fetchone()
+            if exists:
+                continue
+            owner = _find_user_by_extnumber(norm)
+            db.execute(
+                "INSERT INTO extensions (extnumber, country, assigned_to) VALUES (?,?,?)",
+                (norm, country, owner['id'] if owner else None)
+            )
+    db.commit()
+
+
+def _extensions_allocate(country, exclude_id=None):
+    """Pick and atomically mark a free extension for the country from the
+    extensions catalog. Returns the extension string or '' if none available.
+    """
+    import random as _random
+    db = get_db()
+    country = normalize_country(country)
+    rows = db.execute(
+        "SELECT id, extnumber FROM extensions "
+        "WHERE country=? AND (assigned_to IS NULL) "
+        "ORDER BY id",
+        (country,)
+    ).fetchall()
+    candidates = []
+    for r in rows:
+        ext = r['extnumber'] if not isinstance(r, tuple) else r[1]
+        eid = r['id'] if not isinstance(r, tuple) else r[0]
+        # Extra safety: ensure no active user holds it (assigned_to should be
+        # NULL already, but users assigned before the table existed may exist).
+        if _find_user_by_extnumber(ext, exclude_id=exclude_id):
+            continue
+        candidates.append((eid, ext))
+    if not candidates:
+        return ''
+    eid, ext = _random.choice(candidates)
+    return ext
+
+
+def _extensions_mark_assigned(extnumber, user_id, country):
+    """Link an extension row to a user after allocation."""
+    if not _extensions_table_ready() or not extnumber:
+        return
+    db = get_db()
+    country = normalize_country(country)
+    norm = _normalize_extnumber(extnumber)
+    row = db.execute(
+        "SELECT id FROM extensions WHERE LOWER(TRIM(extnumber))=LOWER(?) AND country=?",
+        (norm, country)
+    ).fetchone()
+    if row:
+        eid = row['id'] if not isinstance(row, tuple) else row[0]
+        db.execute("UPDATE extensions SET assigned_to=? WHERE id=?", (user_id, eid))
+        db.commit()
+    else:
+        # Auto-register an extension that came from the legacy pool string.
+        owner = _find_user_by_extnumber(norm)
+        db.execute(
+            "INSERT INTO extensions (extnumber, country, assigned_to) VALUES (?,?,?)",
+            (norm, country, user_id if not owner else owner['id'])
+        )
+        db.commit()
+
+
+def _extensions_release(extnumber):
+    """Clear assigned_to for an extension when a user releases it."""
+    if not _extensions_table_ready() or not extnumber:
+        return
+    db = get_db()
+    norm = _normalize_extnumber(extnumber)
+    db.execute(
+        "UPDATE extensions SET assigned_to=NULL WHERE LOWER(TRIM(extnumber))=LOWER(?)",
+        (norm,)
+    )
+    db.commit()
 
 
 def apply_template_vars(text, phone, contact_names=None, contact_cache=None):
@@ -1905,6 +2063,8 @@ def create_user():
     )
     new_user_id = cur.lastrowid
     EXPORTABLE_PASSWORDS[int(new_user_id)] = password
+    if extnumber:
+        _extensions_mark_assigned(extnumber, new_user_id, country)
     # If creating a team_admin, create team_config with api_config_id
     if role == 'team_admin':
         db.execute(
@@ -1970,12 +2130,16 @@ def update_user(user_id):
         updates.append("session_token=?")
         params.append(None)
     # Gestion de extension: no se permite escribir el numero manualmente.
-    # - assign_extension=true  -> asignar automaticamente una libre del pool
+    # - assign_extension=true  -> asignar automaticamente una libre del catalogo
     # - release_extension=true -> liberar la extension actual
     # El valor manual de 'extnumber' se ignora deliberadamente.
     wants_assign = bool(data.get('assign_extension', False))
     wants_release = bool(data.get('release_extension', False))
+    released_ext = None
+    new_ext = None
+    new_ext_country = None
     if wants_release:
+        released_ext = _normalize_extnumber(user['extnumber'] if 'extnumber' in user.keys() else None)
         updates.append("extnumber=?")
         params.append(None)
     elif wants_assign:
@@ -1987,12 +2151,17 @@ def update_user(user_id):
             new_ext = allocate_extension(exclude_id=user_id, country=target_country)
             if not new_ext:
                 label = {'mx': 'Mexico', 'co': 'Colombia', 'pe': 'Peru'}.get(target_country, 'el pool')
-                return jsonify({'error': f'No hay extensiones disponibles para {label}. Pida al administrador del sistema que agregue mas extensiones en Configuracion de Voz.'}), 409
+                return jsonify({'error': f'No hay extensiones disponibles para {label}. Pida al administrador del sistema que agregue mas extensiones en la pagina de Extensiones.'}), 409
+            new_ext_country = target_country
             updates.append("extnumber=?")
             params.append(new_ext)
     params.append(user_id)
     db.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", params)
     db.commit()
+    if released_ext:
+        _extensions_release(released_ext)
+    if new_ext:
+        _extensions_mark_assigned(new_ext, user_id, new_ext_country)
     return jsonify({'message': 'Usuario actualizado'})
 
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
@@ -2028,8 +2197,11 @@ def delete_user(user_id):
             return jsonify({
                 'error': f"Este Administrador de Equipo tiene {member_count['cnt']} miembro(s) a cargo. Elimine o reasigne los miembros primero."
             }), 400
+    deleted_ext = _normalize_extnumber(user['extnumber'] if 'extnumber' in user.keys() else None)
     db.execute("DELETE FROM users WHERE id=?", (user_id,))
     db.commit()
+    if deleted_ext:
+        _extensions_release(deleted_ext)
     return jsonify({'message': 'Usuario eliminado'})
 
 def _bulk_create_users_core(current_user, users, default_api_config_id, default_password=None, assign_extensions=False, default_country=None):
@@ -2059,25 +2231,34 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
     created = []
     errors = []
     existing_users = set(r['username'].lower() for r in db.execute("SELECT username FROM users").fetchall())
-    # Extensions already taken in DB (active users).
-    taken_rows = db.execute(
+    _extensions_seed_from_config()
+    use_catalog = _extensions_table_ready()
+    # Extensions already taken (active users / catalog assignments).
+    taken_extensions = set()
+    if use_catalog:
+        for r in db.execute(
+            "SELECT LOWER(TRIM(extnumber)) AS e FROM extensions WHERE assigned_to IS NOT NULL"
+        ).fetchall():
+            taken_extensions.add((r['e'] if not isinstance(r, tuple) else r[0]) or '')
+    for r in db.execute(
         "SELECT extnumber FROM users WHERE is_active = 1 AND extnumber IS NOT NULL AND TRIM(extnumber) != ''"
-    ).fetchall()
-    taken_extensions = set(
-        _normalize_extnumber(r['extnumber']).lower() for r in taken_rows if r['extnumber']
-    )
-    # Build per-country free pools (with global fallback).
+    ).fetchall():
+        taken_extensions.add(_normalize_extension(r['extnumber'] if not isinstance(r, tuple) else r[0]).lower())
+    # Build per-country free pools (catalog first, legacy pool string fallback).
     pools_by_country = {}
     for _cc in ('mx', 'co', 'pe', ''):
-        all_pool = _get_extension_pool(_cc or None)
+        if use_catalog:
+            rows = db.execute("SELECT extnumber FROM extensions WHERE country=?", (_cc,)).fetchall()
+            all_pool = [_normalize_extension(r['extnumber'] if not isinstance(r, tuple) else r[0]) for r in rows]
+        else:
+            all_pool = _get_extension_pool(_cc or None)
         pools_by_country[_cc] = {
             'all': all_pool,
             'free': [e for e in all_pool if _normalize_extnumber(e).lower() not in taken_extensions]
         }
     if assign_extensions:
-        # No pool configured anywhere at all.
         if not any(p['all'] for p in pools_by_country.values()):
-            preflight_error = 'No hay extensiones configuradas en el pool. Pida al administrador del sistema que agregue extensiones en Configuracion de Voz antes de asignar.'
+            preflight_error = 'No hay extensiones configuradas. Pida al administrador del sistema que agregue extensiones en la pagina de Extensiones antes de asignar.'
             return None, [{'index': -1, 'username': '', 'error': preflight_error}], role
     seen_usernames = set()
 
@@ -2142,6 +2323,8 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
                     (new_user_id, api_config_id)
                 )
             EXPORTABLE_PASSWORDS[int(new_user_id)] = password
+            if extnumber:
+                _extensions_mark_assigned(extnumber, new_user_id, country)
             created.append({
                 'id': new_user_id,
                 'username': username,
@@ -5856,6 +6039,136 @@ def voice_test_config():
                         'message': 'Token de Infinity (%s) obtenido correctamente' % label,
                         'token_preview': (token[:6] + '...' + token[-4:]) if len(token) > 12 else 'OK'})
     return jsonify({'error': 'Proveedor no soportado'}), 400
+
+
+# ---------------------------------------------------------------------------
+# Extensions management (separate page)
+# ---------------------------------------------------------------------------
+
+@app.route('/api/extensions', methods=['GET'])
+@admin_required
+def list_extensions():
+    """List extensions, optionally filtered by country.
+
+    Returns each extension with its status (free/assigned) and the agent it is
+    assigned to. Query param: ?country=mx|co|pe (empty = general pool).
+    """
+    _extensions_seed_from_config()
+    country = normalize_country(request.args.get('country'))
+    db = get_db()
+    rows = db.execute(
+        "SELECT e.id, e.extnumber, e.country, e.assigned_to, "
+        "u.username AS agent_username, u.full_name AS agent_full_name "
+        "FROM extensions e "
+        "LEFT JOIN users u ON u.id = e.assigned_to "
+        "WHERE e.country = ? "
+        "ORDER BY e.extnumber",
+        (country,)
+    ).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r) if not isinstance(r, tuple) else {
+            'id': r[0], 'extnumber': r[1], 'country': r[2], 'assigned_to': r[3],
+            'agent_username': r[4], 'agent_full_name': r[5]
+        }
+        d['status'] = 'assigned' if d.get('assigned_to') else 'free'
+        items.append(d)
+    total = len(items)
+    assigned = sum(1 for i in items if i['status'] == 'assigned')
+    return jsonify({
+        'country': country,
+        'country_label': COUNTRY_LABELS.get(country, 'General'),
+        'extensions': items,
+        'total': total,
+        'free': total - assigned,
+        'assigned': assigned,
+    })
+
+
+@app.route('/api/extensions', methods=['POST'])
+@admin_required
+def add_extensions():
+    """Bulk add extensions for a country.
+
+    Body: {country, extensions: "8001, 8002\\n8003"} or {country, extensions:[...]}.
+    Accepts comma, semicolon, newline or whitespace separators. Duplicates
+    (within the request or already stored) are reported and skipped.
+    """
+    data = request.get_json(silent=True) or {}
+    country = normalize_country(data.get('country'))
+    raw = data.get('extensions', '')
+    if isinstance(raw, list):
+        candidates = [str(x) for x in raw]
+    else:
+        candidates = str(raw).replace(';', ',').replace('\n', ',').replace('\t', ',').split(',')
+    parsed = []
+    seen = set()
+    for c in candidates:
+        ext = _normalize_extnumber(c)
+        if not ext:
+            continue
+        key = ext.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parsed.append(ext)
+    if not parsed:
+        return jsonify({'error': 'Debe proporcionar al menos una extension valida'}), 400
+    _extensions_seed_from_config()
+    db = get_db()
+    added = []
+    duplicates = []
+    invalid = []
+    for ext in parsed:
+        # Reject anything that collides in ANY country (a phone/extension is
+        # globally unique to avoid an agent dialing the wrong endpoint).
+        clash = db.execute(
+            "SELECT country FROM extensions WHERE LOWER(TRIM(extnumber))=LOWER(?)",
+            (ext,)
+        ).fetchone()
+        if clash:
+            duplicates.append({'extnumber': ext, 'country': (clash['country'] if not isinstance(clash, tuple) else clash[0])})
+            continue
+        owner = _find_user_by_extnumber(ext)
+        try:
+            db.execute(
+                "INSERT INTO extensions (extnumber, country, assigned_to) VALUES (?,?,?)",
+                (ext, country, owner['id'] if owner else None)
+            )
+            added.append({'extnumber': ext, 'auto_linked': bool(owner)})
+        except Exception as e:
+            invalid.append({'extnumber': ext, 'error': str(e)})
+    db.commit()
+    return jsonify({
+        'message': 'Extensiones procesadas',
+        'added_count': len(added),
+        'duplicate_count': len(duplicates),
+        'invalid_count': len(invalid),
+        'added': added,
+        'duplicates': duplicates,
+        'invalid': invalid,
+    }), 201 if added else 200
+
+
+@app.route('/api/extensions/<int:ext_id>', methods=['DELETE'])
+@admin_required
+def delete_extension(ext_id):
+    """Delete a single extension. Only free (unassigned) extensions can be removed."""
+    _extensions_seed_from_config()
+    db = get_db()
+    row = db.execute("SELECT * FROM extensions WHERE id=?", (ext_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Extension no encontrada'}), 404
+    assigned_to = row['assigned_to'] if 'assigned_to' in row.keys() else (row[3] if len(row) > 3 else None)
+    if assigned_to:
+        agent = db.execute("SELECT username, full_name FROM users WHERE id=?", (assigned_to,)).fetchone()
+        name = ''
+        if agent:
+            name = agent['full_name'] if 'full_name' in agent.keys() and agent['full_name'] else (agent['username'] if not isinstance(agent, tuple) else agent[0])
+        return jsonify({'error': f'La extension esta asignada a {name}. Liberela primero desde el usuario.'}), 409
+    db.execute("DELETE FROM extensions WHERE id=?", (ext_id,))
+    db.commit()
+    return jsonify({'message': 'Extension eliminada'})
 
 
 init_db()
