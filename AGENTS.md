@@ -82,6 +82,8 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET | /api/voice/records | User | List voice call records (team scoped) |
 | GET | /api/voice/statistics | User | Voice call dashboard stats |
 | POST | /api/voice/query-status | User | Refresh a call's live status from provider |
+| POST | /api/voice/cdr | Public | Infinity CDR push callback; correlates by customuuid, updates status/duration/hangupcause/recording |
+| GET | /api/voice/recording?id= | User | Resolve a short-lived Infinity recording download URL for a voice record |
 | GET/POST | /api/config/voice | Admin | List all per-country voice configs / create one (country unique) |
 | PUT/DELETE | /api/config/voice/<id> | Admin | Update/delete a per-country voice config (AccessKey write-only) |
 | POST | /api/config/voice/test | Admin | Test Infinity credentials (body `{config_id}` or `{country}`) |
