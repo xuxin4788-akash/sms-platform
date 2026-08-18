@@ -61,6 +61,36 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// Available message/template variables. Click on a chip to insert it at the
+// textarea's caret position (or at the end if the field is not focused).
+const TEMPLATE_VARS = [
+    { token: '{nombre}', label: 'Nombre' },
+    { token: '{telefono}', label: 'Telefono' },
+    { token: '{app_name}', label: 'APP' },
+    { token: '{amount}', label: 'Monto' },
+    { token: '{discount}', label: 'Descuento' },
+    { token: '{payment_link}', label: 'Link de pago' }
+];
+
+function variableChips(targetId) {
+    return '<span class="var-chips-label">Variables:</span> ' +
+        TEMPLATE_VARS.map(function (v) {
+            return '<button type="button" class="var-chip" onclick="insertTemplateVariable(\'' + targetId + '\', \'' + v.token + '\')" title="' + v.label + '">' + v.token + '</button>';
+        }).join('');
+}
+
+function insertTemplateVariable(targetId, token) {
+    var el = document.getElementById(targetId);
+    if (!el) return;
+    el.focus();
+    var start = el.selectionStart != null ? el.selectionStart : el.value.length;
+    var end = el.selectionEnd != null ? el.selectionEnd : el.value.length;
+    el.value = el.value.slice(0, start) + token + el.value.slice(end);
+    var pos = start + token.length;
+    el.setSelectionRange(pos, pos);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 // Payment links accept free text (no URL format enforced on input). For the
 // open-link action, prepend https:// when the stored value has no scheme so a
 // bare value like "liga.com/pago" opens correctly instead of as a relative path.
@@ -770,7 +800,7 @@ function handleTemplateSearch(event) {
 }
 
 function showAddTemplateModal() {
-    showModal('Nueva Plantilla', '<form onsubmit="handleAddTemplate(event)"><div class="form-group"><label>Nombre *</label><input type="text" name="name" required placeholder="Ej: Promocion de verano"></div><div class="form-group"><label>Categoria</label><select name="category"><option value="general">General</option><option value="promocion">Promocion</option><option value="recordatorio">Recordatorio</option><option value="bienvenida">Bienvenida</option><option value="otro">Otro</option></select></div><div class="form-group"><label>Contenido *</label><textarea name="content" rows="4" required placeholder="Hola {nombre}, te informamos que..."></textarea><small class="text-secondary">Variables: {nombre}, {telefono}, {app_name}, {amount}, {discount}, {payment_link}</small></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+    showModal('Nueva Plantilla', '<form onsubmit="handleAddTemplate(event)"><div class="form-group"><label>Nombre *</label><input type="text" name="name" required placeholder="Ej: Promocion de verano"></div><div class="form-group"><label>Categoria</label><select name="category"><option value="general">General</option><option value="promocion">Promocion</option><option value="recordatorio">Recordatorio</option><option value="bienvenida">Bienvenida</option><option value="otro">Otro</option></select></div><div class="form-group"><label>Contenido *</label><textarea id="tpl-content" name="content" rows="4" required placeholder="Hola {nombre}, te informamos que..."></textarea><div class="var-chips">' + variableChips('tpl-content') + '</div></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
 }
 
 async function handleAddTemplate(event) {
@@ -782,7 +812,7 @@ async function handleAddTemplate(event) {
 function showEditTemplateModal(id) {
     var t = (window._templates || []).find(function(tpl) { return tpl.id === id; });
     if (!t) return;
-    showModal('Editar Plantilla', '<form onsubmit="handleEditTemplate(event, ' + id + ')"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(t.name) + '" required></div><div class="form-group"><label>Categoria</label><select name="category"><option value="general"' + (t.category==='general'?' selected':'') + '>General</option><option value="promocion"' + (t.category==='promocion'?' selected':'') + '>Promocion</option><option value="recordatorio"' + (t.category==='recordatorio'?' selected':'') + '>Recordatorio</option><option value="bienvenida"' + (t.category==='bienvenida'?' selected':'') + '>Bienvenida</option><option value="otro"' + (t.category==='otro'?' selected':'') + '>Otro</option></select></div><div class="form-group"><label>Contenido *</label><textarea name="content" rows="4" required>' + escapeHtml(t.content) + '</textarea><small class="text-secondary">Variables: {nombre}, {telefono}, {app_name}, {amount}, {discount}, {payment_link}</small></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+    showModal('Editar Plantilla', '<form onsubmit="handleEditTemplate(event, ' + id + ')"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(t.name) + '" required></div><div class="form-group"><label>Categoria</label><select name="category"><option value="general"' + (t.category==='general'?' selected':'') + '>General</option><option value="promocion"' + (t.category==='promocion'?' selected':'') + '>Promocion</option><option value="recordatorio"' + (t.category==='recordatorio'?' selected':'') + '>Recordatorio</option><option value="bienvenida"' + (t.category==='bienvenida'?' selected':'') + '>Bienvenida</option><option value="otro"' + (t.category==='otro'?' selected':'') + '>Otro</option></select></div><div class="form-group"><label>Contenido *</label><textarea id="tpl-content" name="content" rows="4" required>' + escapeHtml(t.content) + '</textarea><div class="var-chips">' + variableChips('tpl-content') + '</div></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
 }
 
 async function handleEditTemplate(event, id) {
@@ -826,7 +856,7 @@ async function renderSendSMS(container) {
                 '<div id="send-contacts" class="form-group" style="display:none;"><label>Seleccionar contactos</label><div id="contacts-select-list" class="contact-select-list"></div></div>' +
                 '<div id="send-group" class="form-group" style="display:none;"><label>Seleccionar grupo</label><select id="send-group-select" onchange="loadGroupContacts(this.value)"><option value="">-- Seleccione un grupo --</option>' + groupOpts + '</select><div id="group-contacts-preview" class="mt-2"></div></div>' +
                 '<div class="form-group mt-4"><label>Plantilla (opcional)</label><select id="send-template" onchange="loadTemplateContent(this.value)"><option value="">-- Escribir mensaje personalizado --</option>' + templateOpts + '</select></div>' +
-                '<div class="form-group"><label>Mensaje *</label><textarea id="send-content" rows="4" placeholder="Escriba su mensaje aqui..." oninput="updatePreview()"></textarea><small class="text-secondary">Variables: {nombre}, {telefono}, {app_name}, {amount}, {discount}, {payment_link}</small></div>' +
+                '<div class="form-group"><label>Mensaje *</label><textarea id="send-content" rows="4" placeholder="Escriba su mensaje aqui..." oninput="updatePreview()"></textarea><div class="var-chips">' + variableChips('send-content') + '</div></div>' +
                 '<div class="preview-box" id="send-preview" style="display:none;"><div class="preview-label">Vista previa</div><div class="preview-content" id="preview-text"></div></div>' +
                 '<div class="form-group"><label><input type="checkbox" id="send-schedule-check" onchange="toggleSchedule()"> Programar envio</label><div id="schedule-datetime" style="display:none;margin-top:8px;"><input type="datetime-local" id="send-scheduled-at"></div></div>' +
                 '<div class="flex gap-2 mt-4"><button class="btn btn-primary" onclick="handleSendSMS()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg> Enviar SMS</button><button class="btn btn-secondary" onclick="showSendPreviewModal()">Vista Previa</button></div>' +
@@ -3168,7 +3198,7 @@ async function renderCalls(container) {
                 '<div id="voice-contacts" class="form-group" style="display:none;"><label>Seleccionar contactos</label><div id="voice-contacts-list" class="contact-select-list"></div></div>' +
                 '<div id="voice-group" class="form-group" style="display:none;"><label>Grupo</label><select id="voice-group-select" onchange="loadVoiceGroupContacts(this.value)"><option value="">-- Seleccione --</option>' + groupOpts + '</select><div id="voice-group-preview" class="mt-2 text-secondary text-sm"></div></div>' +
                 '<div class="form-group mt-3"><label>Plantilla de guion (opcional)</label><select id="voice-template" onchange="loadVoiceTemplate(this.value)"><option value="">-- Personalizado --</option>' + tplOpts + '</select></div>' +
-                '<div class="form-group"><label>Guion de la llamada *</label><textarea id="voice-script" rows="5" placeholder="Hola {nombre}, le llamamos para..."></textarea><small class="text-secondary">Variables: {nombre}, {telefono}, {app_name}, {amount}, {discount}, {payment_link}. El guion lo lee el agente de la extension Infinity (infin8linx).</small></div>' +
+                '<div class="form-group"><label>Guion de la llamada *</label><textarea id="voice-script" rows="5" placeholder="Hola {nombre}, le llamamos para..."></textarea><div class="var-chips">' + variableChips('voice-script') + '</div><small class="text-secondary">El guion lo lee el agente de la extension Infinity (infin8linx).</small></div>' +
                 '<div id="voice-error" class="alert alert-error" style="display:none;"></div>' +
                 '<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-primary" id="voice-place-btn" onclick="handlePlaceCalls()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Iniciar Llamada(s)</button><span class="text-secondary text-sm" style="align-self:center;">Maximo 200 numeros por tanda.</span></div>' +
             '</div></div>' +

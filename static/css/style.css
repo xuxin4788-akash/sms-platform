@@ -1762,3 +1762,39 @@ html.embed, body.embed-body {
 .ext-manual summary::-webkit-details-marker { display: none; }
 .ext-manual summary::before { content: "▸ "; color: var(--text-secondary, #64748b); }
 .ext-manual[open] summary::before { content: "▾ "; }
+
+/* Click-to-insert template variable chips */
+.var-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+}
+.var-chips-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary, #64748B);
+    margin-right: 2px;
+}
+button.var-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--primary, #2563EB);
+    background: var(--light-blue-bg, #EFF6FF);
+    border: 1px solid var(--border, #E2E8F0);
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease, transform 80ms ease;
+}
+button.var-chip:hover {
+    background: #DBEAFE;
+    border-color: var(--primary, #2563EB);
+}
+button.var-chip:active {
+    transform: translateY(1px);
+}
