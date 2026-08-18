@@ -6079,9 +6079,15 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext='', customuui
             schemes_to_try.append(alt)
 
     last_err = ''
+    safe_payload = {k: ('***' if k == 'token' else v) for k, v in payload.items()}
     for idx, scheme in enumerate(schemes_to_try):
         try:
+            call_url = _voice_api_url({**(config or {}), 'voice_scheme': scheme})
+            app.logger.info('[voice-makecall] POST %s ext=%s dest=%s scheme=%s payload=%s',
+                            call_url, extnumber, dest_digits, scheme, safe_payload)
             resp = _post_makecall(scheme)
+            app.logger.info('[voice-makecall] resp status=%s body=%s',
+                            resp.status_code, (resp.text or '')[:800])
             try:
                 data = resp.json()
             except Exception:
@@ -6097,11 +6103,14 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext='', customuui
                     if token2 and not err2:
                         payload['token'] = token2
                         resp = _post_makecall(scheme)
+                        app.logger.info('[voice-makecall] retry resp status=%s body=%s',
+                                        resp.status_code, (resp.text or '')[:800])
                         data = resp.json()
                         if int(data.get('ret', 0)) == 200:
                             body = data.get('data') or {}
                             if int(body.get('status', 1)) == 0:
                                 ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
+                                app.logger.info('[voice-makecall] success(ext retry) ref=%s ext=%s', ref, extnumber)
                                 return True, ref, '', extnumber
                             return False, '', str(body.get('desc') or 'Error al iniciar llamada')[:300], extnumber
                 return False, '', msg[:300], extnumber
@@ -6119,6 +6128,7 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext='', customuui
                 except Exception:
                     pass
             ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
+            app.logger.info('[voice-makecall] success ref=%s ext=%s dest=%s', ref, extnumber, dest_digits)
             return True, ref, '', extnumber
         except Exception as e:
             msg = str(e)
@@ -6130,6 +6140,7 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext='', customuui
                 last_err = 'El puerto habla HTTP plano, no HTTPS (%s)' % scheme
             else:
                 last_err = 'Error de conexion (%s): %s' % (scheme, msg[:160])
+            app.logger.warning('[voice-makecall] %s ext=%s: %s', scheme, extnumber, last_err)
             continue
     return False, '', last_err or 'No se pudo conectar con la URL de la API', extnumber
 
