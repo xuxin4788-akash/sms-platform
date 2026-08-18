@@ -405,6 +405,7 @@ def init_db():
                 voice_appid VARCHAR(255) DEFAULT '',
                 voice_accesskey VARCHAR(255) DEFAULT '',
                 from_number VARCHAR(100) DEFAULT '',
+                dest_prefix VARCHAR(20) DEFAULT '',
                 voice_scheme VARCHAR(10) NOT NULL DEFAULT 'https',
                 voice_token VARCHAR(255) DEFAULT '',
                 voice_token_expiry BIGINT DEFAULT 0,
@@ -590,6 +591,8 @@ def init_db():
         # may persist 'http' if the provider answers plaintext on the port).
         if not pg_column_exists('voice_configs', 'voice_scheme'):
             cur.execute("ALTER TABLE voice_configs ADD COLUMN voice_scheme VARCHAR(10) NOT NULL DEFAULT 'https'")
+        if not pg_column_exists('voice_configs', 'dest_prefix'):
+            cur.execute("ALTER TABLE voice_configs ADD COLUMN dest_prefix VARCHAR(20) DEFAULT ''")
 
         # users: per-user fixed extension (asignacion de telefono/ext fija)
         if not pg_column_exists('users', 'extnumber'):
@@ -862,6 +865,7 @@ def init_db():
                 voice_appid TEXT DEFAULT '',
                 voice_accesskey TEXT DEFAULT '',
                 from_number TEXT DEFAULT '',
+                dest_prefix TEXT DEFAULT '',
                 voice_scheme TEXT NOT NULL DEFAULT 'https',
                 voice_token TEXT DEFAULT '',
                 voice_token_expiry INTEGER DEFAULT 0,
@@ -1082,6 +1086,11 @@ def init_db():
         # Migration: voice_configs detected protocol (https default)
         try:
             db.execute("ALTER TABLE voice_configs ADD COLUMN voice_scheme TEXT NOT NULL DEFAULT 'https'")
+            db.commit()
+        except Exception:
+            pass
+        try:
+            db.execute("ALTER TABLE voice_configs ADD COLUMN dest_prefix TEXT DEFAULT ''")
             db.commit()
         except Exception:
             pass
@@ -1640,6 +1649,11 @@ def normalize_country(country):
     """Normalize a country code to one of mx/co/pe or ''."""
     c = (country or '').strip().lower()
     return c if c in ('mx', 'co', 'pe') else ''
+
+
+# International calling codes used to strip a leading country code before
+# applying a per-trunk dial-plan prefix (see infin8linx_make_call).
+_COUNTRY_CALLING_CODES = {'mx': '52', 'co': '57', 'pe': '51'}
 
 
 def allocate_extension(exclude_id=None, country=None):
@@ -5712,6 +5726,7 @@ def get_voice_config(country=None):
         'voice_appid': d.get('voice_appid') or '',
         'voice_accesskey': d.get('voice_accesskey') or '',
         'from_number': d.get('from_number') or '',
+        'dest_prefix': (d.get('dest_prefix') or '').strip(),
         'voice_token': d.get('voice_token') or '',
         'voice_token_expiry': int(d.get('voice_token_expiry') or 0),
         'is_active': bool(d.get('is_active')),
@@ -5735,6 +5750,7 @@ def list_voice_configs():
             'api_domain': d.get('api_domain') or '',
             'voice_appid': d.get('voice_appid') or '',
             'from_number': d.get('from_number') or '',
+            'dest_prefix': (d.get('dest_prefix') or '').strip(),
             'has_accesskey': bool(d.get('voice_accesskey')),
             'is_active': bool(d.get('is_active')),
             'configured': bool(
@@ -6022,6 +6038,21 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext='', customuui
     dest_digits = _digits(phone)
     if not dest_digits:
         return False, '', f'Numero de destino invalido: {phone}', extnumber
+    # Apply the per-country dial plan prefix. Many SIP trunks require a
+    # specific international format (e.g. Mexico mobile: 52 1 + 10 digits).
+    # dest_prefix is configured per voice config; we strip the config's own
+    # country code first so the prefix is not doubled (521 + 52...).
+    dest_prefix = _digits((config or {}).get('dest_prefix') or '')
+    if dest_prefix:
+        cc = _COUNTRY_CALLING_CODES.get((config or {}).get('country') or '', '')
+        nat = dest_digits
+        if cc and nat.startswith(cc) and len(nat) > len(cc):
+            nat = nat[len(cc):]
+            # Mexico mobile numbers are sometimes stored as 52 1 + 10 digits;
+            # drop a leftover leading '1' so the configured prefix is not doubled.
+            if (config or {}).get('country') == 'mx' and nat.startswith('1') and len(nat) > 10:
+                nat = nat[1:]
+        dest_digits = dest_prefix + nat
     disnumber = (config or {}).get('from_number') or ''
     dis_digits = _digits(disnumber)
     payload = {
@@ -6939,6 +6970,8 @@ def voice_update_config(config_id):
     api_domain = api_domain.rstrip('/')
     voice_appid = (data.get('voice_appid') if 'voice_appid' in data else row.get('voice_appid')) or ''
     from_number = (data.get('from_number') if 'from_number' in data else row.get('from_number')) or ''
+    dest_prefix_raw = data.get('dest_prefix') if 'dest_prefix' in data else row.get('dest_prefix')
+    dest_prefix = ''.join(ch for ch in str(dest_prefix_raw or '') if ch.isdigit())
     new_ak = data.get('voice_accesskey')
     if new_ak is not None and new_ak.strip() == '':
         voice_accesskey = row.get('voice_accesskey') or ''  # write-only: keep
@@ -6957,9 +6990,9 @@ def voice_update_config(config_id):
         or (new_ak is not None and new_ak.strip() != '')
     )
     sets = ("name=?, country=?, provider=?, api_domain=?, voice_appid=?, voice_accesskey=?,"
-            " from_number=?, is_active=?, updated_at=datetime('now')")
+            " from_number=?, dest_prefix=?, is_active=?, updated_at=datetime('now')")
     params = [name, country, provider, api_domain.strip(), voice_appid.strip(),
-              voice_accesskey, from_number.strip(), is_active]
+              voice_accesskey, from_number.strip(), dest_prefix, is_active]
     if token_reset:
         sets += ", voice_token='', voice_token_expiry=0"
         _INFIN_TOKEN_CACHE.pop('vcfg:%s' % config_id, None)

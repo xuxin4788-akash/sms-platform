@@ -3352,7 +3352,9 @@ async function loadVoiceRecords() {
                 var active = ['pending', 'initiated', 'ringing', 'answered'].indexOf(r.status) !== -1;
                 var actions = '';
                 if (isReal) {
-                    actions += '<button class="btn btn-ghost btn-sm" onclick="refreshVoiceStatus(' + r.id + ',\'' + escapeHtml(r.call_sid) + '\')" title="Actualizar estado"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>';
+                    if (r.call_sid) {
+                        actions += '<button class="btn btn-ghost btn-sm" onclick="refreshVoiceStatus(' + r.id + ',\'' + escapeHtml(r.call_sid) + '\')" title="Actualizar estado"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>';
+                    }
                     if (r.record_file) {
                         actions += '<button class="btn btn-ghost btn-sm" onclick="playVoiceRecording(' + r.id + ')" title="Reproducir grabacion" style="color:#2563EB;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>';
                     }
@@ -3438,7 +3440,9 @@ async function renderVoiceConfig(container) {
                         '<div class="form-group"><label>AppID</label><input type="text" name="voice_appid" value="' + escapeHtml(c.voice_appid || '') + '" placeholder="AppID autorizado"></div>' +
                         '<div class="form-group"><label>AccessKey</label><input type="password" name="voice_accesskey" placeholder="' + (c.has_accesskey ? '******** (configurada - dejar vacia para conservar)' : 'AccessKey autorizada') + '"></div>' +
                         '<div class="form-group"><label>Numero remitente (disnumber, opcional)</label><input type="text" name="from_number" value="' + escapeHtml(c.from_number || '') + '" placeholder="Dejar vacio para asignar uno aleatorio"></div>' +
+                        '<div class="form-group"><label>Prefijo de marcado (dest_prefix)</label><input type="text" name="dest_prefix" value="' + escapeHtml(c.dest_prefix || '') + '" placeholder="Ej. Mexico movil: 521 / vacio = 52 nacional"></div>' +
                       '</div>' +
+                      '<div class="alert alert-warning" style="font-size:13px;margin-top:4px;"><strong>Prefijo de marcado:</strong> se antepone al numero (sin el codigo del pais) en cada llamada. Mexico movil usa <code>521</code>, fijo/linea usa <code>52</code> (deje vacio si su troncal ya enruta con 52). Si Infinity devuelve "destnumber no coincide", ajuste este valor.</div>' +
                       '<div class="alert alert-warning" style="font-size:13px;margin-top:4px;"><strong>Infinity</strong> (infin8linx) <strong>MakeCall</strong> conecta primero la extension del agente con el numero destino (click-to-call); no es un broadcast TTS. El guion lo lee el agente. Las extensiones se gestionan por separado en la pagina <a href="#/extensions">Extensiones</a>.</div>' +
                       '<div class="flex gap-2 mt-3">' +
                         '<button type="submit" class="btn btn-primary">Guardar</button>' +
@@ -3468,7 +3472,8 @@ async function saveVoiceConfig(event, configId) {
         name: form.closest('.card').querySelector('h3').childNodes[0].textContent.trim(),
         api_domain: form.api_domain.value.trim(),
         voice_appid: form.voice_appid.value.trim(),
-        from_number: form.from_number.value.trim()
+        from_number: form.from_number.value.trim(),
+        dest_prefix: form.dest_prefix ? form.dest_prefix.value.trim() : ''
     };
     if (form.voice_accesskey.value) body.voice_accesskey = form.voice_accesskey.value;
     try {
