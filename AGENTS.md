@@ -78,6 +78,7 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | POST | /api/sms/check-charset | User | Check charset/billing for content |
 | POST | /api/sms/process-scheduled | User | Process scheduled messages |
 | POST | /api/voice/call | User | Place outbound TTS voice call (电呼) |
+| POST | /api/voice/hangup | User | Hang up an active Infinity call on the record's extension |
 | GET | /api/voice/records | User | List voice call records (team scoped) |
 | GET | /api/voice/statistics | User | Voice call dashboard stats |
 | POST | /api/voice/query-status | User | Refresh a call's live status from provider |

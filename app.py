@@ -420,6 +420,7 @@ def init_db():
                 call_sid VARCHAR(255) DEFAULT '',
                 provider VARCHAR(50) DEFAULT '',
                 extnumber VARCHAR(100) DEFAULT '',
+                country VARCHAR(5) DEFAULT '',
                 duration INTEGER DEFAULT 0,
                 price NUMERIC(12,4) DEFAULT 0,
                 error_msg TEXT DEFAULT '',
@@ -564,6 +565,8 @@ def init_db():
                 cur.execute(f"ALTER TABLE voice_config ADD COLUMN {_col} {_type} DEFAULT {_default}")
         if not pg_column_exists('voice_records', 'extnumber'):
             cur.execute("ALTER TABLE voice_records ADD COLUMN extnumber VARCHAR(100) DEFAULT ''")
+        if not pg_column_exists('voice_records', 'country'):
+            cur.execute("ALTER TABLE voice_records ADD COLUMN country VARCHAR(5) DEFAULT ''")
         # voice_configs: detected protocol (https by default; test connection
         # may persist 'http' if the provider answers plaintext on the port).
         if not pg_column_exists('voice_configs', 'voice_scheme'):
@@ -856,6 +859,7 @@ def init_db():
                 call_sid TEXT DEFAULT '',
                 provider TEXT DEFAULT '',
                 extnumber TEXT DEFAULT '',
+                country TEXT DEFAULT '',
                 duration INTEGER DEFAULT 0,
                 price REAL DEFAULT 0,
                 error_msg TEXT DEFAULT '',
@@ -1025,6 +1029,11 @@ def init_db():
         # Migration: record the extension used per call
         try:
             db.execute("ALTER TABLE voice_records ADD COLUMN extnumber TEXT DEFAULT ''")
+            db.commit()
+        except Exception:
+            pass
+        try:
+            db.execute("ALTER TABLE voice_records ADD COLUMN country TEXT DEFAULT ''")
             db.commit()
         except Exception:
             pass
@@ -6063,6 +6072,92 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext=''):
     return False, '', last_err or 'No se pudo conectar con la URL de la API', extnumber
 
 
+def infin8linx_hangup(config, extnumber):
+    """Hang up the active call on an Infinity extension.
+
+    Uses App.Sip_Call.HangupCall per the Infinity voice API docs.
+    Reuses the cached 12h token and the same https/http auto-detection
+    (and persistence) as MakeCall.
+    Returns (ok: bool, error_msg: str).
+    """
+    ext = re.sub(r'[^0-9]', '', str(extnumber or ''))
+    if not ext:
+        return False, 'No hay extension para colgar'
+
+    token, err = infin8linx_get_token(config)
+    if err or not token:
+        return False, err or 'No se pudo obtener el token'
+
+    base = _voice_api_url(config)
+    stored_scheme = (config.get('voice_scheme') or urlparse(base).scheme or 'https').lower()
+    if stored_scheme not in ('https', 'http'):
+        stored_scheme = 'https'
+    schemes = [stored_scheme] + ([s for s in ('https', 'http') if s != stored_scheme])
+    last_err = ''
+
+    def _post(scheme):
+        url = base
+        if base.startswith('https://') or base.startswith('http://'):
+            url = scheme + '://' + base.split('://', 1)[1]
+        return requests.post(url, data={
+            'service': 'App.Sip_Call.HangupCall',
+            'token': token,
+            'extnumber': ext,
+        }, timeout=15)
+
+    for idx, scheme in enumerate(schemes):
+        try:
+            resp = _post(scheme)
+            if resp.status_code != 200:
+                last_err = 'HTTP %s' % resp.status_code
+                continue
+            try:
+                data = resp.json()
+            except Exception:
+                last_err = 'Respuesta no JSON del servidor (revisar URL/puerto)'
+                continue
+            if int(data.get('ret', 0)) != 200:
+                msg = str(data.get('msg') or ('HTTP %s' % resp.status_code))
+                if idx == 0 and ('600' in str(data.get('ret')) or 'token' in msg.lower()):
+                    token2, err2 = infin8linx_get_token(config, force=True)
+                    if token2 and not err2:
+                        resp2 = _post(scheme)
+                        try:
+                            data2 = resp2.json()
+                        except Exception:
+                            data2 = {}
+                        if int(data2.get('ret', 0)) == 200:
+                            body2 = data2.get('data') or {}
+                            if int(body2.get('status', 1)) == 0:
+                                return True, ''
+                            return False, str(body2.get('desc') or 'No se pudo colgar')[:300]
+                return False, msg[:300]
+            body = data.get('data') or {}
+            if int(body.get('status', 1)) != 0:
+                return False, str(body.get('desc') or 'No se pudo colgar')[:300]
+            if scheme != stored_scheme:
+                try:
+                    db = get_db()
+                    db.execute("UPDATE voice_configs SET voice_scheme=? WHERE id=?",
+                               (scheme, config.get('id')))
+                    db.commit()
+                except Exception:
+                    pass
+            return True, ''
+        except Exception as e:
+            msg = str(e)
+            if 'NewConnectionError' in msg or 'Failed to establish a new connection' in msg:
+                last_err = 'No se pudo conectar con la URL de la API (%s)' % scheme
+            elif 'timed out' in msg.lower():
+                last_err = 'Tiempo de espera agotado al conectar por %s' % scheme
+            elif 'wrong version number' in msg.lower() or 'SSLError' in type(e).__name__:
+                last_err = 'El puerto habla HTTP plano, no HTTPS (%s)' % scheme
+            else:
+                last_err = 'Error de conexion (%s): %s' % (scheme, msg[:160])
+            continue
+    return False, last_err or 'No se pudo conectar con la URL de la API'
+
+
 def voice_place_call(phone, script, config=None, contact_name='', forced_ext=''):
     """Place an outbound voice call that plays TTS script.
 
@@ -6254,11 +6349,12 @@ def voice_place_call_route():
         res = voice_place_call(phone, text, config=cfg, contact_name=name, forced_ext=caller_ext)
         status = res['status']
         db.execute(
-            "INSERT INTO voice_records (phone, contact_name, script, status, call_sid, provider, extnumber, duration, price, error_msg, initiated_at, finished_at, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), CASE WHEN ? IN ('completed','failed','no-answer','busy','canceled') THEN datetime('now') ELSE NULL END, ?)",
+            "INSERT INTO voice_records (phone, contact_name, script, status, call_sid, provider, extnumber, country, duration, price, error_msg, initiated_at, finished_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), CASE WHEN ? IN ('completed','failed','no-answer','busy','canceled') THEN datetime('now') ELSE NULL END, ?)",
             (phone, name, text, status, res['call_sid'],
              (cfg or {}).get('provider', 'simulation'),
              res.get('extnumber', ''),
+             caller_country or ((cfg or {}).get('country') or ''),
              res['duration'], res['price'], res['error_msg'],
              status, g.user['id'])
         )
@@ -6404,6 +6500,76 @@ def voice_statistics():
         'caller_ext': caller_ext,
         'can_call': can_call,
     })
+
+
+@app.route('/api/voice/hangup', methods=['POST'])
+@login_required
+def voice_hangup_route():
+    """Hang up an active Infinity call on the record's extension.
+
+    Infinity exposes App.Sip_Call.HangupCall (per the voice API docs);
+    the dial button uses MakeCall and this route completes the lifecycle
+    by releasing the agent's extension/line.
+    """
+    data = request.get_json() or {}
+    record_id = data.get('id')
+    call_sid = (data.get('call_sid') or '').strip()
+    if not record_id and not call_sid:
+        return jsonify({'error': 'id o call_sid requerido'}), 400
+
+    db = get_db()
+    user = g.user
+    role = user['role']
+    uid = user['id']
+    params = []
+    where = ''
+    if record_id:
+        where = 'id=?'
+        params.append(record_id)
+    else:
+        where = 'call_sid=?'
+        params.append(call_sid)
+    if role == 'team_member':
+        where += ' AND created_by=?'
+        params.append(uid)
+    elif role == 'team_admin':
+        where += ' AND (created_by=? OR created_by IN (SELECT id FROM users WHERE team_creator_id=?))'
+        params.extend([uid, uid])
+    row = db.execute(
+        "SELECT id, call_sid, extnumber, phone, status, country FROM voice_records WHERE " + where,
+        tuple(params)
+    ).fetchone()
+    if not row:
+        return jsonify({'error': 'Llamada no encontrada'}), 404
+
+    ext = (row['extnumber'] or '').strip()
+    if not ext:
+        return jsonify({'error': 'La llamada no tiene extension registrada; no se puede colgar'}), 400
+
+    rec_country = (row['country'] if 'country' in row.keys() else '') or ''
+    user_country = (user['country'] if 'country' in user.keys() else '') or ''
+    config = resolve_voice_config(rec_country or user_country or '')
+    if (config or {}).get('provider') != 'infin8linx':
+        return jsonify({'error': 'El proveedor actual no soporta colgado en tiempo real'}), 400
+
+    ok, err = infin8linx_hangup(config, ext)
+    if not ok:
+        return jsonify({'error': err or 'No se pudo colgar la llamada'}), 502
+
+    db.execute(
+        "UPDATE voice_records SET status='canceled', finished_at=datetime('now') WHERE id=?",
+        (row['id'],)
+    )
+    db.commit()
+    try:
+        db.execute(
+            "INSERT INTO send_logs (action, details, status) VALUES (?, ?, ?)",
+            ('voice_hangup', 'Colgo llamada %s ext %s' % (row['call_sid'] or row['id'], ext), 'success')
+        )
+        db.commit()
+    except Exception:
+        pass
+    return jsonify({'success': True, 'status': 'canceled', 'message': 'Llamada colgada'})
 
 
 @app.route('/api/voice/query-status', methods=['POST'])
