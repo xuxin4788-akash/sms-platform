@@ -3305,18 +3305,25 @@ function collectVoicePhones() {
 
 async function handlePlaceCalls() {
     var errBox = document.getElementById('voice-error');
-    errBox.style.display = 'none';
-    var script = (document.getElementById('voice-script').value || '').trim();
-    var phones = collectVoicePhones();
-    if (!phones.length) { errBox.textContent = 'Seleccione o ingrese al menos un numero.'; errBox.style.display='block'; return; }
-    if (phones.length > 200) { errBox.textContent = 'Maximo 200 numeros por tanda.'; errBox.style.display='block'; return; }
-    if (!confirm('Se iniciaran ' + phones.length + ' llamada(s). Continuar?')) return;
+    var showErr = function (msg) {
+        if (errBox) { errBox.textContent = msg; errBox.style.display = 'block'; }
+        else { showToast(msg, 'error'); }
+    };
     try {
+        if (errBox) errBox.style.display = 'none';
+        var scriptEl = document.getElementById('voice-script');
+        var script = scriptEl ? (scriptEl.value || '').trim() : '';
+        var phones = collectVoicePhones();
+        if (!phones.length) { showErr('Seleccione o ingrese al menos un numero.'); return; }
+        if (phones.length > 200) { showErr('Maximo 200 numeros por tanda.'); return; }
+        if (!confirm('Se iniciaran ' + phones.length + ' llamada(s). Continuar?')) return;
         var result = await api('/api/voice/call', { method: 'POST', body: { phones: phones, script: script } });
         if (result.errors && result.errors.length) {
-            errBox.innerHTML = '<strong>' + (result.message || 'Algunas llamadas fallaron') + '</strong><ul style="margin:6px 0 0 18px;padding:0;">' +
-                result.errors.map(function(e) { return '<li>' + escapeHtml(e) + '</li>'; }).join('') + '</ul>';
-            errBox.style.display = 'block';
+            if (errBox) {
+                errBox.innerHTML = '<strong>' + escapeHtml(result.message || 'Algunas llamadas fallaron') + '</strong><ul style="margin:6px 0 0 18px;padding:0;">' +
+                    result.errors.map(function(e) { return '<li>' + escapeHtml(e) + '</li>'; }).join('') + '</ul>';
+                errBox.style.display = 'block';
+            }
             showToast((result.message || 'Llamadas con errores') + (result.simulated ? ' (simulacion)' : ''), 'warning');
         } else {
             showToast((result.message || 'Llamadas iniciadas') + (result.simulated ? ' (modo simulacion - API de voz no configurada)' : ''), 'success');
@@ -3326,11 +3333,9 @@ async function handlePlaceCalls() {
         state.voiceCall.groupPhones = [];
         renderVoicePhoneTags();
         loadVoiceRecords();
-        // Refresh stats
         renderCalls(document.getElementById('page-content'));
     } catch (e) {
-        errBox.textContent = e.message || 'Error al iniciar llamadas';
-        errBox.style.display = 'block';
+        showErr(e && e.message ? e.message : 'Error al iniciar llamadas');
     }
 }
 
