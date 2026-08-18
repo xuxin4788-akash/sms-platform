@@ -9,7 +9,9 @@ import io
 import json
 import time
 import threading
+import uuid
 import requests as http_requests
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Flask, request, jsonify, render_template, session, g, send_from_directory, send_file
@@ -421,6 +423,11 @@ def init_db():
                 provider VARCHAR(50) DEFAULT '',
                 extnumber VARCHAR(100) DEFAULT '',
                 country VARCHAR(5) DEFAULT '',
+                customuuid VARCHAR(64) DEFAULT '',
+                provider_uuid VARCHAR(64) DEFAULT '',
+                record_file VARCHAR(255) DEFAULT '',
+                hangupcause INTEGER DEFAULT 0,
+                answer_at TIMESTAMP,
                 duration INTEGER DEFAULT 0,
                 price NUMERIC(12,4) DEFAULT 0,
                 error_msg TEXT DEFAULT '',
@@ -567,6 +574,18 @@ def init_db():
             cur.execute("ALTER TABLE voice_records ADD COLUMN extnumber VARCHAR(100) DEFAULT ''")
         if not pg_column_exists('voice_records', 'country'):
             cur.execute("ALTER TABLE voice_records ADD COLUMN country VARCHAR(5) DEFAULT ''")
+        # voice_records: CDR/callback correlation and call outcome fields
+        if not pg_column_exists('voice_records', 'customuuid'):
+            cur.execute("ALTER TABLE voice_records ADD COLUMN customuuid VARCHAR(64) DEFAULT ''")
+        if not pg_column_exists('voice_records', 'provider_uuid'):
+            cur.execute("ALTER TABLE voice_records ADD COLUMN provider_uuid VARCHAR(64) DEFAULT ''")
+        if not pg_column_exists('voice_records', 'record_file'):
+            cur.execute("ALTER TABLE voice_records ADD COLUMN record_file VARCHAR(255) DEFAULT ''")
+        if not pg_column_exists('voice_records', 'hangupcause'):
+            cur.execute("ALTER TABLE voice_records ADD COLUMN hangupcause INTEGER DEFAULT 0")
+        if not pg_column_exists('voice_records', 'answer_at'):
+            cur.execute("ALTER TABLE voice_records ADD COLUMN answer_at TIMESTAMP")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_voice_records_customuuid ON voice_records(customuuid)")
         # voice_configs: detected protocol (https by default; test connection
         # may persist 'http' if the provider answers plaintext on the port).
         if not pg_column_exists('voice_configs', 'voice_scheme'):
@@ -860,6 +879,11 @@ def init_db():
                 provider TEXT DEFAULT '',
                 extnumber TEXT DEFAULT '',
                 country TEXT DEFAULT '',
+                customuuid TEXT DEFAULT '',
+                provider_uuid TEXT DEFAULT '',
+                record_file TEXT DEFAULT '',
+                hangupcause INTEGER DEFAULT 0,
+                answer_at TEXT,
                 duration INTEGER DEFAULT 0,
                 price REAL DEFAULT 0,
                 error_msg TEXT DEFAULT '',
@@ -1034,6 +1058,24 @@ def init_db():
             pass
         try:
             db.execute("ALTER TABLE voice_records ADD COLUMN country TEXT DEFAULT ''")
+            db.commit()
+        except Exception:
+            pass
+        # Migration: CDR/callback correlation + outcome fields
+        for _col, _type in (
+            ("customuuid", "TEXT DEFAULT ''"),
+            ("provider_uuid", "TEXT DEFAULT ''"),
+            ("record_file", "TEXT DEFAULT ''"),
+            ("hangupcause", "INTEGER DEFAULT 0"),
+            ("answer_at", "TEXT"),
+        ):
+            try:
+                db.execute(f"ALTER TABLE voice_records ADD COLUMN {_col} {_type}")
+                db.commit()
+            except Exception:
+                pass
+        try:
+            db.execute("CREATE INDEX IF NOT EXISTS idx_voice_records_customuuid ON voice_records(customuuid)")
             db.commit()
         except Exception:
             pass
@@ -5934,7 +5976,7 @@ def infin8linx_pick_extension(config):
     return _random.choice(pool)
 
 
-def infin8linx_make_call(phone, config, extnumber=None, forced_ext=''):
+def infin8linx_make_call(phone, config, extnumber=None, forced_ext='', customuuid=''):
     """Send MakeCall command to infin8linx. Returns (ok, call_sid, error_msg, extnumber).
 
     infin8linx MakeCall triggers a click-to-call between a SIP extension and
@@ -5990,6 +6032,9 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext=''):
     }
     if dis_digits:
         payload['disnumber'] = dis_digits
+    cid = str(customuuid or '').strip()
+    if cid:
+        payload['customuuid'] = cid
 
     def _post_makecall(scheme):
         url = _voice_api_url({**(config or {}), 'voice_scheme': scheme})
@@ -6144,22 +6189,99 @@ def infin8linx_hangup(config, extnumber):
     return False, last_err or 'No se pudo conectar con la URL de la API'
 
 
-def voice_place_call(phone, script, config=None, contact_name='', forced_ext=''):
+def infin8linx_get_record_url(config, record_file):
+    """Fetch a short-lived download URL for a call recording.
+
+    Calls App.Sip_Cdr.GetRecodeFile with the filename received in the CDR
+    callback. Reuses token caching and http/https auto-detection.
+    Returns (url, error_msg).
+    """
+    fname = str(record_file or '').strip()
+    if not fname:
+        return '', 'Nombre de grabacion vacio'
+    token, err = infin8linx_get_token(config)
+    if err or not token:
+        return '', err or 'No se pudo obtener el token'
+    base = _voice_api_url(config)
+    stored_scheme = (config.get('voice_scheme') or urlparse(base).scheme or 'https').lower()
+    if stored_scheme not in ('https', 'http'):
+        stored_scheme = 'https'
+    schemes = [stored_scheme] + [s for s in ('https', 'http') if s != stored_scheme]
+    last_err = ''
+
+    def _post(scheme):
+        url = scheme + '://' + base.split('://', 1)[1] if '://' in base else base
+        return http_requests.post(url, data={
+            'service': 'App.Sip_Cdr.GetRecodeFile',
+            'token': token,
+            'filename': fname,
+        }, timeout=15)
+
+    for idx, scheme in enumerate(schemes):
+        try:
+            resp = _post(scheme)
+            if resp.status_code != 200:
+                last_err = 'HTTP %s' % resp.status_code
+                continue
+            try:
+                data = resp.json()
+            except Exception:
+                last_err = 'Respuesta no JSON del servidor'
+                continue
+            if int(data.get('ret', 0)) != 200:
+                msg = str(data.get('msg') or 'Error')
+                if idx == 0 and ('600' in str(data.get('ret')) or 'token' in msg.lower()):
+                    token2, err2 = infin8linx_get_token(config, force=True)
+                    if token2 and not err2:
+                        resp2 = _post(scheme)
+                        try:
+                            data = resp2.json()
+                        except Exception:
+                            data = {}
+                        if int(data.get('ret', 0)) == 200:
+                            result = data.get('data', {}).get('result') or {}
+                            down = result.get('downurl') or ''
+                            if down:
+                                return down, ''
+                return '', msg[:300]
+            result = data.get('data', {}).get('result') or {}
+            down = result.get('downurl') or ''
+            if not down:
+                return '', 'El proveedor no devolvio URL de grabacion'
+            return down, ''
+        except Exception as e:
+            msg = str(e)
+            if 'wrong version number' in msg.lower() or 'SSLError' in type(e).__name__:
+                last_err = 'El puerto habla HTTP plano, no HTTPS (%s)' % scheme
+            elif 'timed out' in msg.lower():
+                last_err = 'Tiempo de espera agotado (%s)' % scheme
+            else:
+                last_err = 'Error de conexion (%s): %s' % (scheme, msg[:160])
+            continue
+    return '', last_err or 'No se pudo obtener la grabacion'
+
+
+def voice_place_call(phone, script, config=None, contact_name='', forced_ext='', customuuid=''):
     """Place an outbound voice call that plays TTS script.
 
-    Returns dict: {ok, call_sid, status, error_msg, price, duration, extnumber}
+    Returns dict: {ok, call_sid, status, error_msg, price, duration, extnumber, customuuid}
     Provider 'simulation' does not hit any external API.
     forced_ext: si se indica (extension fija del agente/usuario que llama),
     infin8linx la utilizara en lugar de elegir una al azar del pool.
+    customuuid: identificador propio que se envia a Infinity y regresa en el
+    CDR/callback, permitiendo asociar la llamada con el registro local.
     """
     if config is None:
         config = get_voice_config()
     provider = (config or {}).get('provider', 'simulation') or 'simulation'
     normalized = normalize_phone(phone)
     forced_ext = (forced_ext or '').strip()
+    if not customuuid:
+        customuuid = 'VC' + uuid.uuid4().hex[:24]
     result = {
         'ok': False, 'call_sid': '', 'status': 'failed',
         'error_msg': '', 'price': 0.0, 'duration': 0, 'extnumber': forced_ext,
+        'customuuid': customuuid,
     }
 
     if provider in ('', 'simulation', 'simulacion', 'none'):
@@ -6243,7 +6365,8 @@ def voice_place_call(phone, script, config=None, contact_name='', forced_ext='')
         # to destnumber. There is no TTS broadcast in this API; the agent on the
         # extension reads the script. If the calling user has a fixed extension
         # assigned (forced_ext), use it; otherwise pick randomly from the pool.
-        ok, ref, err, used_ext = infin8linx_make_call(normalized, config, forced_ext=forced_ext)
+        ok, ref, err, used_ext = infin8linx_make_call(
+            normalized, config, forced_ext=forced_ext, customuuid=customuuid)
         if ok:
             result.update(ok=True, call_sid=ref, status='initiated',
                           extnumber=used_ext)
@@ -6335,17 +6458,19 @@ def voice_place_call_route():
         res = voice_place_call(phone, text, config=cfg, contact_name=name, forced_ext=caller_ext)
         status = res['status']
         db.execute(
-            "INSERT INTO voice_records (phone, contact_name, script, status, call_sid, provider, extnumber, country, duration, price, error_msg, initiated_at, finished_at, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), CASE WHEN ? IN ('completed','failed','no-answer','busy','canceled') THEN datetime('now') ELSE NULL END, ?)",
+            "INSERT INTO voice_records (phone, contact_name, script, status, call_sid, provider, extnumber, country, customuuid, duration, price, error_msg, initiated_at, finished_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), CASE WHEN ? IN ('completed','failed','no-answer','busy','canceled') THEN datetime('now') ELSE NULL END, ?)",
             (phone, name, text, status, res['call_sid'],
              (cfg or {}).get('provider', 'simulation'),
              res.get('extnumber', ''),
              caller_country or ((cfg or {}).get('country') or ''),
+             res.get('customuuid', ''),
              res['duration'], res['price'], res['error_msg'],
              status, g.user['id'])
         )
         results.append({'phone': phone, 'status': status, 'call_sid': res['call_sid'],
                         'extnumber': res.get('extnumber', ''),
+                        'customuuid': res.get('customuuid', ''),
                         'error': res['error_msg'], 'simulated': simulated})
         if status in ('failed', 'no-answer', 'busy'):
             errors.append(phone + ': ' + (res['error_msg'] or VOICE_STATUS_LABELS.get(status, status)))
@@ -6419,6 +6544,10 @@ def voice_list_records():
             'ext_used': r['extnumber'] or '',
             'duration': r['duration'] or 0, 'price': float(r['price'] or 0),
             'error_msg': r['error_msg'] or '',
+            'record_file': (r['record_file'] or '') if 'record_file' in r.keys() else '',
+            'provider_uuid': (r['provider_uuid'] or '') if 'provider_uuid' in r.keys() else '',
+            'hangupcause': (r['hangupcause'] or 0) if 'hangupcause' in r.keys() else 0,
+            'answer_at': r['answer_at'] if 'answer_at' in r.keys() else None,
             'initiated_at': r['initiated_at'], 'finished_at': r['finished_at'],
             'created_at': r['created_at'],
             'created_by': r['created_by'],
@@ -6556,6 +6685,157 @@ def voice_hangup_route():
     except Exception:
         pass
     return jsonify({'success': True, 'status': 'canceled', 'message': 'Llamada colgada'})
+
+
+def _map_infinity_cdr_status(cdr):
+    """Map an Infinity CDR payload to a local voice_records status.
+
+    billsec > 0  -> answered (the agent/customer spoke)
+    answertime present but billsec 0 -> ringing then dropped
+    otherwise use hangupcause heuristics.
+    """
+    try:
+        billsec = int(cdr.get('billsec') or 0)
+    except (TypeError, ValueError):
+        billsec = 0
+    answer = str(cdr.get('answertime') or '').strip()
+    if billsec > 0:
+        return 'answered'
+    if answer:
+        return 'busy'
+    # No answer / failed / canceled. hangupcause is provider-specific; we keep
+    # it generic and store the code for reference.
+    return 'no-answer'
+
+
+def _parse_cdr_datetime(value):
+    """Return a DB-friendly datetime string from 'YYYY-MM-DD HH:MM:SS', or None."""
+    v = str(value or '').strip()
+    if not v:
+        return None
+    try:
+        return datetime.strptime(v[:19], '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return None
+
+
+@app.route('/api/voice/cdr', methods=['POST'])
+def voice_cdr_callback():
+    """CDR/callback endpoint called by Infinity when a call ends.
+
+    Public (no login): Infinity servers push JSON here. We correlate via
+    ``customuuid`` (sent on MakeCall) and fall back to destnumber + ext +
+    recent initiated record. Updates status, durations and recording file.
+    """
+    cdr = request.get_json(silent=True) or request.form.to_dict() or {}
+    app.logger.info('[voice-cdr] received: %s', json.dumps(cdr, ensure_ascii=False)[:800])
+    try:
+        customuuid = str(cdr.get('customuuid') or '').strip()
+        dest = ''.join(ch for ch in str(cdr.get('destnumber') or '') if ch.isdigit())
+        ext = str(cdr.get('extnumber') or '').strip()
+        provider_uuid = str(cdr.get('uuid') or '').strip()
+        record_file = str(cdr.get('recordfilename') or '').strip()
+        try:
+            hangupcause = int(cdr.get('hangupcause') or 0)
+        except (TypeError, ValueError):
+            hangupcause = 0
+        try:
+            billsec = int(cdr.get('billsec') or 0)
+        except (TypeError, ValueError):
+            billsec = 0
+        try:
+            duration = int(cdr.get('duration') or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        answer_at = _parse_cdr_datetime(cdr.get('answertime'))
+        endtime = _parse_cdr_datetime(cdr.get('endtime'))
+        status = _map_infinity_cdr_status(cdr)
+        # A hangup before the call is answered by either side is a no-answer/
+        # cancel, not a completed talked call.
+        if status == 'answered':
+            final_status = 'completed'
+        else:
+            final_status = status
+
+        db = get_db()
+        row = None
+        if customuuid:
+            row = db.execute(
+                "SELECT id FROM voice_records WHERE customuuid=? ORDER BY id DESC LIMIT 1",
+                (customuuid,)
+            ).fetchone()
+        if row is None and dest and ext:
+            row = db.execute(
+                "SELECT id FROM voice_records WHERE phone LIKE ? AND extnumber=? "
+                "AND status IN ('pending','initiated','ringing') ORDER BY id DESC LIMIT 1",
+                ('%' + dest[-10:], ext)
+            ).fetchone()
+        if row is None and provider_uuid:
+            row = db.execute(
+                "SELECT id FROM voice_records WHERE provider_uuid=? ORDER BY id DESC LIMIT 1",
+                (provider_uuid,)
+            ).fetchone()
+
+        if row is None:
+            app.logger.warning('[voice-cdr] no matching record for %s', customuuid or dest)
+            return jsonify({'ok': True, 'matched': False}), 200
+
+        rid = row['id']
+        db.execute(
+            "UPDATE voice_records SET status=?, duration=?, provider_uuid=COALESCE(NULLIF(?, ''), provider_uuid), "
+            "record_file=COALESCE(NULLIF(?, ''), record_file), hangupcause=?, "
+            "answer_at=COALESCE(?, answer_at), "
+            "finished_at=COALESCE(?, datetime('now')) WHERE id=?",
+            (final_status, billsec or duration, provider_uuid, record_file,
+             hangupcause, answer_at, endtime, rid)
+        )
+        db.commit()
+        try:
+            db.execute(
+                "INSERT INTO send_logs (action, details, status) VALUES (?, ?, ?)",
+                ('voice_cdr',
+                 json.dumps({'id': rid, 'status': final_status, 'billsec': billsec,
+                             'cause': hangupcause, 'uuid': provider_uuid}, ensure_ascii=False),
+                 'success')
+            )
+            db.commit()
+        except Exception:
+            pass
+        return jsonify({'ok': True, 'matched': True, 'id': rid, 'status': final_status}), 200
+    except Exception as exc:
+        app.logger.exception('[voice-cdr] processing failed')
+        # Always 200 so Infinity does not retry-storm; log the error instead.
+        return jsonify({'ok': False, 'error': str(exc)[:200]}), 200
+
+
+@app.route('/api/voice/recording', methods=['GET'])
+@login_required
+def voice_recording_url():
+    """Return a (short-lived) recording download URL for a call.
+
+    Uses Infinity App.Sip_Cdr.GetRecodeFile. Requires record_file from CDR.
+    """
+    rid = request.args.get('id', type=int)
+    if not rid:
+        return jsonify({'error': 'id requerido'}), 400
+    db = get_db()
+    row = db.execute(
+        "SELECT id, record_file, country, created_by FROM voice_records WHERE id=?", (rid,)
+    ).fetchone()
+    if not row:
+        return jsonify({'error': 'Llamada no encontrada'}), 404
+    record_file = (row['record_file'] if 'record_file' in row.keys() else '') or ''
+    if not record_file:
+        return jsonify({'error': 'Esta llamada no tiene grabacion disponible'}), 404
+    rec_country = (row['country'] if 'country' in row.keys() else '') or ''
+    user_country = (g.user['country'] if 'country' in g.user.keys() else '') or ''
+    config = resolve_voice_config(rec_country or user_country or '')
+    if (config or {}).get('provider') != 'infin8linx':
+        return jsonify({'error': 'El proveedor no soporta grabaciones'}), 400
+    url, err = infin8linx_get_record_url(config, record_file)
+    if err:
+        return jsonify({'error': err}), 502
+    return jsonify({'url': url, 'record_file': record_file})
 
 
 @app.route('/api/voice/query-status', methods=['POST'])

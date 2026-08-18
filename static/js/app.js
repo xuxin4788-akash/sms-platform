@@ -3353,6 +3353,9 @@ async function loadVoiceRecords() {
                 var actions = '';
                 if (isReal) {
                     actions += '<button class="btn btn-ghost btn-sm" onclick="refreshVoiceStatus(' + r.id + ',\'' + escapeHtml(r.call_sid) + '\')" title="Actualizar estado"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>';
+                    if (r.record_file) {
+                        actions += '<button class="btn btn-ghost btn-sm" onclick="playVoiceRecording(' + r.id + ')" title="Reproducir grabacion" style="color:#2563EB;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>';
+                    }
                     if (active && r.provider === 'infin8linx') {
                         actions += '<button class="btn btn-ghost btn-sm" onclick="hangupVoiceCall(' + r.id + ')" title="Colgar" style="color:#DC2626;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/></svg></button>';
                     }
@@ -3387,6 +3390,17 @@ async function hangupVoiceCall(id) {
         const r = await api('/api/voice/hangup', { method: 'POST', body: { id: id } });
         showToast(r.message || 'Llamada colgada', 'success');
         loadVoiceRecords();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function playVoiceRecording(id) {
+    try {
+        const r = await api('/api/voice/recording?id=' + encodeURIComponent(id));
+        if (r && r.url) {
+            window.open(r.url, '_blank', 'noopener');
+        } else {
+            showToast('No se pudo obtener la grabacion', 'error');
+        }
     } catch (e) { showToast(e.message, 'error'); }
 }
 
