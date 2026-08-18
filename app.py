@@ -572,14 +572,17 @@ def init_db():
 
         # Seed voice_configs (one row per country, like sms_api_configs) and
         # migrate any per-country values from the legacy single voice_config row.
-        cur.execute("SELECT COUNT(*) FROM voice_configs")
-        if cur.fetchone()[0] == 0:
-            legacy = cur.execute(
+        cur.execute("SELECT COUNT(*) AS cnt FROM voice_configs")
+        _cnt_row = cur.fetchone()
+        _cnt = _cnt_row['cnt'] if isinstance(_cnt_row, dict) else (_cnt_row[0] if _cnt_row else 0)
+        if _cnt == 0:
+            cur.execute(
                 "SELECT api_domain_mx, appid_mx, accesskey_mx, from_number_mx, token_mx, token_mx_expiry,"
                 " api_domain_co, appid_co, accesskey_co, from_number_co, token_co, token_co_expiry,"
                 " api_domain_pe, appid_pe, accesskey_pe, from_number_pe, token_pe, token_pe_expiry"
                 " FROM voice_config ORDER BY id LIMIT 1"
-            ).fetchone()
+            )
+            legacy = cur.fetchone()
             defaults = [
                 ('Mexico', 'mx'), ('Colombia', 'co'), ('Peru', 'pe'),
             ]
@@ -848,8 +851,10 @@ def init_db():
             db.commit()
         # Seed voice_configs (one row per country, like sms_api_configs) and
         # migrate any per-country values from the legacy single voice_config row.
-        cursor = db.execute("SELECT COUNT(*) FROM voice_configs")
-        if cursor.fetchone()[0] == 0:
+        cursor = db.execute("SELECT COUNT(*) AS cnt FROM voice_configs")
+        _cnt_row = cursor.fetchone()
+        _cnt = _cnt_row['cnt'] if isinstance(_cnt_row, dict) else (_cnt_row[0] if _cnt_row else 0)
+        if _cnt == 0:
             legacy = db.execute(
                 "SELECT api_domain_mx, appid_mx, accesskey_mx, from_number_mx, token_mx, token_mx_expiry,"
                 " api_domain_co, appid_co, accesskey_co, from_number_co, token_co, token_co_expiry,"
