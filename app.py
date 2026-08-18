@@ -5821,6 +5821,38 @@ def _voice_probe_host(config, appid, accesskey, timeout=10):
     return None, None, (last_err or 'No se pudo conectar al servidor')
 
 
+def _parse_infin_login_response(resp):
+    """Parse an App.Sip_Auth.Login response. Returns (token, error)."""
+    try:
+        data = resp.json()
+    except Exception:
+        return '', 'Respuesta no JSON del servidor (revisar que la URL apunte al API de voz)'
+    if resp.status_code >= 300 or int(data.get('ret', 0)) != 200:
+        return '', str(data.get('msg') or ('HTTP %s - revisar URL/puerto' % resp.status_code))[:300]
+    body = data.get('data') or {}
+    if int(body.get('status', 1)) != 0:
+        errs = body.get('errors') or {}
+        return '', str(body.get('desc') or errs.get('codemsg') or 'No se pudo obtener el token')[:300]
+    result = body.get('result') or {}
+    token = (result.get('token') or '').strip()
+    if not token:
+        return '', 'El servidor no devolvio token'
+    return token, ''
+
+
+def _persist_voice_scheme_and_token(config, scheme, token, expiry):
+    _INFIN_TOKEN_CACHE[_token_cache_key(config)] = {'token': token, 'expiry': expiry}
+    try:
+        db = get_db()
+        tok_col, exp_col = _token_db_columns(config)
+        db.execute(
+            "UPDATE voice_configs SET voice_scheme=?, %s=?, %s=? WHERE id=?" % (tok_col, exp_col),
+            (scheme, token, expiry, config.get('id')))
+        db.commit()
+    except Exception:
+        pass
+
+
 def infin8linx_get_token(config, force=False):
     """Obtain an auth token from Infinity (service App.Sip_Auth.Login).
 
@@ -5845,45 +5877,45 @@ def infin8linx_get_token(config, force=False):
     accesskey = (config or {}).get('voice_accesskey') or ''
     if not (api_url and appid and accesskey):
         return '', 'Faltan datos de acceso (URL, AppID o AccessKey)'
-    url = api_url
+
+    # First attempt with the stored (or default https) scheme.
     try:
-        resp = http_requests.post(url, data={
+        resp = http_requests.post(api_url, data={
             'service': 'App.Sip_Auth.Login',
             'appid': appid,
             'accesskey': accesskey,
         }, timeout=15)
-        try:
-            data = resp.json()
-        except Exception:
-            return '', 'Respuesta no JSON del servidor (revisar que la URL apunte al API de voz)'
-        if resp.status_code >= 300 or int(data.get('ret', 0)) != 200:
-            return '', str(data.get('msg') or ('HTTP %s - revisar URL/puerto' % resp.status_code))[:300]
-        body = data.get('data') or {}
-        if int(body.get('status', 1)) != 0:
-            errs = body.get('errors') or {}
-            return '', str(body.get('desc') or errs.get('codemsg') or 'No se pudo obtener el token')[:300]
-        result = body.get('result') or {}
-        token = (result.get('token') or '').strip()
-        if not token:
-            return '', 'El servidor no devolvio token'
-        expiry = now + 12 * 3600
-        _INFIN_TOKEN_CACHE[cache_key] = {'token': token, 'expiry': expiry}
-        try:
-            db = get_db()
-            tok_col, exp_col = _token_db_columns(config)
-            db.execute("UPDATE voice_configs SET %s=?, %s=? WHERE id=?" % (tok_col, exp_col),
-                       (token, expiry, config.get('id')))
-            db.commit()
-        except Exception:
-            pass
-        return token, None
+        token, err = _parse_infin_login_response(resp)
+        if token:
+            expiry = now + 12 * 3600
+            _persist_voice_scheme_and_token(
+                config, (config or {}).get('voice_scheme') or 'https', token, expiry)
+            return token, None
+        # Business-level error (bad credentials etc.) — re-probing schemes
+        # won't help; surface the provider message.
+        if err and not err.startswith('Respuesta no JSON'):
+            return '', err
     except Exception as e:
         msg = str(e)
-        if 'NewConnectionError' in msg or 'Failed to establish a new connection' in msg:
-            return '', 'No se pudo conectar con la URL de la API (revisar IP/puerto)'
-        if 'timed out' in msg.lower():
-            return '', 'Tiempo de espera agotado al conectar con la API'
-        return '', 'Error de conexion: ' + msg[:200]
+        # If the stored scheme cannot even connect / fails SSL (e.g. config
+        # saved as https but the gateway speaks plain http like port 4434),
+        # fall through to probing both schemes and persist the one that works.
+        if not ('timed out' in msg.lower() or 'NewConnectionError' in msg
+                or 'Failed to establish a new connection' in msg
+                or 'SSLError' in type(e).__name__ or 'wrong version number' in msg.lower()
+                or 'ConnectionError' in type(e).__name__):
+            return '', 'Error de conexion: ' + msg[:200]
+
+    # Auto-detect http/https and persist the working scheme (self-healing).
+    scheme, resp, err = _voice_probe_host(config or {}, appid, accesskey, timeout=10)
+    if not scheme or resp is None:
+        return '', err or 'No se pudo conectar con la URL de la API (revisar IP/puerto/firewall)'
+    token, perr = _parse_infin_login_response(resp)
+    if not token:
+        return '', perr or err or 'No se pudo obtener el token'
+    expiry = now + 12 * 3600
+    _persist_voice_scheme_and_token(config, scheme, token, expiry)
+    return token, None
 
 
 def _parse_extension_pool(raw):
@@ -5934,6 +5966,16 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext=''):
     token, err = infin8linx_get_token(config)
     if err:
         return False, '', err, resolved_ext
+    # Re-read the row so we use the scheme/extension the token call may have
+    # just auto-detected and persisted (e.g. plain http on a custom port).
+    try:
+        db = get_db()
+        fresh = db.execute(
+            'SELECT * FROM voice_configs WHERE id=?', (config.get('id'),)).fetchone()
+        if fresh:
+            config = dict(fresh)
+    except Exception:
+        pass
     extnumber = resolved_ext
     disnumber = (config or {}).get('from_number') or ''
     payload = {
@@ -5944,42 +5986,72 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext=''):
     }
     if disnumber:
         payload['disnumber'] = disnumber
-    call_url = _voice_api_url(config)
-    try:
-        resp = http_requests.post(call_url, data=payload, timeout=20)
+
+    def _post_makecall(scheme):
+        url = _voice_api_url({**(config or {}), 'voice_scheme': scheme})
+        return http_requests.post(url, data=payload, timeout=20)
+
+    schemes_to_try = []
+    stored_scheme = (config or {}).get('voice_scheme') or 'https'
+    schemes_to_try.append(stored_scheme)
+    for alt in ('http', 'https'):
+        if alt not in schemes_to_try:
+            schemes_to_try.append(alt)
+
+    last_err = ''
+    for idx, scheme in enumerate(schemes_to_try):
         try:
-            data = resp.json()
-        except Exception:
-            return False, '', 'Respuesta no JSON del servidor (revisar que la URL apunte al API de voz)', extnumber
-        if int(data.get('ret', 0)) != 200:
-            msg = str(data.get('msg') or ('HTTP %s' % resp.status_code))
-            # token expired/invalid -> force refresh once
-            if '600' in str(data.get('ret')) or 'token' in msg.lower():
-                token2, err2 = infin8linx_get_token(config, force=True)
-                if token2 and not err2:
-                    payload['token'] = token2
-                    resp = http_requests.post(call_url, data=payload, timeout=20)
-                    data = resp.json()
-                    if int(data.get('ret', 0)) == 200:
-                        body = data.get('data') or {}
-                        if int(body.get('status', 1)) == 0:
-                            ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
-                            return True, ref, '', extnumber
-                        return False, '', str(body.get('desc') or 'Error al iniciar llamada')[:300], extnumber
-            return False, '', msg[:300], extnumber
-        body = data.get('data') or {}
-        if int(body.get('status', 1)) != 0:
-            errs = body.get('errors') or {}
-            return False, '', str(body.get('desc') or errs.get('codemsg') or 'Error al iniciar llamada')[:300], extnumber
-        ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
-        return True, ref, '', extnumber
-    except Exception as e:
-        msg = str(e)
-        if 'NewConnectionError' in msg or 'Failed to establish a new connection' in msg:
-            return False, '', 'No se pudo conectar con la URL de la API (revisar IP/puerto)', extnumber
-        if 'timed out' in msg.lower():
-            return False, '', 'Tiempo de espera agotado al conectar con la API', extnumber
-        return False, '', 'Error de conexion: ' + msg[:200], extnumber
+            resp = _post_makecall(scheme)
+            try:
+                data = resp.json()
+            except Exception:
+                # Endpoint replied but not JSON — could be wrong scheme/port;
+                # try the alternate scheme before giving up.
+                last_err = 'Respuesta no JSON del servidor (revisar URL/puerto)'
+                continue
+            if int(data.get('ret', 0)) != 200:
+                msg = str(data.get('msg') or ('HTTP %s' % resp.status_code))
+                # token expired/invalid -> force refresh once (same scheme)
+                if idx == 0 and ('600' in str(data.get('ret')) or 'token' in msg.lower()):
+                    token2, err2 = infin8linx_get_token(config, force=True)
+                    if token2 and not err2:
+                        payload['token'] = token2
+                        resp = _post_makecall(scheme)
+                        data = resp.json()
+                        if int(data.get('ret', 0)) == 200:
+                            body = data.get('data') or {}
+                            if int(body.get('status', 1)) == 0:
+                                ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
+                                return True, ref, '', extnumber
+                            return False, '', str(body.get('desc') or 'Error al iniciar llamada')[:300], extnumber
+                return False, '', msg[:300], extnumber
+            body = data.get('data') or {}
+            if int(body.get('status', 1)) != 0:
+                errs = body.get('errors') or {}
+                return False, '', str(body.get('desc') or errs.get('codemsg') or 'Error al iniciar llamada')[:300], extnumber
+            # Persist the scheme that worked for future calls.
+            if scheme != stored_scheme:
+                try:
+                    db = get_db()
+                    db.execute("UPDATE voice_configs SET voice_scheme=? WHERE id=?",
+                               (scheme, config.get('id')))
+                    db.commit()
+                except Exception:
+                    pass
+            ref = 'INF' + hashlib.sha1((phone + str(time.time())).encode()).hexdigest()[:16].upper()
+            return True, ref, '', extnumber
+        except Exception as e:
+            msg = str(e)
+            if 'NewConnectionError' in msg or 'Failed to establish a new connection' in msg:
+                last_err = 'No se pudo conectar con la URL de la API (%s) (revisar IP/puerto)' % scheme
+            elif 'timed out' in msg.lower():
+                last_err = 'Tiempo de espera agotado al conectar por %s' % scheme
+            elif 'wrong version number' in msg.lower() or 'SSLError' in type(e).__name__:
+                last_err = 'El puerto habla HTTP plano, no HTTPS (%s)' % scheme
+            else:
+                last_err = 'Error de conexion (%s): %s' % (scheme, msg[:160])
+            continue
+    return False, '', last_err or 'No se pudo conectar con la URL de la API', extnumber
 
 
 def voice_place_call(phone, script, config=None, contact_name='', forced_ext=''):
