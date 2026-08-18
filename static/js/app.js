@@ -3458,8 +3458,13 @@ function renderExtensionsBody() {
         '</div>' +
         '<div class="card" style="margin-bottom:20px;background:var(--light);padding:16px;">' +
             '<label style="font-weight:600;display:block;margin-bottom:8px;">Cargar extensiones para ' + escapeHtml(d.country_label) + '</label>' +
+            '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">' +
+                '<input type="file" id="ext-file" accept=".txt,.csv,text/plain,text/csv" style="display:none;">' +
+                '<button type="button" id="ext-pick-file" class="btn btn-ghost"><i data-lucide="upload"></i> Seleccionar archivo (.txt/.csv)</button>' +
+                '<span id="ext-file-name" style="font-size:13px;color:var(--text-secondary);"></span>' +
+            '</div>' +
             '<textarea id="ext-bulk" rows="4" style="width:100%;font-family:monospace;" placeholder="8001, 8002, 8003&#10;8004&#10;8005"></textarea>' +
-            '<p style="font-size:12px;color:var(--text-secondary);margin:8px 0 12px;">Separe por comas, saltos de linea o espacios. Las extensiones duplicadas se omiten.</p>' +
+            '<p style="font-size:12px;color:var(--text-secondary);margin:8px 0 12px;">Pegue las extensiones o seleccione un archivo. Separe por comas, saltos de linea o espacios. Las extensiones duplicadas se omiten.</p>' +
             '<button type="button" id="ext-upload-btn" class="btn btn-primary">Subir extensiones</button>' +
             '<span id="ext-upload-result" style="margin-left:12px;font-size:13px;"></span>' +
         '</div>' +
@@ -3472,6 +3477,26 @@ function renderExtensionsBody() {
         '</div>';
     var upBtn = document.getElementById('ext-upload-btn');
     if (upBtn) upBtn.addEventListener('click', uploadExtensions);
+    var pickBtn = document.getElementById('ext-pick-file');
+    var fileInput = document.getElementById('ext-file');
+    if (pickBtn && fileInput) {
+        pickBtn.addEventListener('click', function() { fileInput.click(); });
+        fileInput.addEventListener('change', function() {
+            var file = fileInput.files && fileInput.files[0];
+            var nameSpan = document.getElementById('ext-file-name');
+            if (!file) return;
+            if (nameSpan) nameSpan.textContent = file.name;
+            var reader = new FileReader();
+            reader.onload = function() {
+                var ta = document.getElementById('ext-bulk');
+                if (ta) {
+                    var existing = ta.value.trim();
+                    ta.value = (existing ? existing + '\n' : '') + String(reader.result || '').trim();
+                }
+            };
+            reader.readAsText(file);
+        });
+    }
     body.querySelectorAll('[data-del]').forEach(function(b) {
         b.addEventListener('click', function() { deleteExtension(b.dataset.del); });
     });

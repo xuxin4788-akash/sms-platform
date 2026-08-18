@@ -1094,9 +1094,9 @@ def init_db():
 
         # Migration: add last_login_ip and last_login_at to users
         try:
-            if db_type == 'postgresql':
+            if db_type == 'postgres':
                 cursor = db.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'users'")
-                cols = [row[0] for row in cursor.fetchall()]
+                cols = [(row['column_name'] if isinstance(row, dict) else row[0]) for row in cursor.fetchall()]
                 if 'last_login_ip' not in cols:
                     db.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT DEFAULT ''")
                 if 'last_login_at' not in cols:
@@ -1544,7 +1544,7 @@ EXT_COUNTRIES = ('', 'mx', 'co', 'pe')
 def _extensions_table_ready():
     """Return True if the extensions table exists."""
     db = get_db()
-    if db.db_type == 'postgresql':
+    if db.db_type == 'postgres':
         row = db.execute(
             "SELECT 1 FROM information_schema.tables WHERE table_name='extensions'"
         ).fetchone()
@@ -1957,7 +1957,7 @@ def get_me():
             perms_configured = True
         else:
             # Get permissions from role_permissions table
-            row = db.execute("SELECT permissions FROM role_permissions WHERE role = %s" if db.db_type == 'postgresql' else "SELECT permissions FROM role_permissions WHERE role = ?", (role,)).fetchone()
+            row = db.execute("SELECT permissions FROM role_permissions WHERE role = ?", (role,)).fetchone()
             raw_perms = None
             has_explicit_config = False
             if row:
@@ -3082,11 +3082,11 @@ def update_role_permissions(role):
     perms_json = _json.dumps(permissions)
 
     # Update or insert
-    existing = db.execute("SELECT role FROM role_permissions WHERE role = %s" if db.db_type == 'postgresql' else "SELECT role FROM role_permissions WHERE role = ?", (role,)).fetchone()
+    existing = db.execute("SELECT role FROM role_permissions WHERE role = ?", (role,)).fetchone()
     if existing:
-        db.execute("UPDATE role_permissions SET permissions = %s WHERE role = %s" if db.db_type == 'postgresql' else "UPDATE role_permissions SET permissions = ? WHERE role = ?", (perms_json, role))
+        db.execute("UPDATE role_permissions SET permissions = ? WHERE role = ?", (perms_json, role))
     else:
-        db.execute("INSERT INTO role_permissions (role, permissions) VALUES (%s, %s)" if db.db_type == 'postgresql' else "INSERT INTO role_permissions (role, permissions) VALUES (?, ?)", (role, perms_json))
+        db.execute("INSERT INTO role_permissions (role, permissions) VALUES (?, ?)", (role, perms_json))
     db.commit()
 
     return jsonify({'success': True, 'role': role, 'permissions': permissions})
