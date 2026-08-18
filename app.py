@@ -4298,8 +4298,8 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
 
         details = f"Contactos eliminados: {count}; grupos: {group_count}; disparado por: {triggered_by}"
         db.execute(
-            "INSERT INTO send_logs (action, recipient, status, details) VALUES (?, ?, ?, ?)",
-            ('auto_clear_contacts', '(all)', 'ok', details),
+            "INSERT INTO send_logs (action, status, details) VALUES (?, ?, ?)",
+            ('auto_clear_contacts', 'ok', details),
         )
         db.commit()
         app.logger.warning('auto_clear_contacts completed: %s', details)
@@ -4309,8 +4309,8 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
         try:
             _setting_set('auto_clear_last_run_status', f'error: {str(exc)[:200]}')
             db.execute(
-                "INSERT INTO send_logs (action, recipient, status, details) VALUES (?, ?, ?, ?)",
-                ('auto_clear_contacts', '(all)', 'error', f'Error: {str(exc)[:400]}'),
+                "INSERT INTO send_logs (action, status, details) VALUES (?, ?, ?)",
+                ('auto_clear_contacts', 'error', f'Error: {str(exc)[:400]}'),
             )
             db.commit()
         except Exception:
