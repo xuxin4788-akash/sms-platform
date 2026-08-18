@@ -3399,7 +3399,7 @@ async function renderVoiceConfig(container) {
                   '<div class="card-body">' +
                     '<form onsubmit="saveVoiceConfig(event, ' + c.id + ')">' +
                       '<div class="form-grid">' +
-                        '<div class="form-group"><label>URL de la API</label><input type="text" name="api_domain" value="' + escapeHtml(c.api_domain || '') + '" placeholder="http://IP:puerto (ej: http://mex.infin8link.com:4434)"></div>' +
+                        '<div class="form-group"><label>URL de la API</label><input type="text" name="api_domain" value="' + escapeHtml(c.api_domain || '') + '" placeholder="host:puerto (ej: mex.infin8link.com:4434)"></div>' +
                         '<div class="form-group"><label>AppID</label><input type="text" name="voice_appid" value="' + escapeHtml(c.voice_appid || '') + '" placeholder="AppID autorizado"></div>' +
                         '<div class="form-group"><label>AccessKey</label><input type="password" name="voice_accesskey" placeholder="' + (c.has_accesskey ? '******** (configurada - dejar vacia para conservar)' : 'AccessKey autorizada') + '"></div>' +
                         '<div class="form-group"><label>Numero remitente (disnumber, opcional)</label><input type="text" name="from_number" value="' + escapeHtml(c.from_number || '') + '" placeholder="Dejar vacio para asignar uno aleatorio"></div>' +

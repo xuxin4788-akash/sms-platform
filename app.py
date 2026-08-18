@@ -5761,6 +5761,22 @@ def _token_db_columns(config):
     return 'voice_token', 'voice_token_expiry'
 
 
+def _voice_api_url(config):
+    """Normalize the Infinity base URL: strip spaces/trailing slash and ensure
+    it has an http(s) scheme. The UI stores just 'host:port' (e.g.
+    'mex.infin8link.com:4434'), which requests rejects with 'No connection
+    adapters were found'; we default to https:// like the SMS integration does.
+    """
+    raw = ((config or {}).get('api_domain') or '').strip()
+    if not raw:
+        return ''
+    if raw.startswith(('http://', 'https://')):
+        base = raw
+    else:
+        base = 'https://' + raw
+    return base.rstrip('/')
+
+
 def infin8linx_get_token(config, force=False):
     """Obtain an auth token from Infinity (service App.Sip_Auth.Login).
 
@@ -5780,12 +5796,12 @@ def infin8linx_get_token(config, force=False):
         cached = entry.get('token') or ''
         if cached and int(entry.get('expiry') or 0) - 600 > now:
             return cached, None
-    api_url = (config or {}).get('api_domain') or ''
+    api_url = _voice_api_url(config or {})
     appid = (config or {}).get('voice_appid') or ''
     accesskey = (config or {}).get('voice_accesskey') or ''
     if not (api_url and appid and accesskey):
         return '', 'Faltan datos de acceso (URL, AppID o AccessKey)'
-    url = api_url.rstrip('/')
+    url = api_url
     try:
         resp = http_requests.post(url, data={
             'service': 'App.Sip_Auth.Login',
@@ -5884,8 +5900,9 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext=''):
     }
     if disnumber:
         payload['disnumber'] = disnumber
+    call_url = _voice_api_url(config)
     try:
-        resp = http_requests.post(config['api_domain'].rstrip('/'), data=payload, timeout=20)
+        resp = http_requests.post(call_url, data=payload, timeout=20)
         try:
             data = resp.json()
         except Exception:
@@ -5897,7 +5914,7 @@ def infin8linx_make_call(phone, config, extnumber=None, forced_ext=''):
                 token2, err2 = infin8linx_get_token(config, force=True)
                 if token2 and not err2:
                     payload['token'] = token2
-                    resp = http_requests.post(config['api_domain'].rstrip('/'), data=payload, timeout=20)
+                    resp = http_requests.post(call_url, data=payload, timeout=20)
                     data = resp.json()
                     if int(data.get('ret', 0)) == 200:
                         body = data.get('data') or {}
@@ -6335,6 +6352,12 @@ def voice_update_config(config_id):
     if provider not in ('simulation', 'infin8linx'):
         return jsonify({'error': 'Proveedor invalido'}), 400
     api_domain = (data.get('api_domain') if 'api_domain' in data else row.get('api_domain')) or ''
+    # Normalize: store host[:port] without scheme so the UI stays clean;
+    # _voice_api_url() prepends https:// on every request.
+    api_domain = api_domain.strip()
+    if api_domain.startswith(('http://', 'https://')):
+        api_domain = re.sub(r'^https?://', '', api_domain)
+    api_domain = api_domain.rstrip('/')
     voice_appid = (data.get('voice_appid') if 'voice_appid' in data else row.get('voice_appid')) or ''
     from_number = (data.get('from_number') if 'from_number' in data else row.get('from_number')) or ''
     new_ak = data.get('voice_accesskey')
