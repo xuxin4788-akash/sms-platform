@@ -236,6 +236,15 @@ def init_db():
         cur = conn.cursor()
         # Full schema matching SQLite version
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_categories (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) UNIQUE NOT NULL,
+                retention_days INTEGER NOT NULL DEFAULT 0,
+                is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username VARCHAR(255) UNIQUE NOT NULL,
@@ -243,6 +252,7 @@ def init_db():
                 full_name VARCHAR(255) NOT NULL DEFAULT '',
                 role VARCHAR(20) NOT NULL DEFAULT 'team_member',
                 team_creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                category_id INTEGER REFERENCES user_categories(id) ON DELETE SET NULL,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 daily_limit INTEGER DEFAULT 0,
                 permissions TEXT DEFAULT '',
@@ -440,6 +450,27 @@ def init_db():
             cur.execute("SELECT 1 FROM information_schema.tables WHERE table_name=%s", (table,))
             return cur.fetchone() is not None
 
+        # user_categories (clasificacion de empleados + retencion de contactos)
+        if not pg_table_exists('user_categories'):
+            cur.execute("""
+                CREATE TABLE user_categories (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(100) UNIQUE NOT NULL,
+                    retention_days INTEGER NOT NULL DEFAULT 0,
+                    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+        if not pg_column_exists('users', 'category_id'):
+            cur.execute("ALTER TABLE users ADD COLUMN category_id INTEGER REFERENCES user_categories(id) ON DELETE SET NULL")
+        cur.execute("SELECT id FROM user_categories WHERE is_default=TRUE LIMIT 1")
+        if cur.fetchone() is None:
+            cur.execute(
+                "INSERT INTO user_categories (name, retention_days, is_default) VALUES (%s, %s, TRUE)",
+                ('General', 30)
+            )
+
         # users migrations
         if not pg_column_exists('users', 'team_creator_id'):
             cur.execute("ALTER TABLE users ADD COLUMN team_creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
@@ -529,6 +560,8 @@ def init_db():
             cur.execute("ALTER TABLE users ADD COLUMN extnumber VARCHAR(50) DEFAULT NULL")
         if not pg_column_exists('users', 'country'):
             cur.execute("ALTER TABLE users ADD COLUMN country VARCHAR(5) DEFAULT NULL")
+        if not pg_column_exists('users', 'category_id'):
+            cur.execute("ALTER TABLE users ADD COLUMN category_id INTEGER REFERENCES user_categories(id) ON DELETE SET NULL")
 
         # Create default admin
         cur.execute("SELECT id FROM users WHERE username='admin'")
@@ -642,6 +675,15 @@ def init_db():
         # SQLite
         db = sqlite3.connect(app.config['DATABASE'])
         db.executescript('''
+            CREATE TABLE IF NOT EXISTS user_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                retention_days INTEGER NOT NULL DEFAULT 0,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
@@ -649,6 +691,7 @@ def init_db():
                 full_name TEXT NOT NULL DEFAULT '',
                 role TEXT NOT NULL DEFAULT 'team_member' CHECK(role IN ('admin', 'team_admin', 'team_member')),
                 team_creator_id INTEGER,
+                category_id INTEGER,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 daily_limit INTEGER DEFAULT 0,
                 session_token TEXT DEFAULT '',
@@ -656,7 +699,8 @@ def init_db():
                 country TEXT DEFAULT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (team_creator_id) REFERENCES users(id) ON DELETE SET NULL
+                FOREIGN KEY (team_creator_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (category_id) REFERENCES user_categories(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS contact_groups (
@@ -1005,6 +1049,29 @@ def init_db():
             db.commit()
         except Exception:
             pass
+        # user_categories: clasificacion de empleados + retencion de contactos
+        try:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS user_categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    retention_days INTEGER NOT NULL DEFAULT 0,
+                    is_default INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            db.execute("ALTER TABLE users ADD COLUMN category_id INTEGER")
+            db.commit()
+        except Exception:
+            db.rollback()
+        try:
+            row = db.execute("SELECT id FROM user_categories WHERE is_default=1 LIMIT 1").fetchone()
+            if not row:
+                db.execute("INSERT INTO user_categories (name, retention_days, is_default) VALUES (?, ?, 1)", ('General', 30))
+            db.commit()
+        except Exception:
+            db.rollback()
         # Migration: recreate users table with new role CHECK constraint
         try:
             cursor = db.execute("SELECT sql FROM sqlite_master WHERE name='users'")
@@ -2018,6 +2085,22 @@ def get_me():
     country_codes = {'MX': '+52', 'CO': '+57', 'US': '+1', 'BR': '+55'}
     team_country_code = country_codes.get(team_country, '+52')
 
+    # Categoria del empleado (define retencion de contactos)
+    category_id = None
+    category_name = None
+    category_retention_days = 0
+    try:
+        if 'category_id' in g.user.keys():
+            category_id = g.user['category_id']
+        if category_id:
+            crow = db.execute("SELECT name, retention_days FROM user_categories WHERE id=?", (category_id,)).fetchone()
+            if crow:
+                category_name = crow['name'] if isinstance(crow, dict) else crow[0]
+                rd = crow['retention_days'] if isinstance(crow, dict) else crow[1]
+                category_retention_days = int(rd or 0)
+    except Exception:
+        pass
+
     return jsonify({
         'user': {
             'id': g.user['id'],
@@ -2030,11 +2113,155 @@ def get_me():
             'extnumber': g.user['extnumber'] if 'extnumber' in g.user.keys() else None,
             'country': normalize_country(g.user['country']) if 'country' in g.user.keys() else '',
             'country_label': COUNTRY_LABELS.get(normalize_country(g.user['country'])) if 'country' in g.user.keys() else '',
+            'category_id': category_id,
+            'category_name': category_name,
+            'category_retention_days': category_retention_days,
             'team_country_code': team_country_code,
             'environment': app.config['APP_ENVIRONMENT'],
             'app_label': app.config['APP_LABEL'],
         }
     })
+
+# ============================================================
+# User Categories (clasificacion de empleados + retencion de contactos)
+# ============================================================
+
+def get_user_categories(only_active_counts=False):
+    """Return all user categories ordered. retention_days=0 means 'forever'."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, name, retention_days, is_default, created_at, updated_at "
+        "FROM user_categories ORDER BY is_default DESC, name ASC"
+    ).fetchall()
+    cats = []
+    for r in rows:
+        cd = dict(r)
+        cd['is_default'] = bool(cd.get('is_default'))
+        cats.append(cd)
+    if only_active_counts:
+        for c in cats:
+            uc = db.execute("SELECT COUNT(*) AS c FROM users WHERE category_id=?", (c['id'],)).fetchone()
+            c['user_count'] = int((uc['c'] if isinstance(uc, dict) else uc[0]) if uc else 0)
+    return cats
+
+
+def get_default_category_id():
+    db = get_db()
+    row = db.execute("SELECT id FROM user_categories WHERE is_default=TRUE LIMIT 1").fetchone()
+    if row:
+        return row['id'] if isinstance(row, dict) else row[0]
+    row = db.execute("SELECT id FROM user_categories ORDER BY id ASC LIMIT 1").fetchone()
+    return (row['id'] if isinstance(row, dict) else row[0]) if row else None
+
+
+def resolve_category_id(raw):
+    """Validate and normalize a category id from request input. Returns int or None."""
+    if raw is None or raw == '' or str(raw).strip() == '':
+        return None
+    try:
+        cid = int(raw)
+    except (TypeError, ValueError):
+        return None
+    db = get_db()
+    row = db.execute("SELECT id FROM user_categories WHERE id=?", (cid,)).fetchone()
+    return cid if row else None
+
+
+@app.route('/api/user-categories', methods=['GET'])
+@login_required
+def list_user_categories():
+    # Managers need the list to populate user forms; include user counts for admins.
+    counts = g.user['role'] == 'admin'
+    return jsonify({'categories': get_user_categories(only_active_counts=counts)})
+
+
+@app.route('/api/user-categories', methods=['POST'])
+@login_required
+@admin_required
+def create_user_category():
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'El nombre es obligatorio'}), 400
+    if len(name) > 100:
+        return jsonify({'error': 'El nombre es demasiado largo'}), 400
+    try:
+        retention_days = int(data.get('retention_days', 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Dias de retencion invalidos'}), 400
+    if retention_days < 0:
+        return jsonify({'error': 'Los dias de retencion no pueden ser negativos'}), 400
+    db = get_db()
+    existing = db.execute("SELECT id FROM user_categories WHERE name=?", (name,)).fetchone()
+    if existing:
+        return jsonify({'error': 'Ya existe una categoria con ese nombre'}), 409
+    cur = db.execute(
+        "INSERT INTO user_categories (name, retention_days, is_default) VALUES (?, ?, ?)",
+        (name, retention_days, False)
+    )
+    db.commit()
+    return jsonify({'message': 'Categoria creada', 'id': cur.lastrowid}), 201
+
+
+@app.route('/api/user-categories/<int:cat_id>', methods=['PUT'])
+@login_required
+@admin_required
+def update_user_category(cat_id):
+    data = request.get_json() or {}
+    db = get_db()
+    cat = db.execute("SELECT * FROM user_categories WHERE id=?", (cat_id,)).fetchone()
+    if not cat:
+        return jsonify({'error': 'Categoria no encontrada'}), 404
+    name = (data.get('name') or '').strip()
+    if 'retention_days' in data:
+        try:
+            retention_days = int(data.get('retention_days'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Dias de retencion invalidos'}), 400
+        if retention_days < 0:
+            return jsonify({'error': 'Los dias de retencion no pueden ser negativos'}), 400
+    else:
+        retention_days = cat['retention_days']
+    if not name:
+        name = cat['name']
+    if len(name) > 100:
+        return jsonify({'error': 'El nombre es demasiado largo'}), 400
+    dup = db.execute("SELECT id FROM user_categories WHERE name=? AND id<>?", (name, cat_id)).fetchone()
+    if dup:
+        return jsonify({'error': 'Ya existe una categoria con ese nombre'}), 409
+    if get_db_type() == 'postgres':
+        db.execute(
+            "UPDATE user_categories SET name=%s, retention_days=%s, updated_at=NOW() WHERE id=%s",
+            (name, retention_days, cat_id)
+        )
+    else:
+        db.execute(
+            "UPDATE user_categories SET name=?, retention_days=?, updated_at=datetime('now') WHERE id=?",
+            (name, retention_days, cat_id)
+        )
+    db.commit()
+    return jsonify({'message': 'Categoria actualizada'})
+
+
+@app.route('/api/user-categories/<int:cat_id>', methods=['DELETE'])
+@login_required
+@admin_required
+def delete_user_category(cat_id):
+    db = get_db()
+    cat = db.execute("SELECT * FROM user_categories WHERE id=?", (cat_id,)).fetchone()
+    if not cat:
+        return jsonify({'error': 'Categoria no encontrada'}), 404
+    is_default = bool(dict(cat).get('is_default'))
+    if is_default:
+        return jsonify({'error': 'No se puede eliminar la categoria por defecto'}), 400
+    in_use = db.execute("SELECT COUNT(*) AS c FROM users WHERE category_id=?", (cat_id,)).fetchone()
+    used = int((in_use['c'] if isinstance(in_use, dict) else in_use[0]) if in_use else 0)
+    if used > 0:
+        return jsonify({'error': f'No se puede eliminar: {used} usuario(s) pertenecen a esta categoria. Reasignelos primero.'}), 409
+    db.execute("DELETE FROM user_categories WHERE id=?", (cat_id,))
+    db.commit()
+    return jsonify({'message': 'Categoria eliminada'})
+
 
 # ============================================================
 # Users API (role-based access control)
@@ -2048,14 +2275,17 @@ def list_users():
     role_filter = request.args.get('role', '').strip()
     search = request.args.get('search', '').strip()
 
-    # Base query with team creator name
+    # Base query with team creator name and category
     base_select = """
         SELECT u.id, u.username, u.full_name, u.role, u.team_creator_id,
                u.is_active, u.created_at, u.updated_at,
                u.last_login_ip, u.last_login_at, u.extnumber, u.country,
+               u.category_id,
+               c.name AS category_name, c.retention_days AS category_retention_days,
                tc.username AS team_creator_name, tc.full_name AS team_creator_fullname
         FROM users u
         LEFT JOIN users tc ON u.team_creator_id = tc.id
+        LEFT JOIN user_categories c ON u.category_id = c.id
     """
 
     if current['role'] == 'admin':
@@ -2147,14 +2377,19 @@ def create_user():
     assign_extension = bool(data.get('assign_extension', False))
     extnumber = None
     country = normalize_country(data.get('country'))
+    # Categoria del empleado (define los dias de retencion de sus contactos).
+    # Si no se especifica, se asigna la categoria por defecto.
+    category_id = resolve_category_id(data.get('category_id'))
+    if category_id is None and not (data.get('category_id') is not None and str(data.get('category_id')).strip() != ''):
+        category_id = get_default_category_id()
     if assign_extension:
         extnumber = allocate_extension(country=country)
         if not extnumber:
             label = {'mx': 'Mexico', 'co': 'Colombia', 'pe': 'Peru'}.get(country, 'el pool')
             return jsonify({'error': f'No hay extensiones disponibles para {label}. Pida al administrador del sistema que agregue mas extensiones en Configuracion de Voz.'}), 409
     cur = db.execute(
-        "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, country) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (username, hash_password(password), full_name, role, team_creator_id, extnumber, country or None)
+        "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, country, category_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (username, hash_password(password), full_name, role, team_creator_id, extnumber, country or None, category_id)
     )
     new_user_id = cur.lastrowid
     EXPORTABLE_PASSWORDS[int(new_user_id)] = password
@@ -2217,6 +2452,12 @@ def update_user(user_id):
         new_country = normalize_country(data.get('country'))
         updates.append("country=?")
         params.append(new_country or None)
+    # Categoria del empleado (retencion de contactos). Se permite asignar o
+    # desasignar (category_id=null -> usa la default en la practica).
+    if 'category_id' in data:
+        new_category = resolve_category_id(data.get('category_id'))
+        updates.append("category_id=?")
+        params.append(new_category)
     if password:
         if len(password) < 6:
             return jsonify({'error': 'La contrasena debe tener minimo 6 caracteres'}), 400
@@ -2299,7 +2540,7 @@ def delete_user(user_id):
         _extensions_release(deleted_ext)
     return jsonify({'message': 'Usuario eliminado'})
 
-def _bulk_create_users_core(current_user, users, default_api_config_id, default_password=None, assign_extensions=False, default_country=None):
+def _bulk_create_users_core(current_user, users, default_api_config_id, default_password=None, assign_extensions=False, default_country=None, default_category_id=None):
     """Core bulk-creation logic shared by JSON and Excel upload.
 
     Returns (created, errors). Each created item includes the plain-text
@@ -2313,6 +2554,10 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
     """
     db = get_db()
     default_country = normalize_country(default_country)
+    # Categoria por defecto de la tanda; si no es valida, cae a la global.
+    bulk_category_id = resolve_category_id(default_category_id)
+    if bulk_category_id is None:
+        bulk_category_id = get_default_category_id()
 
     if current_user['role'] == 'admin':
         role = 'team_admin'
@@ -2402,9 +2647,13 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
             taken_extensions.add(_normalize_extnumber(chosen).lower())
 
         try:
+            # Categoria: por fila o la default de la creacion masiva; si no, la default global.
+            row_cat = resolve_category_id(u.get('category_id'))
+            if row_cat is None:
+                row_cat = bulk_category_id
             db.execute(
-                "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, country) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (username, hash_password(password), full_name, role, team_creator_id, extnumber, country or None)
+                "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, country, category_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (username, hash_password(password), full_name, role, team_creator_id, extnumber, country or None, row_cat)
             )
             new_user_row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
             new_user_id = new_user_row['id']
@@ -2458,7 +2707,8 @@ def bulk_create_users():
     default_password = data.get('default_password')
     assign_extensions = bool(data.get('assign_extensions', False))
     default_country = data.get('country')
-    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password, assign_extensions=assign_extensions, default_country=default_country)
+    default_category_id = data.get('category_id')
+    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password, assign_extensions=assign_extensions, default_country=default_country, default_category_id=default_category_id)
     if result[0] is None:
         # Special case: pre-validation error (e.g. empty pool when assigning)
         if len(result) > 2 and isinstance(result[1], list) and result[1] and result[1][0].get('index') == -1:
@@ -2588,8 +2838,9 @@ def bulk_import_users():
     default_password = request.form.get('default_password')
     assign_extensions = request.form.get('assign_extensions', 'false').lower() in ('1', 'true', 'on', 'yes')
     default_country = request.form.get('country')
+    default_category_id = request.form.get('category_id')
 
-    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password, assign_extensions=assign_extensions, default_country=default_country)
+    result = _bulk_create_users_core(g.user, users, default_api_config_id, default_password, assign_extensions=assign_extensions, default_country=default_country, default_category_id=default_category_id)
     if result[0] is None:
         if result[1]:
             return jsonify({'error': result[1][0].get('error', 'Permisos insuficientes')}), 409
@@ -5160,7 +5411,11 @@ def set_auto_clear_config(enabled=None, time_str=None):
 
 
 def run_auto_clear_contacts(triggered_by='scheduler'):
-    """Delete all contacts and group memberships; retain SMS records."""
+    """Delete contacts older than the retention window defined by the owning
+    user's category (user_categories.retention_days). retention_days=0 or NULL
+    means 'retain forever'. Contacts without a creator or whose creator has no
+    category are retained. Groups are NEVER deleted (replaces the previous
+    full-wipe behavior). SMS/voice records are always retained."""
     db = get_db()
     lock_acquired = False
     try:
@@ -5182,17 +5437,66 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
         if not lock_acquired:
             return 0, 'Ya se esta ejecutando una limpieza'
 
-        count_cur = db.execute("SELECT COUNT(*) AS c FROM contacts")
-        count_row = count_cur.fetchone()
-        count = int((count_row['c'] if isinstance(count_row, dict) else count_row[0]) if count_row else 0)
-        group_cur = db.execute("SELECT COUNT(*) AS c FROM contact_groups")
-        group_row = group_cur.fetchone()
-        group_count = int((group_row['c'] if isinstance(group_row, dict) else group_row[0]) if group_row else 0)
-
-        # The schema uses contacts.group_id FK (no junction table). Delete
-        # groups first (ON DELETE SET NULL handles the FK), then contacts.
-        db.execute("DELETE FROM contact_groups")
-        db.execute("DELETE FROM contacts")
+        is_pg = get_db_type() == 'postgres'
+        if is_pg:
+            # Delete contacts whose owning user belongs to a category with a
+            # finite retention window and whose created_at is older than that
+            # window. NOW() - (days || ' days')::interval handles the cutoff.
+            count_cur = db.execute(
+                """
+                SELECT COUNT(*) AS c FROM contacts ct
+                WHERE EXISTS (
+                    SELECT 1 FROM users u
+                    JOIN user_categories cat ON u.category_id = cat.id
+                    WHERE u.id = ct.created_by
+                      AND cat.retention_days > 0
+                      AND ct.created_at < NOW() - (cat.retention_days::text || ' days')::interval
+                )
+                """
+            )
+            count_row = count_cur.fetchone()
+            count = int((count_row['c'] if isinstance(count_row, dict) else count_row[0]) if count_row else 0)
+            db.execute(
+                """
+                DELETE FROM contacts ct
+                WHERE EXISTS (
+                    SELECT 1 FROM users u
+                    JOIN user_categories cat ON u.category_id = cat.id
+                    WHERE u.id = ct.created_by
+                      AND cat.retention_days > 0
+                      AND ct.created_at < NOW() - (cat.retention_days::text || ' days')::interval
+                )
+                """
+            )
+        else:
+            # SQLite: datetime('now', '-N days') per row via the joined days.
+            # Note: SQLite does NOT allow an alias on the DELETE target table.
+            count_cur = db.execute(
+                """
+                SELECT COUNT(*) AS c FROM contacts
+                WHERE EXISTS (
+                    SELECT 1 FROM users u
+                    JOIN user_categories cat ON u.category_id = cat.id
+                    WHERE u.id = contacts.created_by
+                      AND cat.retention_days > 0
+                      AND contacts.created_at < datetime('now', '-' || cat.retention_days || ' days')
+                )
+                """
+            )
+            count_row = count_cur.fetchone()
+            count = int((count_row['c'] if isinstance(count_row, dict) else count_row[0]) if count_row else 0)
+            db.execute(
+                """
+                DELETE FROM contacts
+                WHERE EXISTS (
+                    SELECT 1 FROM users u
+                    JOIN user_categories cat ON u.category_id = cat.id
+                    WHERE u.id = contacts.created_by
+                      AND cat.retention_days > 0
+                      AND contacts.created_at < datetime('now', '-' || cat.retention_days || ' days')
+                )
+                """
+            )
         db.commit()
 
         now = datetime.utcnow().isoformat()
@@ -5200,7 +5504,7 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
         _setting_set('auto_clear_last_run_count', str(count))
         _setting_set('auto_clear_last_run_status', 'ok')
 
-        details = f"Contactos eliminados: {count}; grupos: {group_count}; disparado por: {triggered_by}"
+        details = f"Contactos expirados eliminados segun retencion por categoria: {count}; grupos conservados; disparado por: {triggered_by}"
         db.execute(
             "INSERT INTO send_logs (action, status, details) VALUES (?, ?, ?)",
             ('auto_clear_contacts', 'ok', details),

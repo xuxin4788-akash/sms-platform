@@ -401,6 +401,9 @@ function navigateTo(page) {
         case 'extensions':
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
             renderExtensions(content); break;
+        case 'retention':
+            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            renderRetention(content); break;
         case 'content-search': renderContentSearch(content); break;
         case 'users': renderUsers(content); break;
         case 'my-account': renderMyAccount(content); break;
@@ -1284,7 +1287,15 @@ async function renderUsers(container) {
             var extCell = u.extnumber ? '<span class="badge badge-blue" title="Extension/telefono fijo asignado">' + escapeHtml(u.extnumber) + '</span>' : '<span class="text-sm text-secondary">-</span>';
             var countryLabels = {mx: 'Mexico', co: 'Colombia', pe: 'Peru'};
             var countryCell = u.country ? '<span class="text-sm">' + escapeHtml(countryLabels[u.country] || u.country) + '</span>' : '<span class="text-sm text-secondary">-</span>';
-            return '<tr><td style="width:40px;">' + checkbox + '</td><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td>' + extCell + '</td><td>' + countryCell + '</td><td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + roleBtn + deleteBtn + '</td></tr>';
+            var categoryCell = '<span class="text-sm text-secondary">-</span>';
+            if (myRole === 'admin') {
+                if (u.category_name) {
+                    categoryCell = '<span class="badge badge-gray">' + escapeHtml(u.category_name) + ' · ' + retentionLabel(u.category_retention_days) + '</span>';
+                } else {
+                    categoryCell = '<span class="text-sm text-secondary">Por defecto</span>';
+                }
+            }
+            return '<tr><td style="width:40px;">' + checkbox + '</td><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td>' + extCell + '</td><td>' + countryCell + '</td>' + (myRole === 'admin' ? '<td>' + categoryCell + '</td>' : '') + '<td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + roleBtn + deleteBtn + '</td></tr>';
         }).join('');
 
         // Role filter options based on current user role
@@ -1295,7 +1306,7 @@ async function renderUsers(container) {
             roleOptions += '<option value="team_member">Miembro de Equipo</option>';
         }
 
-        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="showBulkCreateModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg> Creacion Masiva</button><button class="btn btn-secondary btn-sm" onclick="showBulkImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Importar Excel</button><button class="btn btn-secondary btn-sm" onclick="showBulkPasswordModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg> Clave Masiva</button><button class="btn btn-secondary btn-sm" onclick="exportUsers()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Exportar</button><button class="btn btn-danger btn-sm" id="bulk-delete-btn" onclick="bulkDeleteUsers()" disabled style="opacity:0.5;cursor:not-allowed;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Eliminar (<span id="bulk-selected-count">0</span>)</button><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div></div><div id="bulk-action-bar" class="card mb-3" style="display:none;padding:10px 16px;background:var(--light-blue);border-color:var(--primary);"></div><div class="card mb-3"><div style="display:flex;gap:12px;align-items:center;padding:12px 16px;flex-wrap:wrap;"><div style="flex:1;min-width:200px;position:relative;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input type="text" id="user-search" class="form-control" placeholder="Buscar por usuario o nombre..." value="' + escapeHtml(searchVal) + '" style="padding-left:36px;" oninput="debounceRenderUsers()"></div><select id="user-role-filter" class="form-control" style="width:auto;min-width:180px;" onchange="renderUsers(document.getElementById(\'page-content\'))">' + roleOptions + '</select></div></div><div class="card"><div class="table-container"><table><thead><tr><th style="width:40px;"><input type="checkbox" id="user-select-all" onchange="toggleAllUsers(this)" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;"></th><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Equipo</th><th>Extension</th><th>Pais</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="10" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
+        container.innerHTML = '<div class="flex-between mb-4"><div><h1 style="font-size:22px;font-weight:700;">' + title + '</h1><p class="text-secondary" style="margin-top:4px;">' + desc + '</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="showBulkCreateModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg> Creacion Masiva</button><button class="btn btn-secondary btn-sm" onclick="showBulkImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Importar Excel</button><button class="btn btn-secondary btn-sm" onclick="showBulkPasswordModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg> Clave Masiva</button><button class="btn btn-secondary btn-sm" onclick="exportUsers()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Exportar</button><button class="btn btn-danger btn-sm" id="bulk-delete-btn" onclick="bulkDeleteUsers()" disabled style="opacity:0.5;cursor:not-allowed;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Eliminar (<span id="bulk-selected-count">0</span>)</button><button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo</button></div></div><div id="bulk-action-bar" class="card mb-3" style="display:none;padding:10px 16px;background:var(--light-blue);border-color:var(--primary);"></div><div class="card mb-3"><div style="display:flex;gap:12px;align-items:center;padding:12px 16px;flex-wrap:wrap;"><div style="flex:1;min-width:200px;position:relative;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-secondary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input type="text" id="user-search" class="form-control" placeholder="Buscar por usuario o nombre..." value="' + escapeHtml(searchVal) + '" style="padding-left:36px;" oninput="debounceRenderUsers()"></div><select id="user-role-filter" class="form-control" style="width:auto;min-width:180px;" onchange="renderUsers(document.getElementById(\'page-content\'))">' + roleOptions + '</select></div></div><div class="card"><div class="table-container"><table><thead><tr><th style="width:40px;"><input type="checkbox" id="user-select-all" onchange="toggleAllUsers(this)" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;"></th><th>Usuario</th><th>Nombre Completo</th><th>Rol</th><th>Equipo</th><th>Extension</th><th>Pais</th><th>Categoria</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>' + (rows || '<tr><td colspan="11" class="empty-state">Sin usuarios</td></tr>') + '</tbody></table></div></div>';
         window._users = data.users;
         // Restore role filter selection
         if (roleFilterVal) { var sel = document.getElementById('user-role-filter'); if (sel) sel.value = roleFilterVal; }
@@ -1335,7 +1346,33 @@ async function showAddUserModal() {
     }
     var countryFieldHtml = '<div class="form-group"><label>Pais del agente</label><select name="country"><option value="">Sin pais especifico</option><option value="mx">Mexico</option><option value="co">Colombia</option><option value="pe">Peru</option></select><small class="text-secondary">Define de que pool de extensiones se asigna (Mexico/Colombia/Peru).</small></div>';
     var extFieldHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool del pais seleccionado. No se permite escribir el numero manualmente; si no hay extensiones libres, pida al administrador del sistema que agregue mas.</small></div>';
-    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role" id="add-user-role" onchange="toggleApiConfig()">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div>' + apiConfigHtml + countryFieldHtml + extFieldHtml + '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+    var categoryHtml = await categoryFieldHtml(null);
+    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role" id="add-user-role" onchange="toggleApiConfig()">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div>' + apiConfigHtml + countryFieldHtml + categoryHtml + extFieldHtml + '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+}
+
+// Cache de categorias para los formularios de usuario (solo admin las asigna).
+var _userCategoriesCache = null;
+async function loadUserCategories() {
+    if (_userCategoriesCache) return _userCategoriesCache;
+    try {
+        var d = await api('/api/user-categories');
+        _userCategoriesCache = d.categories || [];
+    } catch (e) {
+        _userCategoriesCache = [];
+    }
+    return _userCategoriesCache;
+}
+
+async function categoryFieldHtml(selectedId) {
+    if (state.user.role !== 'admin') return '';
+    var cats = await loadUserCategories();
+    if (!cats.length) return '';
+    var options = cats.map(function(c) {
+        var sel = (parseInt(selectedId, 10) === c.id) ? ' selected' : '';
+        var label = c.name + ' (' + retentionLabel(c.retention_days) + ')';
+        return '<option value="' + c.id + '"' + sel + '>' + escapeHtml(label) + '</option>';
+    }).join('');
+    return '<div class="form-group"><label>Categoria de empleado</label><select name="category_id"><option value="">Por defecto</option>' + options + '</select><small class="text-secondary">Define cuantos dias se conservan los contactos de este empleado. Se configura en "Retencion de Contactos".</small></div>';
 }
 
 function toggleApiConfig() {
@@ -1349,15 +1386,16 @@ function toggleApiConfig() {
 async function handleAddUser(event) {
     event.preventDefault(); var form = event.target;
     var body = { username: form.username.value.trim(), full_name: form.full_name.value.trim(), password: form.password.value, role: form.role.value, country: form.country ? form.country.value : '', assign_extension: !!form.assign_extension.checked };
+    if (form.category_id) { body.category_id = form.category_id.value ? parseInt(form.category_id.value) : null; }
     var apiConfigSelect = form.querySelector('select[name="api_config_id"]');
     if (apiConfigSelect && apiConfigSelect.value) {
         body.api_config_id = parseInt(apiConfigSelect.value);
     }
-    try { await api('/api/users', { method: 'POST', body: body }); hideModal(); showToast('Usuario creado', 'success'); renderUsers(document.getElementById('page-content')); }
+    try { await api('/api/users', { method: 'POST', body: body }); hideModal(); showToast('Usuario creado', 'success'); _userCategoriesCache = null; renderUsers(document.getElementById('page-content')); }
     catch (err) { showToast(err.message, 'error'); }
 }
 
-function showEditUserModal(id) {
+async function showEditUserModal(id) {
     var u = (window._users || []).find(function(usr) { return usr.id === id; });
     if (!u) return;
     var extHtml;
@@ -1368,7 +1406,8 @@ function showEditUserModal(id) {
     }
     var currentCountry = u.country || '';
     var countryHtml = '<div class="form-group"><label>Pais del agente</label><select name="country"><option value=""' + (!currentCountry?' selected':'') + '>Sin pais especifico</option><option value="mx"' + (currentCountry==='mx'?' selected':'') + '>Mexico</option><option value="co"' + (currentCountry==='co'?' selected':'') + '>Colombia</option><option value="pe"' + (currentCountry==='pe'?' selected':'') + '>Peru</option></select><small class="text-secondary">Define de que pool se asigna la extension. Cambiar de pais no reasigna la extension actual (liberela primero si necesita otra).</small></div>';
-    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Rol</label><input type="text" value="' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '" disabled style="background:var(--bg);"><small class="text-secondary">El rol no se puede cambiar despues de la creacion</small></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div>' + countryHtml + extHtml + '<div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+    var categoryHtml = await categoryFieldHtml(u.category_id);
+    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Rol</label><input type="text" value="' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '" disabled style="background:var(--bg);"><small class="text-secondary">El rol no se puede cambiar despues de la creacion</small></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div>' + countryHtml + categoryHtml + extHtml + '<div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
 }
 
 async function handleEditUser(event, id) {
@@ -1377,8 +1416,9 @@ async function handleEditUser(event, id) {
         var body = { full_name: form.full_name.value.trim(), country: form.country.value, is_active: parseInt(form.is_active.value) };
         if (form.password.value) body.password = form.password.value;
         if (form.assign_extension) body.assign_extension = !!form.assign_extension.checked;
+        if (form.category_id) { body.category_id = form.category_id.value ? parseInt(form.category_id.value) : null; }
         await api('/api/users/' + id, { method: 'PUT', body: body });
-        hideModal(); showToast('Usuario actualizado', 'success'); renderUsers(document.getElementById('page-content'));
+        hideModal(); showToast('Usuario actualizado', 'success'); _userCategoriesCache = null; renderUsers(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -2407,7 +2447,7 @@ async function renderConfig(container) {
         }
 
         var ac = results[2] || {};
-        html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;"><div><h2 style="margin:0;">Limpieza automatica de contactos</h2><p class="text-secondary" style="margin:4px 0 0;font-size:13px;">Elimina todos los contactos y grupos diariamente a la hora indicada. Los registros de SMS se conservan.</p></div><label style="display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer;"><input type="checkbox" id="auto-clear-enabled" ' + (ac.enabled ? 'checked' : '') + ' onchange="saveAutoClearConfig()"> Activado</label></div><div class="card-body"><div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;"><div><label class="form-label">Hora de ejecucion (HH:MM)</label><input type="time" id="auto-clear-time" class="form-input" value="' + escapeHtml(ac.time || '03:00') + '" style="min-width:140px;"></div><button class="btn btn-primary" onclick="saveAutoClearConfig()">Guardar horario</button><button class="btn btn-danger" onclick="runAutoClearNow()">Ejecutar ahora</button></div><div class="mt-3 text-sm" style="display:grid;gap:6px;"><span>Ultima ejecucion: <strong>' + (ac.last_run_at ? escapeHtml(ac.last_run_at) : 'Nunca') + '</strong></span><span>Ultima cantidad eliminada: <strong>' + (ac.last_run_count || 0) + '</strong></span><span>Estado: <strong>' + escapeHtml(ac.last_run_status || 'pendiente') + '</strong></span></div></div></div>';
+        html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;"><div><h2 style="margin:0;">Retencion de contactos</h2><p class="text-secondary" style="margin:4px 0 0;font-size:13px;">La limpieza diaria ahora elimina solo los contactos vencidos segun la categoria de cada empleado (ya no borra todos los contactos).</p></div><a class="btn btn-primary btn-sm" href="#/retention">Configurar categorias</a></div><div class="card-body"><div class="mt-1 text-sm" style="display:grid;gap:6px;"><span>Ultima ejecucion: <strong>' + (ac.last_run_at ? escapeHtml(ac.last_run_at) : 'Nunca') + '</strong></span><span>Contactos eliminados la ultima vez: <strong>' + (ac.last_run_count || 0) + '</strong></span><span>Estado: <strong>' + escapeHtml(ac.last_run_status || 'pendiente') + '</strong></span></div></div></div>';
 
         html += '<div class="card"><div class="card-header"><h2>Registros de Actividad</h2></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Accion</th><th>Detalles</th><th>Estado</th></tr></thead><tbody>' + logRows + '</tbody></table></div></div>';
         container.innerHTML = html;
@@ -2433,28 +2473,6 @@ async function saveBillingPrice() {
     try {
         await api('/api/settings/billing', { method: 'PUT', body: { sms_unit_price: val } });
         showToast('Costo por SMS guardado', 'success');
-        renderConfig(document.getElementById('page-content'));
-    } catch (err) { showToast(err.message, 'error'); }
-}
-
-async function saveAutoClearConfig() {
-    var enabledEl = document.getElementById('auto-clear-enabled');
-    var timeEl = document.getElementById('auto-clear-time');
-    var body = {};
-    if (enabledEl) body.enabled = enabledEl.checked;
-    if (timeEl) body.time = timeEl.value;
-    try {
-        await api('/api/config/auto-clear', { method: 'PUT', body: body });
-        showToast('Limpieza automatica guardada', 'success');
-        renderConfig(document.getElementById('page-content'));
-    } catch (err) { showToast(err.message, 'error'); }
-}
-
-async function runAutoClearNow() {
-    if (!confirm('Se eliminaran TODOS los contactos y grupos ahora mismo. Los registros de SMS se conservan. Continuar?')) return;
-    try {
-        var data = await api('/api/config/auto-clear/run-now', { method: 'POST' });
-        showToast('Contactos eliminados: ' + (data.deleted || 0), 'success');
         renderConfig(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }
 }
@@ -3592,6 +3610,165 @@ function deleteExtension(id) {
     api('/api/extensions/' + id, { method: 'DELETE' }).then(function() {
         loadExtensions();
     }).catch(function(e) { alert(e.message || 'Error al eliminar'); });
+}
+
+// ============================================================
+// Retencion de contactos por categoria de empleado
+// ============================================================
+var retentionState = { categories: [], autoClear: null };
+
+function retentionLabel(days) {
+    var n = parseInt(days, 10);
+    if (!n || n <= 0) return 'Permanente';
+    return n + (n === 1 ? ' dia' : ' dias');
+}
+
+async function renderRetention(container) {
+    container.innerHTML =
+        '<h1 style="margin-bottom:4px;">Retencion de Contactos por Categoria</h1>' +
+        '<p style="color:var(--text-secondary);margin-bottom:20px;">Clasifique a los empleados y defina cuantos dias se conservan sus contactos. Esta regla reemplaza la limpieza diaria total: cada dia se eliminan solo los contactos mas antiguos que el plazo de la categoria de su propietario.</p>' +
+        '<div class="card mb-4" id="retention-cats-card"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;"><h3>Categorias de empleados</h3><button class="btn btn-primary btn-sm" onclick="showCategoryModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nueva categoria</button></div><div class="card-body" style="padding:0;"><div class="loading">Cargando...</div></div></div>' +
+        '<div class="card" id="retention-clear-card"><div class="card-header"><h3>Limpieza automatica</h3></div><div class="card-body"><div class="loading">Cargando...</div></div></div>';
+    await Promise.all([loadCategoriesForRetention(), loadAutoClearForRetention()]);
+}
+
+function loadCategoriesForRetention() {
+    return api('/api/user-categories').then(function(d) {
+        retentionState.categories = d.categories || [];
+        renderRetentionCategories();
+    }).catch(function(e) {
+        var body = document.querySelector('#retention-cats-card .card-body');
+        if (body) body.innerHTML = '<div class="alert alert-danger">' + escapeHtml(e.message || 'Error al cargar') + '</div>';
+    });
+}
+
+function loadAutoClearForRetention() {
+    return api('/api/config/auto-clear').then(function(d) {
+        retentionState.autoClear = d;
+        renderRetentionAutoClear();
+    }).catch(function(e) {
+        var body = document.querySelector('#retention-clear-card .card-body');
+        if (body) body.innerHTML = '<div class="alert alert-danger">' + escapeHtml(e.message || 'Error al cargar') + '</div>';
+    });
+}
+
+function renderRetentionCategories() {
+    var body = document.querySelector('#retention-cats-card .card-body');
+    if (!body) return;
+    var cats = retentionState.categories || [];
+    if (!cats.length) {
+        body.innerHTML = '<div class="empty-state">Sin categorias</div>';
+        return;
+    }
+    var rows = cats.map(function(c) {
+        var isDefault = c.is_default;
+        var count = (typeof c.user_count === 'number') ? c.user_count : null;
+        return '<tr>' +
+            '<td style="font-weight:600;">' + escapeHtml(c.name) + (isDefault ? ' <span class="badge badge-blue">por defecto</span>' : '') + '</td>' +
+            '<td>' + retentionLabel(c.retention_days) + '</td>' +
+            '<td>' + (count !== null ? count : '-') + '</td>' +
+            '<td style="text-align:right;white-space:nowrap;">' +
+                '<button class="btn btn-ghost btn-sm" onclick="showCategoryModal(' + c.id + ')">Editar</button>' +
+                (isDefault ? '' : ' <button class="btn btn-danger btn-sm" onclick="deleteCategory(' + c.id + ')">Eliminar</button>') +
+            '</td>' +
+        '</tr>';
+    }).join('');
+    body.innerHTML =
+        '<div class="table-container"><table>' +
+            '<thead><tr><th>Categoria</th><th>Retencion de contactos</th><th>Empleados</th><th style="text-align:right;">Acciones</th></tr></thead>' +
+            '<tbody>' + rows + '</tbody>' +
+        '</table></div>' +
+        '<p style="padding:12px 16px 0;color:var(--text-secondary);font-size:12px;">0 dias = los contactos se conservan permanentemente. Los contactos sin propietario o sin categoria nunca se eliminan.</p>';
+}
+
+function renderRetentionAutoClear() {
+    var body = document.querySelector('#retention-clear-card .card-body');
+    if (!body || !retentionState.autoClear) return;
+    var cfg = retentionState.autoClear;
+    var lastRun = cfg.last_run_at ? formatDate(cfg.last_run_at) : 'Nunca';
+    var checked = cfg.enabled ? 'checked' : '';
+    var statusLine = cfg.last_run_status && cfg.last_run_status !== 'ok'
+        ? '<span style="color:var(--danger);">' + escapeHtml(cfg.last_run_status) + '</span>'
+        : 'OK';
+    body.innerHTML =
+        '<div style="display:flex;flex-direction:column;gap:16px;">' +
+            '<label style="display:flex;align-items:center;gap:10px;cursor:pointer;">' +
+                '<input type="checkbox" id="retention-enabled" ' + checked + ' style="width:18px;height:18px;accent-color:var(--primary);">' +
+                '<span>Activar limpieza automatica diaria (solo contactos vencidos por categoria)</span>' +
+            '</label>' +
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+                '<label for="retention-time" style="font-weight:500;">Hora de ejecucion:</label>' +
+                '<input type="time" id="retention-time" class="form-control" style="width:auto;" value="' + escapeHtml(cfg.time || '03:00') + '">' +
+                '<button class="btn btn-primary btn-sm" onclick="saveAutoClear()">Guardar</button>' +
+                '<button class="btn btn-secondary btn-sm" onclick="runAutoClearNow()">Ejecutar ahora</button>' +
+            '</div>' +
+            '<div style="font-size:13px;color:var(--text-secondary);border-top:1px solid var(--border);padding-top:12px;">' +
+                '<div>Ultima ejecucion: <strong>' + lastRun + '</strong></div>' +
+                '<div>Contactos eliminados en la ultima ejecucion: <strong>' + (cfg.last_run_count || 0) + '</strong> (' + statusLine + ')</div>' +
+            '</div>' +
+        '</div>';
+}
+
+function saveAutoClear() {
+    var enabled = document.getElementById('retention-enabled').checked;
+    var time = document.getElementById('retention-time').value;
+    api('/api/config/auto-clear', { method: 'PUT', body: { enabled: enabled, time: time } }).then(function(d) {
+        retentionState.autoClear = d;
+        renderRetentionAutoClear();
+        showToast('Configuracion guardada', 'success');
+    }).catch(function(e) { showToast(e.message || 'Error', 'error'); });
+}
+
+function runAutoClearNow() {
+    if (!confirm('Ejecutar ahora la limpieza de contactos vencidos segun las categorias?')) return;
+    api('/api/config/auto-clear/run-now', { method: 'POST' }).then(function(d) {
+        showToast('Limpieza completada: ' + d.deleted + ' contacto(s) eliminados', 'success');
+        loadAutoClearForRetention();
+    }).catch(function(e) { showToast(e.message || 'Error', 'error'); });
+}
+
+function showCategoryModal(id) {
+    var cat = null;
+    if (id) {
+        cat = (retentionState.categories || []).find(function(c) { return c.id === id; });
+        if (!cat) return;
+    }
+    var title = cat ? 'Editar categoria' : 'Nueva categoria';
+    var nameVal = cat ? escapeHtml(cat.name) : '';
+    var daysVal = cat ? cat.retention_days : 30;
+    var body =
+        '<form id="category-form" onsubmit="saveCategory(event, ' + (id || 'null') + ')">' +
+            '<div class="form-group"><label>Nombre de la categoria</label><input type="text" name="name" class="form-control" required maxlength="100" value="' + nameVal + '" placeholder="Ej. Ventas, Cobranza, Administrador"></div>' +
+            '<div class="form-group"><label>Dias de retencion de contactos</label><input type="number" name="retention_days" class="form-control" min="0" step="1" required value="' + daysVal + '"><small style="color:var(--text-secondary);">Cuantos dias se conservan los contactos de los empleados de esta categoria. 0 = permanente.</small></div>' +
+            '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Guardar</button></div>' +
+        '</form>';
+    showModal(title, body);
+}
+
+async function saveCategory(event, id) {
+    event.preventDefault();
+    var form = event.target;
+    var payload = { name: form.name.value.trim(), retention_days: parseInt(form.retention_days.value, 10) };
+    if (!payload.name) { showToast('El nombre es obligatorio', 'error'); return; }
+    if (isNaN(payload.retention_days) || payload.retention_days < 0) { showToast('Dias invalidos', 'error'); return; }
+    try {
+        if (id) {
+            await api('/api/user-categories/' + id, { method: 'PUT', body: payload });
+        } else {
+            await api('/api/user-categories', { method: 'POST', body: payload });
+        }
+        hideModal();
+        showToast('Categoria guardada', 'success');
+        loadCategoriesForRetention();
+    } catch (e) { showToast(e.message || 'Error', 'error'); }
+}
+
+function deleteCategory(id) {
+    if (!confirm('Eliminar esta categoria? Los empleados de esta categoria quedaran sin categoria (contactos permanentes).')) return;
+    api('/api/user-categories/' + id, { method: 'DELETE' }).then(function() {
+        showToast('Categoria eliminada', 'success');
+        loadCategoriesForRetention();
+    }).catch(function(e) { showToast(e.message || 'Error', 'error'); });
 }
 
 // ============================================================

@@ -60,6 +60,8 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET | /api/auth/me | User | Current user info |
 | GET/POST | /api/users | Admin/TeamAdmin | List/Create users (role-based scope) |
 | PUT/DELETE | /api/users/<id> | Admin/TeamAdmin | Update/Delete user (role-based scope) |
+| GET | /api/user-categories | User | List employee categories + retention days (counts for admin) |
+| POST/PUT/DELETE | /api/user-categories[/<id>] | Admin | CRUD employee categories (default category cannot be deleted) |
 | GET/POST | /api/contacts | User | List/Create contacts (team: all, member: own) |
 | PUT/DELETE | /api/contacts/<id> | User | Update/Delete contact (team: all, member: own) |
 | POST | /api/contacts/import | User | Import CSV contacts |
@@ -128,7 +130,14 @@ Dual database support via `DBWrapper` abstraction layer:
 - **Production**: PostgreSQL 16 (via `DATABASE_URL` environment variable)
 - Auto-detection: if `DATABASE_URL` starts with `postgresql://` → PostgreSQL, otherwise SQLite
 
-Tables: users (with `extnumber` for per-agent fixed SIP extension and `country` mx/co/pe), contacts (with `app_name`, `amount`, `discount_amount`, `payment_link`), contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), sms_api_configs (multi-country SMS configs, one row per country), team_config, voice_config (legacy single-row table retained for migration/backward compatibility), voice_configs (multi-country Infinity voice configs, one row per country — mirrors sms_api_configs; columns id/name/country/provider/api_domain/voice_appid/voice_accesskey/from_number/voice_token/voice_token_expiry/is_active/updated_at), voice_records (phone/script/status/call_sid/extnumber/duration/price), extensions (extnumber+country unique, assigned_to FK users; the authoritative extension catalog managed from the Extensiones page, seeded once from legacy ext_pool_* strings), send_logs.
+Tables: users (with `category_id` FK to user_categories, `extnumber` for per-agent fixed SIP extension and `country` mx/co/pe), user_categories (id/name UNIQUE/retention_days/is_default/created_at/updated_at — classifies employees and defines how many days their contacts are kept; 0 = forever; seeded with a "General" default), contacts (with `app_name`, `amount`, `discount_amount`, `payment_link`), contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), sms_api_configs (multi-country SMS configs, one row per country), team_config, voice_config (legacy single-row table retained for migration/backward compatibility), voice_configs (multi-country Infinity voice configs, one row per country — mirrors sms_api_configs; columns id/name/country/provider/api_domain/voice_appid/voice_accesskey/from_number/voice_token/voice_token_expiry/is_active/updated_at), voice_records (phone/script/status/call_sid/extnumber/duration/price), extensions (extnumber+country unique, assigned_to FK users; the authoritative extension catalog managed from the Extensiones page, seeded once from legacy ext_pool_* strings), send_logs.
+
+### Contact retention (replaces the old full daily wipe)
+- Employees are classified via `user_categories`; each category has `retention_days` (0 = keep forever).
+- The daily background job (`run_auto_clear_contacts`, scheduled at `auto_clear_time`, default 03:00) deletes ONLY contacts whose owning user belongs to a category with a finite window AND whose `created_at` is older than `now - retention_days`. Contacts without a creator or whose creator has no category are never deleted, and groups are never deleted. This replaces the previous behavior that deleted ALL contacts and groups every day.
+- The same rule runs on-demand via POST /api/config/auto-clear/run-now and is configured on the "Retencion de Contactos" admin page.
+- `users.category_id` is set on create/update (admin-managed); if omitted it defaults to the default category. Users without a category retain contacts permanently.
+
 
 ### Contact fields
 The `contacts` table carries both basic CRM and payment/collection fields:
