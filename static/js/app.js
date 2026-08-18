@@ -3363,8 +3363,12 @@ async function loadVoiceRecords() {
 
 async function refreshVoiceStatus(id, sid) {
     try {
-        await api('/api/voice/query-status', { method: 'POST', body: { id: id, call_sid: sid } });
-        showToast('Estado actualizado', 'success');
+        const r = await api('/api/voice/query-status', { method: 'POST', body: { id: id, call_sid: sid } });
+        if (r && r.live_status_supported === false) {
+            showToast(r.message || 'El estado en tiempo real no esta soportado; se actualiza via CDR/callback.', 'info');
+        } else {
+            showToast('Estado actualizado', 'success');
+        }
         loadVoiceRecords();
     } catch (e) { showToast(e.message, 'error'); }
 }

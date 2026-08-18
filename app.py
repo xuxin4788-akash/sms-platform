@@ -6419,9 +6419,22 @@ def voice_query_status_route():
             call_sid = row['call_sid'] or ''
     if not call_sid:
         return jsonify({'error': 'call_sid requerido'}), 400
+    if not call_sid.startswith('INF'):
+        return jsonify({
+            'success': True,
+            'status': 'initiated',
+            'live_status_supported': False,
+            'message': 'No se pudo consultar el estado en tiempo real; proveedor no soportado o llamada simulada.'
+        }), 200
+
     info = voice_query_status(call_sid)
     if not info:
-        return jsonify({'error': 'No se pudo consultar el estado (proveedor no soportado o llamada simulada)'}), 400
+        return jsonify({
+            'success': True,
+            'status': 'initiated',
+            'live_status_supported': False,
+            'message': 'No se pudo consultar el estado en tiempo real con Infinity.'
+        }), 200
     db = get_db()
     db.execute(
         "UPDATE voice_records SET status=?, duration=?, price=?, "
