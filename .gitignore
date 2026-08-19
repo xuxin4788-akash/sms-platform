@@ -33,3 +33,6 @@ __pycache__/
 *.pyc
 
 assets/
+
+# Built mobile APK artifacts
+static/*.apk
