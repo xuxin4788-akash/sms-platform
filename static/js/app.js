@@ -3444,9 +3444,10 @@ async function renderVoiceConfig(container) {
                         '<div class="form-group"><label>URL de la API</label><input type="text" name="api_domain" value="' + escapeHtml(c.api_domain || '') + '" placeholder="host:puerto (ej: mex.infin8link.com:4434)"></div>' +
                         '<div class="form-group"><label>AppID</label><input type="text" name="voice_appid" value="' + escapeHtml(c.voice_appid || '') + '" placeholder="AppID autorizado"></div>' +
                         '<div class="form-group"><label>AccessKey</label><input type="password" name="voice_accesskey" placeholder="' + (c.has_accesskey ? '******** (configurada - dejar vacia para conservar)' : 'AccessKey autorizada') + '"></div>' +
-                        '<div class="form-group"><label>Numero remitente (disnumber, opcional)</label><input type="text" name="from_number" value="' + escapeHtml(c.from_number || '') + '" placeholder="Dejar vacio para asignar uno aleatorio"></div>' +
+                        '<div class="form-group"><label>Numero remitente / DID (disnumber)</label><input type="text" name="from_number" value="' + escapeHtml(c.from_number || '') + '" placeholder="Ej. 528332613611 (dejar vacio = aleatorio)"></div>' +
                         '<div class="form-group"><label>Prefijo de marcado (dest_prefix)</label><input type="text" name="dest_prefix" value="' + escapeHtml(c.dest_prefix || '') + '" placeholder="Ej. Mexico movil: 521 / vacio = 52 nacional"></div>' +
                       '</div>' +
+                      '<div class="alert alert-danger" style="font-size:13px;margin-top:4px;"><strong>Importante:</strong> el numero remitente (disnumber) debe ser un <strong>DID real asignado por Infinity</strong> en formato internacional (<code>52</code> + 10 digitos para Mexico, ej. <code>528332613611</code>). <strong>Nunca</strong> ponga aqui un numero de extension interno (402079xxx): Infinity aceptara el comando MakeCall pero no conectara la llamada ni devolvera CDR (la llamada se queda en &quot;Iniciada&quot;). Dejelo vacio para que Infinity asigne uno aleatorio.</div>' +
                       '<div class="alert alert-warning" style="font-size:13px;margin-top:4px;"><strong>Prefijo de marcado:</strong> se antepone al numero (sin el codigo del pais) en cada llamada. Mexico movil usa <code>521</code>, fijo/linea usa <code>52</code> (deje vacio si su troncal ya enruta con 52). Si Infinity devuelve "destnumber no coincide", ajuste este valor.</div>' +
                       '<div class="alert alert-warning" style="font-size:13px;margin-top:4px;"><strong>Infinity</strong> (infin8linx) <strong>MakeCall</strong> conecta primero la extension del agente con el numero destino (click-to-call); no es un broadcast TTS. El guion lo lee el agente. Las extensiones se gestionan por separado en la pagina <a href="#/extensions">Extensiones</a>.</div>' +
                       '<div class="flex gap-2 mt-3">' +
@@ -3473,11 +3474,16 @@ async function saveVoiceConfig(event, configId) {
     event.preventDefault();
     var form = event.target;
     var result = form.closest('.card').querySelector('.vc-result');
+    var fromNumber = form.from_number.value.trim();
+    if (fromNumber && /^40207\d+/.test(fromNumber)) {
+        result.innerHTML = '<div class="alert alert-error">El numero remitente (disnumber) no puede ser una extension interna (402079xxx). Debe ser un DID real de Infinity (ej. 528332613611), o dejelo vacio.</div>';
+        return;
+    }
     var body = {
         name: form.closest('.card').querySelector('h3').childNodes[0].textContent.trim(),
         api_domain: form.api_domain.value.trim(),
         voice_appid: form.voice_appid.value.trim(),
-        from_number: form.from_number.value.trim(),
+        from_number: fromNumber,
         dest_prefix: form.dest_prefix ? form.dest_prefix.value.trim() : ''
     };
     if (form.voice_accesskey.value) body.voice_accesskey = form.voice_accesskey.value;
