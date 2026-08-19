@@ -1,0 +1,47 @@
+# Version control / tooling
+.git/
+.github/
+.codegraph/
+.cozeproj/
+.preview
+
+# Dependencies and build outputs
+**/node_modules/
+mobile/dist/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/captures/
+mobile/android/.idea/
+mobile/www/
+
+# User uploads / chat assets (not used by the app, 27MB+)
+assets/
+
+# Local databases and runtime state
+instance/
+*.db
+*.sqlite
+*.sqlite3
+logs/
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local secrets / env
+.env
+.env.local
+*.apk
