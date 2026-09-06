@@ -229,6 +229,97 @@ function showToast(message, type = 'info') {
 }
 
 // ============================================================
+// SMS content rules: GSM-only (no Spanish specific symbols), max 140 chars
+// ============================================================
+const SMS_MAX_LEN = 140;
+
+// Accented/Spanish characters mapped to their plain ASCII equivalents so the
+// message stays in the GSM 03.38 charset (160 chars / SMS instead of UCS2 70).
+const SMS_ASCII_MAP = {
+  'á': 'a', 'à': 'a', 'ä': 'a', 'â': 'a', 'ã': 'a', 'å': 'a', 'ª': 'a',
+  'é': 'e', 'è': 'e', 'ë': 'e', 'ê': 'e',
+  'í': 'i', 'ì': 'i', 'ï': 'i', 'î': 'i',
+  'ó': 'o', 'ò': 'o', 'ö': 'o', 'ô': 'o', 'õ': 'o', 'º': 'o',
+  'ú': 'u', 'ù': 'u', 'ü': 'u', 'û': 'u',
+  'Á': 'A', 'À': 'A', 'Ä': 'A', 'Â': 'A', 'Ã': 'A', 'Å': 'A',
+  'É': 'E', 'È': 'E', 'Ë': 'E', 'Ê': 'E',
+  'Í': 'I', 'Ì': 'I', 'Ï': 'I', 'Î': 'I',
+  'Ó': 'O', 'Ò': 'O', 'Ö': 'O', 'Ô': 'O', 'Õ': 'O',
+  'Ú': 'U', 'Ù': 'U', 'Ü': 'U', 'Û': 'U',
+  'ñ': 'n', 'Ñ': 'N',
+  'ç': 'c', 'Ç': 'C',
+  '¿': '?', '¡': '!',
+  '«': '"', '»': '"', '“': '"', '”': '"', '‘': "'", '’': "'",
+  '–': '-', '—': '-', '…': '...', ' ': ' '
+};
+
+// Normalize SMS text for the GSM charset: transliterate accented/Spanish
+// specific symbols to ASCII and drop any other non-GSM glyphs. Returns the
+// cleaned string (length is enforced separately via maxlength / backend).
+function normalizeSmsText(text) {
+  var out = String(text == null ? '' : text).replace(/[^\x00-\x7F]/g, function(ch) {
+    if (Object.prototype.hasOwnProperty.call(SMS_ASCII_MAP, ch)) return SMS_ASCII_MAP[ch];
+    return '';
+  });
+  // Collapse the inverted Spanish punctuation that may survive as-is and any
+  // remaining non-breaking/control quirks.
+  return out;
+}
+
+// Apply the SMS rules to an <input>/<textarea>: strips Spanish symbols on
+// input and caps the length to SMS_MAX_LEN while preserving the caret.
+function applySmsInputRules(el) {
+  if (!el) return;
+  var original = el.value;
+  var cleaned = normalizeSmsText(original);
+  if (cleaned.length > SMS_MAX_LEN) cleaned = cleaned.slice(0, SMS_MAX_LEN);
+  if (cleaned !== original) {
+    var caret = el.selectionStart != null ? el.selectionStart - (original.length - cleaned.length) : null;
+    el.value = cleaned;
+    if (caret != null) {
+      caret = Math.max(0, Math.min(caret, cleaned.length));
+      try { el.setSelectionRange(caret, caret); } catch (e) {}
+    }
+  }
+}
+
+// Copy text to the clipboard with a fallback for older webviews / Android.
+function copySmsContent(text, btn) {
+  function done() {
+    showToast('Mensaje copiado', 'success');
+    if (btn) {
+      var old = btn.innerHTML;
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+      setTimeout(function() { btn.innerHTML = old; }, 1200);
+    }
+  }
+  function fallback() {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      done();
+    } catch (e) { showToast('No se pudo copiar', 'error'); }
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(fallback);
+  } else {
+    fallback();
+  }
+}
+
+function smsCopyButton(content) {
+  var safe = escapeHtml(content || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+  return ' <button type="button" class="btn btn-ghost btn-sm btn-icon" style="padding:2px 4px;vertical-align:middle;" title="Copiar mensaje" onclick="copySmsContent(this.getAttribute(\'data-msg\'), this)" data-msg="' + safe + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>';
+}
+
+// ============================================================
 // Mobile helpers
 // ============================================================
 function applyMobileTableLabels(root) {
@@ -856,7 +947,7 @@ async function renderSendSMS(container) {
                 '<div id="send-contacts" class="form-group" style="display:none;"><label>Seleccionar contactos</label><div id="contacts-select-list" class="contact-select-list"></div></div>' +
                 '<div id="send-group" class="form-group" style="display:none;"><label>Seleccionar grupo</label><select id="send-group-select" onchange="loadGroupContacts(this.value)"><option value="">-- Seleccione un grupo --</option>' + groupOpts + '</select><div id="group-contacts-preview" class="mt-2"></div></div>' +
                 '<div class="form-group mt-4"><label>Plantilla (opcional)</label><select id="send-template" onchange="loadTemplateContent(this.value)"><option value="">-- Escribir mensaje personalizado --</option>' + templateOpts + '</select></div>' +
-                '<div class="form-group"><label>Mensaje *</label><textarea id="send-content" rows="4" placeholder="Escriba su mensaje aqui..." oninput="updatePreview()"></textarea><div class="var-chips">' + variableChips('send-content') + '</div></div>' +
+                '<div class="form-group"><label>Mensaje * <span class="text-secondary" style="font-weight:400;font-size:12px;">(max. 140 caracteres, sin tildes ni simbolos espanoles: se convierten automaticamente)</span></label><textarea id="send-content" rows="4" maxlength="140" placeholder="Escriba su mensaje aqui..." oninput="onSendContentInput()"></textarea><div class="var-chips">' + variableChips('send-content') + '</div><div id="sms-counter" style="font-size:12px;color:#64748B;margin-top:4px;text-align:right;"><span id="sms-char-count">0</span>/140</div></div>' +
                 '<div class="preview-box" id="send-preview" style="display:none;"><div class="preview-label">Vista previa</div><div class="preview-content" id="preview-text"></div></div>' +
                 '<div class="form-group"><label><input type="checkbox" id="send-schedule-check" onchange="toggleSchedule()"> Programar envio</label><div id="schedule-datetime" style="display:none;margin-top:8px;"><input type="datetime-local" id="send-scheduled-at"></div></div>' +
                 '<div class="flex gap-2 mt-4"><button class="btn btn-primary" onclick="handleSendSMS()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg> Enviar SMS</button><button class="btn btn-secondary" onclick="showSendPreviewModal()">Vista Previa</button></div>' +
@@ -961,7 +1052,22 @@ async function loadGroupContacts(groupId) {
 function loadTemplateContent(templateId) {
     var select = document.getElementById('send-template');
     var t = (window._sendTemplates || []).find(function(tpl) { return tpl.id == templateId; });
-    if (t) { document.getElementById('send-content').value = t.content; updatePreview(); }
+    if (t) {
+        var ta = document.getElementById('send-content');
+        ta.value = normalizeSmsText(t.content).slice(0, SMS_MAX_LEN);
+        onSendContentInput();
+    }
+}
+
+// Enforce SMS rules (GSM-only, 140 chars) on every keystroke, then refresh
+// the character counter and preview.
+function onSendContentInput() {
+    var ta = document.getElementById('send-content');
+    if (!ta) return;
+    applySmsInputRules(ta);
+    var cc = document.getElementById('sms-char-count');
+    if (cc) cc.textContent = ta.value.length;
+    updatePreview();
 }
 
 function updatePreview() {
@@ -1146,9 +1252,12 @@ function clearAllPhones() {
 async function handleSendSMS() {
     // Make sure any number still sitting in the input is committed before sending
     commitPhoneInput();
-    var content = document.getElementById('send-content').value.trim();
+    var contentEl = document.getElementById('send-content');
+    if (contentEl) { applySmsInputRules(contentEl); if (contentEl.value.length > SMS_MAX_LEN) contentEl.value = contentEl.value.slice(0, SMS_MAX_LEN); }
+    var content = (contentEl ? contentEl.value : '').trim();
     var phones = getSendPhones();
     if (!content) return showToast('Escriba un mensaje', 'error');
+    if (content.length > SMS_MAX_LEN) return showToast('El mensaje no puede superar los ' + SMS_MAX_LEN + ' caracteres', 'error');
     if (phones.length === 0) return showToast('Seleccione al menos un destinatario', 'error');
     var contactNames = {};
     document.querySelectorAll('#contacts-select-list input[type="checkbox"]:checked').forEach(function(cb) { contactNames[cb.value] = cb.dataset.name || ''; });
@@ -1206,7 +1315,7 @@ async function renderRecords(container) {
                 var senderBadge = r.sender_role === 'admin'
                     ? '<span style="display:inline-block;background:#EFF6FF;color:#1D4ED8;font-size:11px;padding:2px 8px;border-radius:999px;">' + senderName + '</span>'
                     : senderName;
-                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.content) + '">' + escapeHtml(r.content) + '</td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (apiInfo || '<span class="text-secondary">-</span>') + '</td></tr>';
+                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.content) + '">' + escapeHtml(r.content) + smsCopyButton(r.content) + '</td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (apiInfo || '<span class="text-secondary">-</span>') + '</td></tr>';
             }).join('');
 
         container.innerHTML =
@@ -1259,7 +1368,7 @@ async function renderContentSearch(container) {
                 var senderBadge = r.sender_role === 'admin'
                     ? '<span style="display:inline-block;background:#EFF6FF;color:#1D4ED8;font-size:11px;padding:2px 8px;border-radius:999px;">' + senderName + '</span>'
                     : senderName;
-                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:300px;">' + highlightContent + '</td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (r.api_msg ? '<span class="text-secondary" style="font-size:11px;">' + escapeHtml(r.api_msg) + '</span>' : '<span class="text-secondary">-</span>') + '</td></tr>';
+                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:300px;">' + highlightContent + smsCopyButton(r.content) + '</td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (r.api_msg ? '<span class="text-secondary" style="font-size:11px;">' + escapeHtml(r.api_msg) + '</span>' : '<span class="text-secondary">-</span>') + '</td></tr>';
             }).join('');
 
         container.innerHTML =
@@ -2706,9 +2815,12 @@ function quickAddManual(ev) {
 }
 
 async function submitQuickSend() {
-    const content = (document.getElementById('quick-content')?.value || '').trim();
+    const contentEl = document.getElementById('quick-content');
+    if (contentEl) { applySmsInputRules(contentEl); if (contentEl.value.length > SMS_MAX_LEN) contentEl.value = contentEl.value.slice(0, SMS_MAX_LEN); }
+    const content = (contentEl?.value || '').trim();
     if (quickSendPhones.length === 0) { showToast('Añade al menos un número', 'error'); return; }
     if (!content) { showToast('Escribe un mensaje', 'error'); return; }
+    if (content.length > SMS_MAX_LEN) { showToast('El mensaje no puede superar los ' + SMS_MAX_LEN + ' caracteres', 'error'); return; }
     const body = {
         phones: quickSendPhones,
         content,
@@ -2800,9 +2912,9 @@ function renderQuickSendEmbed() {
                 '<ul id="quick-contact-results" class="quick-results"></ul>' +
                 '<div class="chip-row" id="quick-phone-chips"></div>' +
                 '<label class="embed-field">Mensaje' +
-                    '<textarea id="quick-content" rows="5" maxlength="600" placeholder="Escribe el SMS..." oninput="updateEmbedCounter()"></textarea>' +
+                    '<textarea id="quick-content" rows="5" maxlength="140" placeholder="Escribe el SMS (sin tildes, max. 140)..." oninput="onQuickContentInput()"></textarea>' +
                 '</label>' +
-                '<div class="embed-counter"><span id="embed-char-count">0</span> caracteres · <span id="embed-sms-count">1</span> SMS</div>' +
+                '<div class="embed-counter"><span id="embed-char-count">0</span>/140 caracteres · <span id="embed-sms-count">1</span> SMS</div>' +
                 '<button class="btn btn-primary w-full" onclick="submitQuickSend()">Enviar SMS</button>' +
             '</div>' +
         '</div>';
@@ -2810,12 +2922,19 @@ function renderQuickSendEmbed() {
     renderQuickSend();
 }
 
+function onQuickContentInput() {
+    var ta = document.getElementById('quick-content');
+    if (!ta) return;
+    applySmsInputRules(ta);
+    updateEmbedCounter();
+}
+
 function updateEmbedCounter() {
     var ta = document.getElementById('quick-content');
     if (!ta) return;
     var len = ta.value.length;
-    var perMsg = /[^\u0000-\u007F]/.test(ta.value) ? 70 : 160;
-    var longPer = /[^\u0000-\u007F]/.test(ta.value) ? 67 : 153;
+    var perMsg = 160;
+    var longPer = 153;
     var parts = len === 0 ? 1 : (len <= perMsg ? 1 : Math.ceil(len / longPer));
     var cc = document.getElementById('embed-char-count');
     var sc = document.getElementById('embed-sms-count');

@@ -3971,6 +3971,9 @@ def send_sms():
     contact_names = data.get('contact_names', {})
     if not phones or not content:
         return jsonify({'error': 'Numero(s) y contenido son requeridos'}), 400
+    SMS_MAX_LEN = 140
+    if len(content) > SMS_MAX_LEN:
+        return jsonify({'error': 'El mensaje no puede superar los %s caracteres' % SMS_MAX_LEN}), 400
     db = get_db()
     api_configured = is_sms_api_configured(g.user['id'])
     sms_config = get_team_sms_config(g.user['id'])
@@ -4107,6 +4110,9 @@ def schedule_sms():
     contact_names = data.get('contact_names', {})
     if not phones or not content or not scheduled_at:
         return jsonify({'error': 'Numero(s), contenido y fecha son requeridos'}), 400
+    SMS_MAX_LEN = 140
+    if len(content) > SMS_MAX_LEN:
+        return jsonify({'error': 'El mensaje no puede superar los %s caracteres' % SMS_MAX_LEN}), 400
     db = get_db()
     contact_cache = build_contact_template_cache(db, phones)
     count = 0
