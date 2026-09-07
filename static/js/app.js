@@ -9,6 +9,7 @@ const state = {
     user: null,
     currentPage: 'dashboard',
     dashboard: { dateFrom: '', dateTo: '', userId: '', users: null },
+    myTeam: { dateFrom: '', dateTo: '', userId: '' },
     contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '', remark: '' },
     records: { page: 1, perPage: 20, total: 0, totalPages: 0, status: '', dateFrom: '', dateTo: '', search: '' },
     sendPhones: [],
@@ -2256,9 +2257,12 @@ async function renderMyTeam(container) {
     container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando estadisticas...</p></div>';
     try {
         var params = new URLSearchParams();
-        var dateFrom = document.getElementById('stats-date-from') ? document.getElementById('stats-date-from').value : '';
-        var dateTo = document.getElementById('stats-date-to') ? document.getElementById('stats-date-to').value : '';
-        var filterUserId = document.getElementById('stats-user-filter') ? document.getElementById('stats-user-filter').value : '';
+        var dateFrom = document.getElementById('stats-date-from') ? document.getElementById('stats-date-from').value : state.myTeam.dateFrom;
+        var dateTo = document.getElementById('stats-date-to') ? document.getElementById('stats-date-to').value : state.myTeam.dateTo;
+        var filterUserId = document.getElementById('stats-user-filter') ? document.getElementById('stats-user-filter').value : state.myTeam.userId;
+        state.myTeam.dateFrom = dateFrom || '';
+        state.myTeam.dateTo = dateTo || '';
+        state.myTeam.userId = filterUserId || '';
         if (dateFrom) params.set('date_from', dateFrom);
         if (dateTo) params.set('date_to', dateTo);
         if (filterUserId) params.set('user_id', filterUserId);
@@ -2277,18 +2281,42 @@ async function renderMyTeam(container) {
         var userOptions = (data.users || []).map(function(u) {
             return '<option value="' + u.id + '"' + (filterUserId == u.id ? ' selected' : '') + '>' + escapeHtml(u.username) + (u.full_name ? ' - ' + escapeHtml(u.full_name) : '') + '</option>';
         }).join('');
-        var filterHtml = '<div class="page-header page-filter mb-4"><h1 style="font-size:22px;font-weight:700;">Mi Equipo</h1><div class="filter-row filter-row-multi"><input type="date" id="stats-date-from" class="form-control" value="' + dateFrom + '"><span class="text-secondary filter-sep">a</span><input type="date" id="stats-date-to" class="form-control" value="' + dateTo + '"><select id="stats-user-filter" class="form-control"><option value="">Todos los usuarios</option>' + userOptions + '</select><button class="btn btn-primary btn-sm" onclick="renderMyTeam(document.getElementById(\'page-content\'))">Filtrar</button></div></div>';
+        var todayStr = new Date().toISOString().slice(0, 10);
+        var filterHtml = '<div class="page-header page-filter mb-4"><h1 style="font-size:22px;font-weight:700;">Mi Equipo</h1><div class="filter-row filter-row-multi">' +
+            '<input type="date" id="stats-date-from" class="form-control" value="' + escapeHtml(dateFrom || '') + '" max="' + todayStr + '" onchange="renderMyTeam(document.getElementById(\'page-content\'))">' +
+            '<span class="text-secondary filter-sep">a</span>' +
+            '<input type="date" id="stats-date-to" class="form-control" value="' + escapeHtml(dateTo || '') + '" max="' + todayStr + '" onchange="renderMyTeam(document.getElementById(\'page-content\'))">' +
+            '<select id="stats-user-filter" class="form-control" onchange="renderMyTeam(document.getElementById(\'page-content\'))"><option value="">Todos los usuarios</option>' + userOptions + '</select>' +
+            '<button class="btn btn-secondary btn-sm" onclick="setMyTeamToday()">Hoy</button>' +
+            '<button class="btn btn-ghost btn-sm" onclick="resetMyTeamFilters()">Limpiar</button>' +
+            '<button class="btn btn-primary btn-sm" onclick="renderMyTeam(document.getElementById(\'page-content\'))">Filtrar</button>' +
+            '</div></div>';
 
         var html = filterHtml;
         if (myTeam && myTeam.member_count !== undefined) {
             var teamRate = myTeam.total > 0 ? (myTeam.sent / myTeam.total * 100).toFixed(1) : '0.0';
-            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen del Equipo</h3><span class="badge badge-success header-badge">' + (myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard('Enviados Hoy', myTeam.today || 0, 'var(--success)') + statCard('Costo Total', formatMoney(myTeam.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', teamRate + '%') + '</div><table class="info-table"><tbody>' + statRow('SMS Pendientes', myTeam.pending || 0) + statRow('Costo por SMS', Number(data.unit_price) > 0 ? formatPrice(data.unit_price) : 'No configurado') + statRow('Facturacion', 'Cada SMS enviado se factura (exito o fallo)') + statRow('Limite Diario', myTeam.daily_limit > 0 ? myTeam.daily_limit + ' SMS/usuario' : 'Sin limite') + statRow('Ultima Actividad', myTeam.last_activity ? timeAgo(myTeam.last_activity) : 'Sin actividad') + '</tbody></table></div></div>';
+            var sentLabel = (dateFrom || dateTo) ? 'Enviados (periodo)' : 'Enviados Hoy';
+            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen del Equipo</h3><span class="badge badge-success header-badge">' + escapeHtml(myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard(sentLabel, myTeam.today || 0, 'var(--success)') + statCard('Costo Total', formatMoney(myTeam.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', teamRate + '%') + '</div><table class="info-table"><tbody>' + statRow('SMS Enviados', myTeam.sent || 0) + statRow('SMS Fallidos', myTeam.failed || 0) + statRow('SMS Pendientes', myTeam.pending || 0) + statRow('Costo por SMS', Number(data.unit_price) > 0 ? formatPrice(data.unit_price) : 'No configurado') + statRow('Facturacion', 'Cada SMS enviado se factura (exito o fallo)') + statRow('Limite Diario', myTeam.daily_limit > 0 ? myTeam.daily_limit + ' SMS/usuario' : 'Sin limite') + statRow('Ultima Actividad', myTeam.last_activity ? timeAgo(myTeam.last_activity) : 'Sin actividad') + '</tbody></table></div></div>';
         } else {
             html += '<div class="card mb-4"><div class="card-body"><div class="empty-state"><h3>Sin datos de equipo</h3><p>No tienes acceso a datos de equipo.</p></div></div></div>';
         }
 
         container.innerHTML = html;
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function setMyTeamToday() {
+    var t = new Date().toISOString().slice(0, 10);
+    state.myTeam.dateFrom = t;
+    state.myTeam.dateTo = t;
+    renderMyTeam(document.getElementById('page-content'));
+}
+
+function resetMyTeamFilters() {
+    state.myTeam.dateFrom = '';
+    state.myTeam.dateTo = '';
+    state.myTeam.userId = '';
+    renderMyTeam(document.getElementById('page-content'));
 }
 
 async function renderAllTeams(container) {

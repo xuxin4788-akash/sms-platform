@@ -4781,8 +4781,31 @@ def get_unified_stats():
         date_filter_r += ' AND date(r.created_at) <= ?'
         date_params.append(date_to)
 
+    # Account filter, validated against the caller's scope:
+    #  - admin may pick any team_admin/team_member account
+    #  - team_admin may pick only themselves or a member they created
+    #  - team_member can only ever see their own account
+    if role == 'admin':
+        scope_rows = db.execute(
+            "SELECT id FROM users WHERE role IN ('team_admin','team_member')"
+        ).fetchall()
+    elif role == 'team_admin':
+        scope_rows = db.execute(
+            "SELECT id FROM users WHERE id = ? OR team_creator_id = ?",
+            (user_id, user_id)
+        ).fetchall()
+    else:
+        scope_rows = [{'id': user_id}]
+    scope_ids = {r['id'] for r in scope_rows}
+
+    filter_uid = None
+    if filter_user_id and str(filter_user_id).isdigit():
+        cand = int(filter_user_id)
+        if cand in scope_ids:
+            filter_uid = cand
+
     # 1. My Account stats (with optional account filter)
-    account_user_id = int(filter_user_id) if filter_user_id and filter_user_id.isdigit() else user_id
+    account_user_id = filter_uid if filter_uid is not None else user_id
     my_account = db.execute(f"""
         SELECT
             COALESCE(SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END), 0) as sent,
@@ -4803,84 +4826,90 @@ def get_unified_stats():
     # 2. My Team stats
     my_team_data = None
     if role in ('admin', 'team_admin'):
+        # Scope of accounts this manager can see, narrowed down to a single
+        # account when a valid user_id filter is provided.
         if role == 'team_admin':
-            # Get team member IDs
-            member_ids = [u['id'] for u in db.execute(
-                "SELECT id FROM users WHERE team_creator_id = ?", (user_id,)
-            ).fetchall()]
-            member_ids.append(user_id)
-            placeholders = ','.join('?' * len(member_ids))
-            team_stats = db.execute(f"""
-                SELECT
-                    COUNT(DISTINCT u.id) as member_count,
-                    COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
-                    COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
-                    COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
-                    COALESCE(COUNT(r.id), 0) as total
-                FROM users u
-                LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
-                WHERE u.id IN ({placeholders})
-            """, member_ids + date_params).fetchone()
+            team_member_rows = db.execute(
+                "SELECT id FROM users WHERE id = ? OR team_creator_id = ?",
+                (user_id, user_id)
+            ).fetchall()
+            team_ids = [r['id'] for r in team_member_rows]
+            team_name_default = None
+            admin_row = db.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+            if admin_row:
+                team_name_default = f"Equipo de {admin_row['username']}"
         else:
-            # Admin: get all teams summary
-            team_stats = db.execute(f"""
-                SELECT
-                    COUNT(DISTINCT u.id) as member_count,
-                    COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
-                    COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
-                    COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
-                    COALESCE(COUNT(r.id), 0) as total
-                FROM users u
-                LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
-                WHERE u.role IN ('team_admin', 'team_member')
-            """, date_params).fetchone()
+            team_member_rows = db.execute(
+                "SELECT id FROM users WHERE role IN ('team_admin','team_member')"
+            ).fetchall()
+            team_ids = [r['id'] for r in team_member_rows]
+            team_name_default = 'Todos los Equipos'
+
+        # Narrow to the selected account if a valid filter was applied.
+        if filter_uid is not None and filter_uid in team_ids:
+            agg_ids = [filter_uid]
+        else:
+            agg_ids = team_ids
+        agg_ph = ','.join('?' * len(agg_ids))
+
+        team_stats = db.execute(f"""
+            SELECT
+                COUNT(DISTINCT u.id) as member_count,
+                COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
+                COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
+                COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
+                COALESCE(COUNT(r.id), 0) as total
+            FROM users u
+            LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
+            WHERE u.id IN ({agg_ph})
+        """, date_params + agg_ids).fetchone()
 
         if team_stats:
-            # Get team name (admin's username)
-            team_name = 'Mi Equipo'
+            team_name = team_name_default or 'Mi Equipo'
             daily_limit = 0
             if role == 'team_admin':
-                admin_row = db.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+                if not admin_row:
+                    admin_row = db.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
                 if admin_row:
                     team_name = f"Equipo de {admin_row['username']}"
-                # Get daily limit from team_config
                 limit_row = db.execute("SELECT daily_sms_limit FROM team_config WHERE team_admin_id = ?", (user_id,)).fetchone()
                 if limit_row and limit_row['daily_sms_limit']:
                     daily_limit = limit_row['daily_sms_limit']
             elif role == 'admin':
                 team_name = 'Todos los Equipos'
 
-            # Today's SMS count
-            today_filter_simple = "AND date(created_at) = date('now')" if db.db_type != 'postgres' else "AND date(created_at) = CURRENT_DATE"
-            if role == 'team_admin':
-                today_row = db.execute(f"""
-                    SELECT COUNT(*) as cnt FROM sms_records
-                    WHERE created_by IN ({placeholders}) {today_filter_simple}
-                """, member_ids).fetchone()
-            else:
-                today_row = db.execute(f"""
-                    SELECT COUNT(*) as cnt FROM sms_records
-                    WHERE created_by IN (SELECT id FROM users WHERE role IN ('team_admin','team_member'))
-                    {today_filter_simple}
-                """).fetchone()
-            today_count = today_row['cnt'] if today_row else 0
+            # When an account is selected, show that account name in the header.
+            if filter_uid is not None:
+                fu = db.execute("SELECT username, full_name FROM users WHERE id = ?", (filter_uid,)).fetchone()
+                if fu:
+                    team_name = fu['full_name'] or fu['username']
 
-            # Last activity
-            if role == 'team_admin':
-                last_row = db.execute(f"""
-                    SELECT MAX(created_at) as last_at FROM sms_records
-                    WHERE created_by IN ({placeholders})
-                """, member_ids).fetchone()
+            # "Hoy" card: when a date range is applied show sent count within the
+            # selected period instead of the real-world today; otherwise today.
+            if date_from or date_to:
+                period_row = db.execute(f"""
+                    SELECT COUNT(*) as cnt FROM sms_records
+                    WHERE created_by IN ({agg_ph}) {date_filter}
+                """, agg_ids + date_params).fetchone()
+                today_count = period_row['cnt'] if period_row else 0
             else:
-                last_row = db.execute("""
-                    SELECT MAX(created_at) as last_at FROM sms_records
-                    WHERE created_by IN (SELECT id FROM users WHERE role IN ('team_admin','team_member'))
-                """).fetchone()
+                today_filter_simple = "AND date(created_at) = date('now')" if db.db_type != 'postgres' else "AND date(created_at) = CURRENT_DATE"
+                today_row = db.execute(f"""
+                    SELECT COUNT(*) as cnt FROM sms_records
+                    WHERE created_by IN ({agg_ph}) {today_filter_simple}
+                """, agg_ids).fetchone()
+                today_count = today_row['cnt'] if today_row else 0
+
+            # Last activity (ignore date filter so the field stays meaningful)
+            last_row = db.execute(f"""
+                SELECT MAX(created_at) as last_at FROM sms_records
+                WHERE created_by IN ({agg_ph})
+            """, agg_ids).fetchone()
             last_activity = last_row['last_at'] if last_row and last_row['last_at'] else None
 
             my_team_data = {
                 'team_name': team_name,
-                'member_count': team_stats['member_count'],
+                'member_count': len(agg_ids),
                 'total': team_stats['total'],
                 'sent': team_stats['sent'],
                 'failed': team_stats['failed'],
@@ -4888,6 +4917,7 @@ def get_unified_stats():
                 'today': today_count,
                 'daily_limit': daily_limit,
                 'last_activity': last_activity,
+                'filtered': bool(date_from or date_to or filter_uid is not None),
                 'rate': round((team_stats['sent'] / team_stats['total'] * 100), 1) if team_stats['total'] > 0 else 0
             }
     # 3. All Teams stats (admin only).
