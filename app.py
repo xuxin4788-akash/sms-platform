@@ -4100,36 +4100,6 @@ def send_sms():
 
     return jsonify({'message': result_msg, 'records': records, 'errors': errors[:10]})
 
-@app.route('/api/sms/schedule', methods=['POST'])
-@login_required
-def schedule_sms():
-    data = request.get_json()
-    phones = data.get('phones', [])
-    content = data.get('content', '').strip()
-    scheduled_at = data.get('scheduled_at', '').strip()
-    contact_names = data.get('contact_names', {})
-    if not phones or not content or not scheduled_at:
-        return jsonify({'error': 'Numero(s), contenido y fecha son requeridos'}), 400
-    SMS_MAX_LEN = 140
-    if len(content) > SMS_MAX_LEN:
-        return jsonify({'error': 'El mensaje no puede superar los %s caracteres' % SMS_MAX_LEN}), 400
-    db = get_db()
-    contact_cache = build_contact_template_cache(db, phones)
-    count = 0
-    for phone in phones:
-        phone = phone.strip()
-        if not phone:
-            continue
-        name = contact_names.get(phone, '')
-        msg = apply_template_vars(content, phone, contact_names, contact_cache)
-        db.execute(
-            "INSERT INTO sms_records (phone, contact_name, content, status, scheduled_at, created_by) VALUES (?, ?, ?, 'scheduled', ?, ?)",
-            (phone, name, msg, scheduled_at, g.user['id'])
-        )
-        count += 1
-    db.commit()
-    return jsonify({'message': f'{count} mensaje(s) programado(s)'}), 201
-
 @app.route('/api/sms/records', methods=['GET'])
 @login_required
 def list_sms_records():
@@ -5268,80 +5238,9 @@ def get_send_logs():
     })
 
 # ============================================================
-# Process scheduled messages (simple cron-like)
 # ============================================================
-
-def process_scheduled_messages():
-    """Process pending scheduled messages using the real SMS API."""
-    db = get_db()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    scheduled = db.execute(
-        "SELECT * FROM sms_records WHERE status='scheduled' AND scheduled_at <= ?",
-        (now,)
-    ).fetchall()
-
-    if not scheduled:
-        return 0
-
-    api_configured = is_sms_api_configured()
-    processed = 0
-
-    if api_configured:
-        # Group into batches for efficient sending
-        phone_content_pairs = [(r['phone'], r['content']) for r in scheduled]
-
-        for batch_start in range(0, len(phone_content_pairs), 200):
-            batch = phone_content_pairs[batch_start:batch_start + 200]
-            batch_records = scheduled[batch_start:batch_start + 200]
-            result = sms_api_send_batch(batch)
-            api_code = result.get('code', -1)
-
-            if api_code == 0 and result.get('data'):
-                result_map = {}
-                for item in result['data']:
-                    result_map[item.get('das', '')] = item
-
-                for record in batch_records:
-                    item = result_map.get(record['phone'], {})
-                    item_state = item.get('state', 0)
-                    msgid = item.get('msgid', '')
-                    if item_state == 0:
-                        db.execute(
-                            "UPDATE sms_records SET status='sent', msgid=?, api_code=?, sent_at=datetime('now') WHERE id=?",
-                            (msgid, api_code, record['id'])
-                        )
-                    else:
-                        db.execute(
-                            "UPDATE sms_records SET status='failed', api_code=?, api_msg=? WHERE id=?",
-                            (item_state, SMS_STATUS_CODES.get(item_state, 'Error'), record['id'])
-                        )
-                    processed += 1
-            else:
-                # Entire batch failed
-                for record in batch_records:
-                    db.execute(
-                        "UPDATE sms_records SET status='failed', api_code=?, api_msg=? WHERE id=?",
-                        (api_code, SMS_STATUS_CODES.get(api_code, result.get('msg', 'Error')), record['id'])
-                    )
-                    processed += 1
-    else:
-        # API not configured - simulate
-        for record in scheduled:
-            db.execute(
-                "UPDATE sms_records SET status='sent', api_msg='API no configurada - envio simulado', sent_at=datetime('now') WHERE id=?",
-                (record['id'],)
-            )
-            processed += 1
-
-    if processed:
-        db.commit()
-    return processed
-
-@app.route('/api/sms/process-scheduled', methods=['POST'])
-@login_required
-def trigger_process_scheduled():
-    count = process_scheduled_messages()
-    return jsonify({'message': f'{count} mensaje(s) programado(s) procesado(s)'})
+# Query delivery status
+# ============================================================
 
 @app.route('/api/sms/query-status', methods=['POST'])
 @login_required

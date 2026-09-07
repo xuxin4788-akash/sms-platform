@@ -71,12 +71,10 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET/POST | /api/templates | User | List/Create templates (shared across all users) |
 | PUT/DELETE | /api/templates/<id> | User | Update/Delete template |
 | POST | /api/sms/send | User | Send SMS (real API or simulation) |
-| POST | /api/sms/schedule | User | Schedule SMS |
 | GET | /api/sms/records | User | List send records (team: all, member: own) |
 | GET | /api/sms/statistics | User | Dashboard stats (team: all, member: own) |
 | POST | /api/sms/query-status | User | Query delivery status via API |
 | POST | /api/sms/check-charset | User | Check charset/billing for content |
-| POST | /api/sms/process-scheduled | User | Process scheduled messages |
 | POST | /api/voice/call | User | Place outbound TTS voice call (电呼) |
 | POST | /api/voice/hangup | User | Hang up an active Infinity call on the record's extension |
 | GET | /api/voice/records | User | List voice call records (team scoped) |

@@ -949,7 +949,6 @@ async function renderSendSMS(container) {
                 '<div class="form-group mt-4"><label>Plantilla (opcional)</label><select id="send-template" onchange="loadTemplateContent(this.value)"><option value="">-- Escribir mensaje personalizado --</option>' + templateOpts + '</select></div>' +
                 '<div class="form-group"><label>Mensaje * <span class="text-secondary" style="font-weight:400;font-size:12px;">(max. 140 caracteres, sin tildes ni simbolos espanoles: se convierten automaticamente)</span></label><textarea id="send-content" rows="4" maxlength="140" placeholder="Escriba su mensaje aqui..." oninput="onSendContentInput()"></textarea><div class="var-chips">' + variableChips('send-content') + '</div><div id="sms-counter" style="font-size:12px;color:#64748B;margin-top:4px;text-align:right;"><span id="sms-char-count">0</span>/140</div></div>' +
                 '<div class="preview-box" id="send-preview" style="display:none;"><div class="preview-label">Vista previa</div><div class="preview-content" id="preview-text"></div></div>' +
-                '<div class="form-group"><label><input type="checkbox" id="send-schedule-check" onchange="toggleSchedule()"> Programar envio</label><div id="schedule-datetime" style="display:none;margin-top:8px;"><input type="datetime-local" id="send-scheduled-at"></div></div>' +
                 '<div class="flex gap-2 mt-4"><button class="btn btn-primary" onclick="handleSendSMS()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg> Enviar SMS</button><button class="btn btn-secondary" onclick="showSendPreviewModal()">Vista Previa</button></div>' +
             '</div></div>';
         loadContactsForSelection();
@@ -1103,19 +1102,13 @@ async function checkCharsetInfo(content) {
     } catch (e) {}
 }
 
-function toggleSchedule() {
-    document.getElementById('schedule-datetime').style.display = document.getElementById('send-schedule-check').checked ? 'block' : 'none';
-}
-
 function showSendPreviewModal() {
     var content = document.getElementById('send-content').value;
     var phones = getSendPhones();
     if (!content) return showToast('Escriba un mensaje', 'error');
     if (phones.length === 0) return showToast('Seleccione al menos un destinatario', 'error');
-    var scheduled = document.getElementById('send-schedule-check').checked;
-    var scheduledAt = document.getElementById('send-scheduled-at').value;
     var sample = content.replace(/{nombre}/g, 'Juan').replace(/{telefono}/g, phones[0] || '').replace(/{app_name}/g, 'App Demo').replace(/{amount}/g, '150.00').replace(/{discount}/g, '20.00').replace(/{payment_link}/g, 'https://pago.ejemplo.com/juan');
-    showModal('Vista Previa del Envio', '<div class="preview-box"><div class="preview-label">Mensaje (' + phones.length + ' destinatario(s))</div><div class="preview-content">' + escapeHtml(sample) + '</div></div>' + (scheduled ? '<p class="mt-2 text-secondary"><strong>Programado para:</strong> ' + new Date(scheduledAt).toLocaleString('es-ES') + '</p>' : '<p class="mt-2 text-secondary"><strong>Envio:</strong> Inmediato</p>') + '<div class="modal-footer" style="padding:16px 0 0;"><button class="btn btn-secondary" onclick="hideModal()">Cerrar</button></div>');
+    showModal('Vista Previa del Envio', '<div class="preview-box"><div class="preview-label">Mensaje (' + phones.length + ' destinatario(s))</div><div class="preview-content">' + escapeHtml(sample) + '</div></div>' + '<p class="mt-2 text-secondary"><strong>Envio:</strong> Inmediato</p>' + '<div class="modal-footer" style="padding:16px 0 0;"><button class="btn btn-secondary" onclick="hideModal()">Cerrar</button></div>');
 }
 
 function getSendPhones() {
@@ -1261,24 +1254,16 @@ async function handleSendSMS() {
     if (phones.length === 0) return showToast('Seleccione al menos un destinatario', 'error');
     var contactNames = {};
     document.querySelectorAll('#contacts-select-list input[type="checkbox"]:checked').forEach(function(cb) { contactNames[cb.value] = cb.dataset.name || ''; });
-    var scheduled = document.getElementById('send-schedule-check').checked;
-    var scheduledAt = document.getElementById('send-scheduled-at').value;
-    if (scheduled && !scheduledAt) return showToast('Seleccione fecha y hora de envio', 'error');
     try {
-        if (scheduled) {
-            var data = await api('/api/sms/schedule', { method: 'POST', body: { phones: phones, content: content, scheduled_at: scheduledAt, contact_names: contactNames } });
-            showToast(data.message, 'success');
+        var data = await api('/api/sms/send', { method: 'POST', body: { phones: phones, content: content, contact_names: contactNames } });
+        var sentCount = (data.records || []).filter(function(r) { return r.status === 'sent'; }).length;
+        var failCount = (data.records || []).filter(function(r) { return r.status === 'failed'; }).length;
+        if (failCount > 0 && sentCount > 0) {
+            showToast(data.message + (data.errors && data.errors.length > 0 ? ' | ' + data.errors.slice(0, 3).join('; ') : ''), 'warning');
+        } else if (failCount > 0 && sentCount === 0) {
+            showToast(data.message + (data.errors && data.errors.length > 0 ? ' | ' + data.errors.slice(0, 3).join('; ') : ''), 'error');
         } else {
-            var data = await api('/api/sms/send', { method: 'POST', body: { phones: phones, content: content, contact_names: contactNames } });
-            var sentCount = (data.records || []).filter(function(r) { return r.status === 'sent'; }).length;
-            var failCount = (data.records || []).filter(function(r) { return r.status === 'failed'; }).length;
-            if (failCount > 0 && sentCount > 0) {
-                showToast(data.message + (data.errors && data.errors.length > 0 ? ' | ' + data.errors.slice(0, 3).join('; ') : ''), 'warning');
-            } else if (failCount > 0 && sentCount === 0) {
-                showToast(data.message + (data.errors && data.errors.length > 0 ? ' | ' + data.errors.slice(0, 3).join('; ') : ''), 'error');
-            } else {
-                showToast(data.message, 'success');
-            }
+            showToast(data.message, 'success');
         }
         state.sendPhones = [];
         document.getElementById('send-content').value = '';
