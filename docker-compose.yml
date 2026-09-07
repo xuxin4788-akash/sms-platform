@@ -62,11 +62,19 @@ services:
     restart: unless-stopped
     depends_on:
       - app
+    environment:
+      # Public domain served by nginx (used for server_name + cert paths).
+      # Test: test.pagoserve.com  |  Production: pagoserve.com
+      - DOMAIN=${DOMAIN:-localhost}
+      # Limit envsubst so it only replaces ${DOMAIN}, not nginx's own $host,
+      # $scheme, $binary_remote_addr, $proxy_add_x_forwarded_for, etc.
+      - NGINX_ENVSUBST_FILTER=^DOMAIN$
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Template rendered at startup with envsubst -> /etc/nginx/conf.d/default.conf
+      - ./nginx/templates:/etc/nginx/templates:ro
       - ./static:/app/static:ro
       - ./nginx/certbot/www:/var/www/certbot:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
