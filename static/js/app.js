@@ -8,6 +8,7 @@
 const state = {
     user: null,
     currentPage: 'dashboard',
+    dashboard: { dateFrom: '', dateTo: '', userId: '', users: null },
     contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '', remark: '' },
     records: { page: 1, perPage: 20, total: 0, totalPages: 0, status: '', dateFrom: '', dateTo: '', search: '' },
     sendPhones: [],
@@ -553,11 +554,61 @@ window.addEventListener('hashchange', function() {
 async function renderDashboard(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
-        var stats = await api('/api/sms/statistics');
+        var isManager = state.user && (state.user.role === 'admin' || state.user.role === 'team_admin');
+
+        // Load account list once (managers only) for the account filter
+        if (isManager && state.dashboard.users === null) {
+            try {
+                var usersResp = await api('/api/users?page_size=1000');
+                state.dashboard.users = (usersResp.users || []).filter(function(u) { return u.is_active; });
+            } catch (e) { state.dashboard.users = []; }
+        }
+
+        var params = new URLSearchParams();
+        if (state.dashboard.dateFrom) params.set('date_from', state.dashboard.dateFrom);
+        if (state.dashboard.dateTo) params.set('date_to', state.dashboard.dateTo);
+        if (state.dashboard.userId) params.set('user_id', state.dashboard.userId);
+        var qs = params.toString();
+        var stats = await api('/api/sms/statistics' + (qs ? '?' + qs : ''));
+
+        var filtering = !!(state.dashboard.dateFrom || state.dashboard.dateTo || state.dashboard.userId);
+
+        // Account selector (managers only)
+        var accountSelect = '';
+        if (isManager) {
+            var opts = '<option value="">Todas las cuentas</option>' +
+                (state.dashboard.users || []).map(function(u) {
+                    var lbl = u.full_name ? (u.full_name + ' (' + u.username + ')') : u.username;
+                    return '<option value="' + u.id + '"' + (String(state.dashboard.userId) === String(u.id) ? ' selected' : '') + '>' + escapeHtml(lbl) + '</option>';
+                }).join('');
+            accountSelect = '<select id="dash-user" onchange="handleDashboardUser(this.value)" style="min-width:200px;">' + opts + '</select>';
+        }
+
+        var todayStr = new Date().toISOString().slice(0, 10);
+        var filterBar =
+            '<div class="card mb-4"><div class="card-body" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;">' +
+                '<div style="display:flex;flex-direction:column;gap:4px;">' +
+                    '<label style="font-size:12px;font-weight:600;color:#64748B;">Desde</label>' +
+                    '<input type="date" id="dash-from" value="' + escapeHtml(state.dashboard.dateFrom) + '" max="' + todayStr + '" onchange="handleDashboardDate(\'from\', this.value)" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;">' +
+                '</div>' +
+                '<div style="display:flex;flex-direction:column;gap:4px;">' +
+                    '<label style="font-size:12px;font-weight:600;color:#64748B;">Hasta</label>' +
+                    '<input type="date" id="dash-to" value="' + escapeHtml(state.dashboard.dateTo) + '" max="' + todayStr + '" onchange="handleDashboardDate(\'to\', this.value)" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;">' +
+                '</div>' +
+                (isManager ? '<div style="display:flex;flex-direction:column;gap:4px;"><label style="font-size:12px;font-weight:600;color:#64748B;">Cuenta</label>' + accountSelect + '</div>' : '') +
+                '<div style="display:flex;gap:8px;">' +
+                    '<button class="btn btn-secondary btn-sm" onclick="setDashboardToday()">Hoy</button>' +
+                    '<button class="btn btn-ghost btn-sm" onclick="resetDashboardFilters()">Limpiar</button>' +
+                '</div>' +
+            '</div></div>';
+
+        var sentLabel = filtering ? 'Enviados (filtro)' : 'Enviados Hoy';
+
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Panel Principal</h1>' +
+            filterBar +
             '<div class="stats-grid">' +
-                '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg></div><div class="stat-label">Enviados Hoy</div><div class="stat-value">' + stats.today_sent + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg></div><div class="stat-label">' + sentLabel + '</div><div class="stat-value">' + stats.today_sent + '</div></div>' +
                 '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg></div><div class="stat-label">Tasa de Exito</div><div class="stat-value">' + stats.success_rate + '%</div></div>' +
                 '<div class="stat-card"><div class="stat-icon yellow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></div><div class="stat-label">Pendientes</div><div class="stat-value">' + stats.total_pending + '</div></div>' +
                 '<div class="stat-card"><div class="stat-icon red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg></div><div class="stat-label">Fallidos</div><div class="stat-value">' + stats.total_failed + '</div></div>' +
@@ -565,9 +616,9 @@ async function renderDashboard(container) {
             '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">' +
                 '<div class="stat-card"><div class="stat-label">Total Contactos</div><div class="stat-value" style="font-size:22px;">' + stats.total_contacts + '</div></div>' +
                 '<div class="stat-card"><div class="stat-label">Total Plantillas</div><div class="stat-value" style="font-size:22px;">' + stats.total_templates + '</div></div>' +
-                '<div class="stat-card"><div class="stat-label">Total Enviados</div><div class="stat-value" style="font-size:22px;">' + stats.total_sent + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">' + (filtering ? 'Enviados (filtro)' : 'Total Enviados') + '</div><div class="stat-value" style="font-size:22px;">' + stats.total_sent + '</div></div>' +
             '</div>' +
-            '<div class="card mt-4"><div class="card-header"><h2>Envios de los Ultimos 7 Dias</h2></div><div class="chart-container"><div class="bar-chart" id="weekly-chart"></div></div></div>';
+            '<div class="card mt-4"><div class="card-header"><h2>' + (filtering ? 'Envios en el Periodo' : 'Envios de los Ultimos 7 Dias') + '</h2></div><div class="chart-container"><div class="bar-chart" id="weekly-chart"></div></div></div>';
         var chartEl = document.getElementById('weekly-chart');
         var maxCount = Math.max.apply(null, stats.last_7_days.map(function(d) { return d.count; }).concat([1]));
         chartEl.innerHTML = stats.last_7_days.map(function(d) {
@@ -578,6 +629,35 @@ async function renderDashboard(container) {
     } catch (err) {
         container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
     }
+}
+
+function handleDashboardDate(which, value) {
+    if (which === 'from') state.dashboard.dateFrom = value;
+    else state.dashboard.dateTo = value;
+    var content = document.getElementById('page-content');
+    if (content) renderDashboard(content);
+}
+
+function handleDashboardUser(value) {
+    state.dashboard.userId = value;
+    var content = document.getElementById('page-content');
+    if (content) renderDashboard(content);
+}
+
+function setDashboardToday() {
+    var t = new Date().toISOString().slice(0, 10);
+    state.dashboard.dateFrom = t;
+    state.dashboard.dateTo = t;
+    var content = document.getElementById('page-content');
+    if (content) renderDashboard(content);
+}
+
+function resetDashboardFilters() {
+    state.dashboard.dateFrom = '';
+    state.dashboard.dateTo = '';
+    state.dashboard.userId = '';
+    var content = document.getElementById('page-content');
+    if (content) renderDashboard(content);
 }
 
 // ============================================================

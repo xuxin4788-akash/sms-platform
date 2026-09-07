@@ -4273,40 +4273,156 @@ def sms_statistics():
     elif g.user['role'] == 'team_admin':
         scope_filter = ' AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)'
         scope_params = [g.user['id'], g.user['id']]
+
+    # Optional filters: date range (inclusive, YYYY-MM-DD) and single account
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    user_id = request.args.get('user_id', '').strip()
+
+    # Normalize dates to YYYY-MM-DD when possible
+    def _norm_date(v):
+        v = (v or '').strip()
+        if not v:
+            return ''
+        m = re.match(r'^(\d{4})-(\d{2})-(\d{2})', v)
+        return m.group(0) if m else ''
+
+    date_from = _norm_date(date_from)
+    date_to = _norm_date(date_to)
+    if date_from and date_to and date_from > date_to:
+        date_from, date_to = date_to, date_from
+
+    # Account filter (role scoped; team members can only be themselves)
+    account_filter = ''
+    account_params = []
+    if g.user['role'] in ('admin', 'team_admin') and user_id:
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            uid = None
+        if uid is not None:
+            if g.user['role'] == 'team_admin' and uid != g.user['id']:
+                # ensure the chosen user belongs to this team
+                owner = db.execute(
+                    "SELECT COUNT(*) AS c FROM users WHERE id=? AND (id=? OR team_creator_id=?)",
+                    [uid, g.user['id'], g.user['id']]
+                ).fetchone()['c']
+                if not owner:
+                    return jsonify({'error': 'Sin permiso para ver este usuario'}), 403
+            account_filter = ' AND created_by = ?'
+            account_params = [uid]
+
+    # Date filters on the two timestamps we aggregate on
+    date_filter_created = ''
+    date_filter_sent = ''
+    date_params = []
+    if date_from:
+        date_filter_created += ' AND date(created_at) >= ?'
+        date_filter_sent += ' AND date(sent_at) >= ?'
+        date_params.append(date_from)
+    if date_to:
+        date_filter_created += ' AND date(created_at) <= ?'
+        date_filter_sent += ' AND date(sent_at) <= ?'
+        date_params.append(date_to)
+
+    def _count(status_sql, params_extra):
+        sql = f"SELECT COUNT(*) as count FROM sms_records WHERE {status_sql} {scope_filter}{account_filter}"
+        return db.execute(sql, params_extra).fetchone()['count']
+
     today = datetime.now().strftime('%Y-%m-%d')
-    today_sent = db.execute(
-        f"SELECT COUNT(*) as count FROM sms_records WHERE status='sent' AND date(sent_at)=? {scope_filter}",
-        [today] + scope_params
-    ).fetchone()['count']
-    today_total = db.execute(
-        f"SELECT COUNT(*) as count FROM sms_records WHERE date(created_at)=? {scope_filter}",
-        [today] + scope_params
-    ).fetchone()['count']
-    total_sent = db.execute(
-        f"SELECT COUNT(*) as count FROM sms_records WHERE status='sent' {scope_filter}",
-        scope_params
-    ).fetchone()['count']
-    total_failed = db.execute(
-        f"SELECT COUNT(*) as count FROM sms_records WHERE status='failed' {scope_filter}",
-        scope_params
-    ).fetchone()['count']
-    total_pending = db.execute(
-        f"SELECT COUNT(*) as count FROM sms_records WHERE status IN ('pending', 'scheduled') {scope_filter}",
-        scope_params
-    ).fetchone()['count']
-    total_all = db.execute(
-        f"SELECT COUNT(*) as count FROM sms_records WHERE 1=1 {scope_filter}",
-        scope_params
-    ).fetchone()['count']
-    # Last 7 days stats
-    last_7_days = []
-    for i in range(6, -1, -1):
-        day = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
-        count = db.execute(
+
+    # When a range/account filter is applied, the cards reflect that period;
+    # otherwise they keep their default "today / all time" behavior.
+    use_filter = bool(date_from or date_to or account_filter)
+
+    if use_filter:
+        # Sent within range (based on sent_at); other statuses based on created_at
+        range_sent = _count(
+            "status='sent' " + date_filter_sent,
+            date_params + scope_params + account_params
+        )
+        range_total = _count(
+            "1=1 " + date_filter_created,
+            date_params + scope_params + account_params
+        )
+        range_failed = _count(
+            "status='failed' " + date_filter_created,
+            date_params + scope_params + account_params
+        )
+        range_pending = _count(
+            "status IN ('pending','scheduled') " + date_filter_created,
+            date_params + scope_params + account_params
+        )
+        today_sent = range_sent
+        today_total = range_total
+        total_sent = range_sent
+        total_failed = range_failed
+        total_pending = range_pending
+        total_all = range_total
+    else:
+        today_sent = db.execute(
             f"SELECT COUNT(*) as count FROM sms_records WHERE status='sent' AND date(sent_at)=? {scope_filter}",
-            [day] + scope_params
+            [today] + scope_params
         ).fetchone()['count']
-        last_7_days.append({'date': day, 'count': count})
+        today_total = db.execute(
+            f"SELECT COUNT(*) as count FROM sms_records WHERE date(created_at)=? {scope_filter}",
+            [today] + scope_params
+        ).fetchone()['count']
+        total_sent = db.execute(
+            f"SELECT COUNT(*) as count FROM sms_records WHERE status='sent' {scope_filter}",
+            scope_params
+        ).fetchone()['count']
+        total_failed = db.execute(
+            f"SELECT COUNT(*) as count FROM sms_records WHERE status='failed' {scope_filter}",
+            scope_params
+        ).fetchone()['count']
+        total_pending = db.execute(
+            f"SELECT COUNT(*) as count FROM sms_records WHERE status IN ('pending', 'scheduled') {scope_filter}",
+            scope_params
+        ).fetchone()['count']
+        total_all = db.execute(
+            f"SELECT COUNT(*) as count FROM sms_records WHERE 1=1 {scope_filter}",
+            scope_params
+        ).fetchone()['count']
+
+    # Daily series: last 7 days by default; every day within an explicit range.
+    last_7_days = []
+    if date_from and date_to:
+        start = datetime.strptime(date_from, '%Y-%m-%d')
+        end = datetime.strptime(date_to, '%Y-%m-%d')
+        span = (end - start).days
+        # Cap to avoid huge charts; if out of range, fall back to last 7 days
+        if span > 60:
+            span = 6
+            d0 = datetime.now() - timedelta(days=6)
+        else:
+            d0 = start
+        for i in range(span + 1):
+            day = (d0 + timedelta(days=i)).strftime('%Y-%m-%d')
+            count = db.execute(
+                f"SELECT COUNT(*) as count FROM sms_records WHERE status='sent' AND date(sent_at)=? {scope_filter}{account_filter}",
+                [day] + scope_params + account_params
+            ).fetchone()['count']
+            last_7_days.append({'date': day, 'count': count})
+    elif date_from or date_to:
+        # Only one bound: show the 7 days ending at date_to (or starting date_from)
+        anchor = datetime.strptime(date_to or date_from, '%Y-%m-%d')
+        for i in range(6, -1, -1):
+            day = (anchor - timedelta(days=i)).strftime('%Y-%m-%d')
+            count = db.execute(
+                f"SELECT COUNT(*) as count FROM sms_records WHERE status='sent' AND date(sent_at)=? {scope_filter}{account_filter}",
+                [day] + scope_params + account_params
+            ).fetchone()['count']
+            last_7_days.append({'date': day, 'count': count})
+    else:
+        for i in range(6, -1, -1):
+            day = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+            count = db.execute(
+                f"SELECT COUNT(*) as count FROM sms_records WHERE status='sent' AND date(sent_at)=? {scope_filter}{account_filter}",
+                [day] + scope_params + account_params
+            ).fetchone()['count']
+            last_7_days.append({'date': day, 'count': count})
+
     success_rate = (total_sent / total_all * 100) if total_all > 0 else 0
     return jsonify({
         'today_sent': today_sent,
@@ -4317,6 +4433,7 @@ def sms_statistics():
         'total_all': total_all,
         'success_rate': round(success_rate, 1),
         'last_7_days': last_7_days,
+        'filters': {'date_from': date_from, 'date_to': date_to, 'user_id': user_id if account_filter else ''},
         'total_contacts': db.execute("SELECT COUNT(*) as count FROM contacts").fetchone()['count'],
         'total_templates': db.execute("SELECT COUNT(*) as count FROM templates").fetchone()['count']
     })
