@@ -45,3 +45,8 @@ mobile/android/*.jks
 *.keystore
 keystore.properties
 public/*.apk
+
+# keystore/credentials download bundles (never commit)
+static/keystore-sms-marketing.txt
+static/sms-marketing-release.keystore
+static/keystore.properties.txt
