@@ -323,6 +323,7 @@ def init_db():
                 spid VARCHAR(255) DEFAULT '',
                 api_pwd VARCHAR(255) DEFAULT '',
                 sender_name VARCHAR(255) DEFAULT '',
+                unit_price NUMERIC(14,4) DEFAULT 0,
                 is_active BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -483,6 +484,10 @@ def init_db():
             """)
         if not pg_column_exists('users', 'category_id'):
             cur.execute("ALTER TABLE users ADD COLUMN category_id INTEGER REFERENCES user_categories(id) ON DELETE SET NULL")
+
+        # sms_api_configs: per-country SMS unit price (facturacion por pais).
+        if not pg_column_exists('sms_api_configs', 'unit_price'):
+            cur.execute("ALTER TABLE sms_api_configs ADD COLUMN unit_price NUMERIC(14,4) DEFAULT 0")
         cur.execute("SELECT id FROM user_categories WHERE is_default=TRUE LIMIT 1")
         if cur.fetchone() is None:
             cur.execute(
@@ -812,6 +817,7 @@ def init_db():
                 spid TEXT DEFAULT '',
                 api_pwd TEXT DEFAULT '',
                 sender_name TEXT DEFAULT '',
+                unit_price REAL DEFAULT 0,
                 is_active INTEGER DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1247,6 +1253,7 @@ def init_db():
                     spid TEXT DEFAULT '',
                     api_pwd TEXT DEFAULT '',
                     sender_name TEXT DEFAULT '',
+                    unit_price REAL DEFAULT 0,
                     is_active INTEGER DEFAULT 1,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1271,6 +1278,16 @@ def init_db():
             cols = [row[1] for row in cursor.fetchall()]
             if 'api_config_id' not in cols:
                 db.execute("ALTER TABLE team_config ADD COLUMN api_config_id INTEGER DEFAULT NULL REFERENCES sms_api_configs(id) ON DELETE SET NULL")
+                db.commit()
+        except Exception:
+            pass
+
+        # Migration: add unit_price to sms_api_configs (precio por SMS por pais)
+        try:
+            cursor = db.execute("PRAGMA table_info(sms_api_configs)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if 'unit_price' not in cols:
+                db.execute("ALTER TABLE sms_api_configs ADD COLUMN unit_price REAL DEFAULT 0")
                 db.commit()
         except Exception:
             pass
@@ -1366,6 +1383,83 @@ def get_sms_unit_price(db=None):
     except (ValueError, TypeError):
         pass
     return DEFAULT_SMS_UNIT_PRICE
+
+def get_country_sms_unit_price(country, db=None):
+    """Precio por SMS del pais (sms_api_configs.unit_price). 0 si no esta configurado."""
+    if not country:
+        return 0.0
+    own = db is None
+    if own:
+        db = get_db()
+    row = db.execute(
+        "SELECT unit_price FROM sms_api_configs WHERE UPPER(country) = UPPER(?) "
+        "ORDER BY id LIMIT 1", (str(country),)
+    ).fetchone()
+    if row and row['unit_price'] is not None:
+        try:
+            return round(float(row['unit_price']), 6)
+        except (ValueError, TypeError):
+            return 0.0
+    return 0.0
+
+def get_agent_country(user_id, db=None):
+    """Etiqueta de pais del propio agente (mx/co/pe)."""
+    own = db is None
+    if own:
+        db = get_db()
+    row = db.execute("SELECT country FROM users WHERE id = ? AND country IS NOT NULL AND country != ''", (user_id,)).fetchone()
+    return ((row['country'] if row else '') or '').strip()
+
+def get_effective_sms_country(user_id, db=None):
+    """Pais para precios/ruta de una cuenta.
+    Prioridad: pais propio del agente (users.country) > pais por defecto del equipo
+    (team_config.country, si existe). Devuelve '' si no hay ninguno."""
+    own = db is None
+    if own:
+        db = get_db()
+    c = get_agent_country(user_id, db=db)
+    if c:
+        return c.upper()
+    try:
+        cols = {r[1] for r in db.execute("PRAGMA table_info(team_config)").fetchall()} if getattr(db, 'db_type', 'sqlite') != 'postgres' else None
+        if cols is None or 'country' in cols:
+            team = db.execute("SELECT country FROM team_config WHERE id = 1").fetchone()
+            if team and (team['country'] or '').strip():
+                return team['country'].strip().upper()
+    except Exception:
+        pass
+    return ''
+
+def get_sms_unit_price_for(user_id, db=None):
+    """Precio por SMS de una cuenta: precio del pais efectivo; si no, precio global."""
+    own = db is None
+    if own:
+        db = get_db()
+    price = get_country_sms_unit_price(get_effective_sms_country(user_id, db=db), db=db)
+    if price > 0:
+        return price
+    return get_sms_unit_price(db=db)
+
+def sms_cost_for_scope(where, params, db=None):
+    """Coste total de los SMS de un conjunto (se cobra por intento).
+    Suma por cuenta: cantidad * precio unitario segun el pais de cada cuenta."""
+    own = db is None
+    if own:
+        db = get_db()
+    total = 0.0
+    rows = db.execute(
+        f"SELECT created_by, COUNT(*) as c FROM sms_records WHERE {where} GROUP BY created_by",
+        params
+    ).fetchall()
+    for r in rows:
+        uid = r['created_by']
+        n = int(r['c']) if 'c' in r.keys() else int(r[1])
+        try:
+            price = get_sms_unit_price_for(uid, db=db) if uid else get_sms_unit_price(db=db)
+        except Exception:
+            price = get_sms_unit_price(db=db)
+        total += n * float(price)
+    return round(total, 2)
 
 def set_sms_unit_price(price, db=None):
     own = db is None
@@ -1507,6 +1601,10 @@ def get_sms_api_config(config_id=None):
             ).fetchone()
     if not config:
         return None
+    try:
+        uprice = float(config['unit_price']) if config['unit_price'] is not None else 0.0
+    except (ValueError, TypeError):
+        uprice = 0.0
     return {
         'id': config['id'],
         'name': config['name'] or '',
@@ -1515,6 +1613,7 @@ def get_sms_api_config(config_id=None):
         'spid': config['spid'] or '',
         'api_pwd': config['api_pwd'] or '',
         'sender_name': config['sender_name'] or '',
+        'unit_price': uprice,
     }
 
 def get_team_sms_config(user_id):
@@ -4457,6 +4556,7 @@ def get_sms_configs():
             'spid': c['spid'] or '',
             'api_pwd': c['api_pwd'] or '',
             'sender_name': c['sender_name'] or '',
+            'unit_price': float(c['unit_price']) if 'unit_price' in c.keys() and c['unit_price'] is not None else 0.0,
             'is_active': bool(c['is_active']),
             'updated_at': c['updated_at']
         })
@@ -4476,9 +4576,15 @@ def create_sms_config():
     if not name:
         return jsonify({'error': 'Nombre es requerido'}), 400
     try:
+        unit_price = round(float(data.get('unit_price') or 0), 6)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'El precio por SMS debe ser un numero valido'}), 400
+    if unit_price < 0:
+        return jsonify({'error': 'El precio por SMS no puede ser negativo'}), 400
+    try:
         cursor = db.execute(
-            "INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name) VALUES (?, ?, ?, ?, ?, ?)",
-            (name, country, domain, spid, api_pwd, sender_name)
+            "INSERT INTO sms_api_configs (name, country, domain, spid, api_pwd, sender_name, unit_price) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (name, country, domain, spid, api_pwd, sender_name, unit_price)
         )
         db.commit()
         return jsonify({'message': 'Configuracion creada', 'id': cursor.lastrowid})
@@ -4497,9 +4603,15 @@ def update_sms_config(config_id):
     api_pwd = data.get('api_pwd', '').strip()
     sender_name = data.get('sender_name', '').strip()
     is_active = data.get('is_active', True)
+    try:
+        unit_price = round(float(data.get('unit_price') if data.get('unit_price') is not None else 0), 6)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'El precio por SMS debe ser un numero valido'}), 400
+    if unit_price < 0:
+        return jsonify({'error': 'El precio por SMS no puede ser negativo'}), 400
     db.execute(
-        "UPDATE sms_api_configs SET name=?, country=?, domain=?, spid=?, api_pwd=?, sender_name=?, is_active=?, updated_at=datetime('now') WHERE id=?",
-        (name, country, domain, spid, api_pwd, sender_name, 1 if is_active else 0, config_id)
+        "UPDATE sms_api_configs SET name=?, country=?, domain=?, spid=?, api_pwd=?, sender_name=?, unit_price=?, is_active=?, updated_at=datetime('now') WHERE id=?",
+        (name, country, domain, spid, api_pwd, sender_name, unit_price, 1 if is_active else 0, config_id)
     )
     db.commit()
     return jsonify({'message': 'Configuracion actualizada'})
@@ -4639,6 +4751,7 @@ def get_user_usage():
         total = row['total']
         sent = row['sent']
         rate = round((sent / total * 100), 1) if total > 0 else 0
+        u_price = get_sms_unit_price_for(row['user_id'], db=db)
         # Team affiliation
         team_affiliation = '-'
         if row['role'] == 'team_member' and row['team_creator_id']:
@@ -4657,6 +4770,8 @@ def get_user_usage():
             'failed': row['failed'],
             'pending': row['pending'],
             'total': total,
+            'unit_price': u_price,
+            'total_cost': round(total * u_price, 2),
             'success_rate': rate,
             'last_activity': row['last_activity'] or ''
         })
@@ -4815,11 +4930,14 @@ def get_unified_stats():
         FROM sms_records WHERE created_by = ? {date_filter}
     """, [account_user_id] + date_params).fetchone()
 
+    my_account_price = get_sms_unit_price_for(account_user_id, db=db)
     my_account_data = {
         'total': my_account['total'] if my_account else 0,
         'sent': my_account['sent'] if my_account else 0,
         'failed': my_account['failed'] if my_account else 0,
         'pending': my_account['pending'] if my_account else 0,
+        'unit_price': my_account_price,
+        'total_cost': round((my_account['total'] if my_account else 0) * my_account_price, 2),
         'rate': round((my_account['sent'] / my_account['total'] * 100), 1) if my_account and my_account['total'] > 0 else 0
     }
 
@@ -4922,10 +5040,10 @@ def get_unified_stats():
                 ORDER BY total DESC, u.username ASC
             """, date_params + agg_ids).fetchall()
             members = []
-            member_unit_price = get_sms_unit_price(db)
             for m in member_rows:
                 m_total = m['total'] or 0
                 m_sent = m['sent'] or 0
+                m_price = get_sms_unit_price_for(m['id'], db=db)
                 members.append({
                     'id': m['id'],
                     'username': m['username'],
@@ -4938,10 +5056,14 @@ def get_unified_stats():
                     'failed': m['failed'] or 0,
                     'pending': m['pending'] or 0,
                     'today': m_total,
+                    'unit_price': m_price,
                     'rate': round((m_sent / m_total * 100), 1) if m_total > 0 else 0,
-                    'cost': round(m_total * member_unit_price, 4),
+                    'cost': round(m_total * m_price, 2),
                     'last_activity': m['last_activity'],
                 })
+
+            # Team card cost = sum of each account's per-country cost (scope+period).
+            team_cost = round(sum(mm['cost'] for mm in members), 2)
 
             my_team_data = {
                 'team_name': team_name,
@@ -4955,6 +5077,8 @@ def get_unified_stats():
                 'last_activity': last_activity,
                 'filtered': bool(date_from or date_to or filter_uid is not None),
                 'members': members,
+                'total_cost': team_cost,
+                'unit_price': get_sms_unit_price_for(account_user_id, db=db),
                 'rate': round((team_stats['sent'] / team_stats['total'] * 100), 1) if team_stats['total'] > 0 else 0
             }
     # 3. All Teams stats (admin only).
@@ -5001,9 +5125,12 @@ def get_unified_stats():
             """, user_ids).fetchone()
             t_today = (today_row['cnt'] if today_row else 0) or 0
             t_rate = round((t_sent / t_total * 100), 1) if t_total > 0 else 0
-            t_cost = round(t_total * unit_price, 4)
-            s_cost = round(t_sent * unit_price, 4)
-            f_cost = round(t_failed * unit_price, 4)
+            def _scope_cost(status_filter):
+                wwhere = f"{status_filter} {date_filter} AND created_by IN ({placeholders})"
+                return sms_cost_for_scope(wwhere, list(date_params) + user_ids, db=db)
+            t_cost = _scope_cost("1=1")
+            s_cost = _scope_cost("status='sent'")
+            f_cost = _scope_cost("status='failed'")
             return {
                 'unit_role': unit_role,
                 'team_name': name,
@@ -5080,19 +5207,22 @@ def get_unified_stats():
     # Convert to dicts
     users_dicts = [{'id': u['id'], 'username': u['username'], 'full_name': u['full_name']} for u in users_list]
 
-    # Precio unitario configurado por el administrador (coste por SMS enviado).
+    # Precio global por defecto (usado solo cuando un pais no tiene precio propio).
     unit_price = get_sms_unit_price(db)
 
-    # Costes a nivel de cuenta personal.
-    my_account_data['total_cost'] = calc_cost(my_account_data.get('total'), unit_price)
-    my_account_data['sent_cost'] = calc_cost(my_account_data.get('sent'), unit_price)
-    my_account_data['failed_cost'] = calc_cost(my_account_data.get('failed'), unit_price)
+    # Costes a nivel de cuenta personal (precio segun el pais de la cuenta).
+    my_acct_price = my_account_data.get('unit_price', get_sms_unit_price_for(account_user_id, db=db))
+    my_account_data['total_cost'] = round(my_account_data.get('total', 0) * my_acct_price, 2)
+    my_account_data['sent_cost'] = round(my_account_data.get('sent', 0) * my_acct_price, 2)
+    my_account_data['failed_cost'] = round(my_account_data.get('failed', 0) * my_acct_price, 2)
 
-    # Costes del equipo del team_admin.
+    # Costes del equipo: suma de los costos por pais de cada cuenta (ya calculados).
     if my_team_data:
-        my_team_data['total_cost'] = calc_cost(my_team_data.get('total'), unit_price)
-        my_team_data['sent_cost'] = calc_cost(my_team_data.get('sent'), unit_price)
-        my_team_data['failed_cost'] = calc_cost(my_team_data.get('failed'), unit_price)
+        team_members = my_team_data.get('members') or []
+        if team_members:
+            my_team_data['total_cost'] = round(sum(mm.get('cost', 0) for mm in team_members), 2)
+            my_team_data['sent_cost'] = round(sum(mm.get('sent', 0) * mm.get('unit_price', 0) for mm in team_members), 2)
+            my_team_data['failed_cost'] = round(sum(mm.get('failed', 0) * mm.get('unit_price', 0) for mm in team_members), 2)
 
     # Cost fields are computed inside _build_unit_row for all_teams_list and
     # all_teams_data already includes the summed total_cost. Nothing extra to do.
