@@ -1075,7 +1075,25 @@ function updatePreview() {
     var previewText = document.getElementById('preview-text');
     if (content) {
         preview.style.display = 'block';
-        previewText.textContent = content.replace(/{nombre}/g, 'Juan').replace(/{telefono}/g, '+34 600 000 000').replace(/{app_name}/g, 'App Demo').replace(/{amount}/g, '150.00').replace(/{discount}/g, '20.00').replace(/{payment_link}/g, 'https://pago.ejemplo.com/juan');
+        // {payment_link} se convierte automaticamente en un enlace corto al
+        // enviar (ej. https://tudominio.com/l/xY3kPq8a); en la vista previa se
+        // muestra un enlace corto de ejemplo, no la URL larga original.
+        var hasLink = /{payment_link}/i.test(content);
+        previewText.textContent = content.replace(/{nombre}/g, 'Juan').replace(/{telefono}/g, '+34 600 000 000').replace(/{app_name}/g, 'App Demo').replace(/{amount}/g, '150.00').replace(/{discount}/g, '20.00').replace(/{payment_link}/gi, 'https://tudominio.com/l/aB3kPq9Z');
+        previewText.dataset.linkShortened = hasLink ? '1' : '';
+        var hint = document.getElementById('preview-shortlink-hint');
+        if (hasLink) {
+            if (!hint) {
+                hint = document.createElement('div');
+                hint.id = 'preview-shortlink-hint';
+                hint.style.cssText = 'font-size:12px;color:#2563EB;margin-top:6px;';
+                hint.innerHTML = '\u2139\uFE0F El enlace de pago se acorta automaticamente en el SMS (tudominio.com/l/codigo) para ahorrar caracteres.';
+                if (previewText.parentNode) previewText.parentNode.appendChild(hint);
+            }
+            hint.style.display = 'block';
+        } else if (hint) {
+            hint.style.display = 'none';
+        }
         // Check charset and billing info
         checkCharsetInfo(content);
     } else { preview.style.display = 'none'; }
@@ -1107,8 +1125,9 @@ function showSendPreviewModal() {
     var phones = getSendPhones();
     if (!content) return showToast('Escriba un mensaje', 'error');
     if (phones.length === 0) return showToast('Seleccione al menos un destinatario', 'error');
-    var sample = content.replace(/{nombre}/g, 'Juan').replace(/{telefono}/g, phones[0] || '').replace(/{app_name}/g, 'App Demo').replace(/{amount}/g, '150.00').replace(/{discount}/g, '20.00').replace(/{payment_link}/g, 'https://pago.ejemplo.com/juan');
-    showModal('Vista Previa del Envio', '<div class="preview-box"><div class="preview-label">Mensaje (' + phones.length + ' destinatario(s))</div><div class="preview-content">' + escapeHtml(sample) + '</div></div>' + '<p class="mt-2 text-secondary"><strong>Envio:</strong> Inmediato</p>' + '<div class="modal-footer" style="padding:16px 0 0;"><button class="btn btn-secondary" onclick="hideModal()">Cerrar</button></div>');
+    var sample = content.replace(/{nombre}/g, 'Juan').replace(/{telefono}/g, phones[0] || '').replace(/{app_name}/g, 'App Demo').replace(/{amount}/g, '150.00').replace(/{discount}/g, '20.00').replace(/{payment_link}/gi, 'https://tudominio.com/l/aB3kPq9Z');
+    var linkNote = /{payment_link}/i.test(content) ? '<p class="text-secondary" style="font-size:12px;margin-top:8px;">&#8505;&#65039; El enlace de pago se acorta automaticamente en el SMS para ahorrar caracteres.</p>' : '';
+    showModal('Vista Previa del Envio', '<div class="preview-box"><div class="preview-label">Mensaje (' + phones.length + ' destinatario(s))</div><div class="preview-content">' + escapeHtml(sample) + '</div></div>' + linkNote + '<p class="mt-2 text-secondary"><strong>Envio:</strong> Inmediato</p>' + '<div class="modal-footer" style="padding:16px 0 0;"><button class="btn btn-secondary" onclick="hideModal()">Cerrar</button></div>');
 }
 
 function getSendPhones() {
