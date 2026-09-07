@@ -36,3 +36,4 @@ assets/
 
 # Built mobile APK artifacts
 static/*.apk
+mobile/buildlogs/
