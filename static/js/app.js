@@ -316,7 +316,7 @@ function copySmsContent(text, btn) {
 
 function smsCopyButton(content) {
   var safe = escapeHtml(content || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
-  return ' <button type="button" class="btn btn-ghost btn-sm btn-icon" style="padding:2px 4px;vertical-align:middle;" title="Copiar mensaje" onclick="copySmsContent(this.getAttribute(\'data-msg\'), this)" data-msg="' + safe + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>';
+  return ' <button type="button" class="btn btn-ghost btn-sm btn-icon" style="flex-shrink:0;padding:2px 4px;vertical-align:middle;" title="Copiar mensaje" onclick="copySmsContent(this.getAttribute(\'data-msg\'), this)" data-msg="' + safe + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>';
 }
 
 // ============================================================
@@ -1315,7 +1315,7 @@ async function renderRecords(container) {
                 var senderBadge = r.sender_role === 'admin'
                     ? '<span style="display:inline-block;background:#EFF6FF;color:#1D4ED8;font-size:11px;padding:2px 8px;border-radius:999px;">' + senderName + '</span>'
                     : senderName;
-                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.content) + '">' + escapeHtml(r.content) + smsCopyButton(r.content) + '</td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (apiInfo || '<span class="text-secondary">-</span>') + '</td></tr>';
+                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:250px;"><div style="display:flex;align-items:center;gap:6px;"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.content) + '">' + escapeHtml(r.content) + '</span>' + smsCopyButton(r.content) + '</div></td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (apiInfo || '<span class="text-secondary">-</span>') + '</td></tr>';
             }).join('');
 
         container.innerHTML =
@@ -1368,7 +1368,7 @@ async function renderContentSearch(container) {
                 var senderBadge = r.sender_role === 'admin'
                     ? '<span style="display:inline-block;background:#EFF6FF;color:#1D4ED8;font-size:11px;padding:2px 8px;border-radius:999px;">' + senderName + '</span>'
                     : senderName;
-                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:300px;">' + highlightContent + smsCopyButton(r.content) + '</td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (r.api_msg ? '<span class="text-secondary" style="font-size:11px;">' + escapeHtml(r.api_msg) + '</span>' : '<span class="text-secondary">-</span>') + '</td></tr>';
+                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:300px;"><div style="display:flex;align-items:center;gap:6px;"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.content) + '">' + highlightContent + '</span>' + smsCopyButton(r.content) + '</div></td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (r.api_msg ? '<span class="text-secondary" style="font-size:11px;">' + escapeHtml(r.api_msg) + '</span>' : '<span class="text-secondary">-</span>') + '</td></tr>';
             }).join('');
 
         container.innerHTML =
