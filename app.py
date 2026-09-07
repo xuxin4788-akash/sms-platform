@@ -1794,6 +1794,47 @@ def normalize_country(country):
 _COUNTRY_CALLING_CODES = {'mx': '52', 'co': '57', 'pe': '51'}
 
 
+def resolve_extension_pool_country(member_country=None, team_admin_id=None, db=None):
+    """Pais del que se toma la extension para un agente nuevo.
+
+    Orden de fallback (igual que la marcacion de voz):
+      pais propio del miembro (form) -> pais del lider de equipo (team_admin)
+      -> pais por defecto del equipo (team_config) -> 'mx'.
+    Asi, si el lider/equipo es de Mexico y el miembro no trae pais, la
+    extension se toma del pool de Mexico en vez del pool vacio ''.
+    """
+    c = normalize_country(member_country)
+    if c:
+        return c
+    own_db = db is None
+    if own_db:
+        db = get_db()
+    # Pais del lider que crea/gestiona al miembro.
+    if team_admin_id:
+        row = db.execute(
+            "SELECT country FROM users WHERE id = ? AND country IS NOT NULL AND country != ''",
+            (team_admin_id,)
+        ).fetchone()
+        c = normalize_country(row['country'] if row and not isinstance(row, tuple) else '')
+        if c:
+            return c
+    # Pais por defecto del equipo (team_config, si la columna existe).
+    try:
+        if getattr(db, 'db_type', 'sqlite') == 'postgres':
+            tc = db.execute("SELECT country FROM team_config WHERE country IS NOT NULL AND country != '' ORDER BY id LIMIT 1").fetchone()
+        else:
+            cols = {r[1] for r in db.execute("PRAGMA table_info(team_config)").fetchall()}
+            tc = db.execute("SELECT country FROM team_config WHERE country IS NOT NULL AND country != '' ORDER BY id LIMIT 1").fetchone() if 'country' in cols else None
+        if tc:
+            val = tc['country'] if not isinstance(tc, tuple) else tc[0]
+            c = normalize_country(val)
+            if c:
+                return c
+    except Exception:
+        pass
+    return 'mx'
+
+
 def allocate_extension(exclude_id=None, country=None):
     """Auto-assign a free extension for a country.
 
@@ -2687,12 +2728,15 @@ def create_user():
     # libre del pool configurado si el administrador marca "asignar telefono".
     assign_extension = bool(data.get('assign_extension', False))
     extnumber = None
-    country = normalize_country(data.get('country'))
+    raw_country = normalize_country(data.get('country'))
     # Categoria del empleado (define los dias de retencion de sus contactos).
     # Si no se especifica, se asigna la categoria por defecto.
     category_id = resolve_category_id(data.get('category_id'))
     if category_id is None and not (data.get('category_id') is not None and str(data.get('category_id')).strip() != ''):
         category_id = get_default_category_id()
+    # Pais para la extension: si el miembro no trae pais, se hereda del lider
+    # (team_admin) o del pais por defecto del equipo, con fallback a Mexico.
+    country = resolve_extension_pool_country(raw_country, team_admin_id=team_creator_id)
     if assign_extension:
         extnumber = allocate_extension(country=country)
         if not extnumber:
@@ -2793,8 +2837,11 @@ def update_user(user_id):
         # Si ya tenia una extension, se conserva; si no, se asigna una libre.
         had_ext = _normalize_extnumber(user['extnumber'] if 'extnumber' in user.keys() else None)
         if not had_ext:
-            target_country = normalize_country(data.get('country')) if 'country' in data else (
+            member_country = normalize_country(data.get('country')) if 'country' in data else (
                 normalize_country(user['country'] if 'country' in user.keys() else None))
+            # Hereda el pais del lider/equipo si el miembro no tiene uno propio.
+            leader_id = user['team_creator_id'] if 'team_creator_id' in user.keys() else None
+            target_country = resolve_extension_pool_country(member_country, team_admin_id=leader_id)
             new_ext = allocate_extension(exclude_id=user_id, country=target_country)
             if not new_ext:
                 label = {'mx': 'Mexico', 'co': 'Colombia', 'pe': 'Peru'}.get(target_country, 'el pool')
@@ -2911,6 +2958,8 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
         if not any(p['all'] for p in pools_by_country.values()):
             preflight_error = 'No hay extensiones configuradas. Pida al administrador del sistema que agregue extensiones en la pagina de Extensiones antes de asignar.'
             return None, [{'index': -1, 'username': '', 'error': preflight_error}], role
+    # Pais de respaldo para filas sin pais: pais del lider/equipo -> mx.
+    fallback_country = resolve_extension_pool_country(default_country, team_admin_id=team_creator_id, db=db)
     seen_usernames = set()
 
     for idx, u in enumerate(users):
@@ -2919,7 +2968,8 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
             continue
         username = (u.get('username') or '').strip()
         full_name = (u.get('full_name') or '').strip()
-        country = normalize_country(u.get('country')) or default_country
+        # Pais del agente: fila -> default de la tanda -> pais del lider/equipo -> mx.
+        country = normalize_country(u.get('country')) or default_country or fallback_country
         api_config_id = u.get('api_config_id') or default_api_config_id
         # Las extensiones nunca se leen del archivo: se asignan automaticamente.
         extnumber = None
@@ -2945,7 +2995,7 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
             continue
 
         if assign_extensions:
-            pool_info = pools_by_country.get(country) or pools_by_country['']
+            pool_info = pools_by_country.get(country) or pools_by_country[fallback_country] or pools_by_country['']
             free_pool = pool_info['free']
             if not free_pool:
                 label = COUNTRY_LABELS.get(country, 'el pool')
