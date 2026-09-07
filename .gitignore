@@ -50,3 +50,7 @@ public/*.apk
 static/keystore-sms-marketing.txt
 static/sms-marketing-release.keystore
 static/keystore.properties.txt
+
+# download artifacts (served by nginx, not committed)
+nginx/downloads/*
+!nginx/downloads/.gitkeep

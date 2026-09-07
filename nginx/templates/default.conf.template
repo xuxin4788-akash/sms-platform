@@ -72,6 +72,25 @@ server {
         access_log off;
     }
 
+    # Downloadable artifacts (APK, docs) served from a host-mounted folder.
+    # Drop files on the host at nginx/downloads/ -> served at /downloads/
+    # No image rebuild needed.
+    location /downloads/ {
+        alias /usr/share/nginx/downloads/;
+        autoindex off;
+        add_header Cache-Control "public, max-age=3600";
+        add_header X-Content-Type-Options "nosniff" always;
+        # Force download for common installers/binaries
+        types {
+            application/vnd.android.package-archive apk;
+            application/octet-stream bin keystore;
+            text/plain txt;
+            application/zip zip;
+        }
+        default_type application/octet-stream;
+        access_log off;
+    }
+
     # Short-link redirects must reach the Flask app (do not treat as static)
     location /l/ {
         proxy_pass http://app_server;

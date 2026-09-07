@@ -76,6 +76,9 @@ services:
       # Template rendered at startup with envsubst -> /etc/nginx/conf.d/default.conf
       - ./nginx/templates:/etc/nginx/templates:ro
       - ./static:/app/static:ro
+      # Host-mounted download folder: drop APK/files in nginx/downloads on the
+      # host, served publicly at https://DOMAIN/downloads/<file> (no rebuild)
+      - ./nginx/downloads:/usr/share/nginx/downloads:ro
       - ./nginx/certbot/www:/var/www/certbot:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
     deploy:
