@@ -44,6 +44,9 @@ services:
       # Gunicorn worker count. Production defaults to 2*CPU+1 inside the image.
       # Override on small test servers (e.g. GUNICORN_WORKERS=2) to save memory.
       - GUNICORN_WORKERS=${GUNICORN_WORKERS:-}
+      # Base public URL for payment short links (e.g. https://test.pagoserve.com).
+      # Falls back to the request host when empty.
+      - SHORT_LINK_BASE_URL=${SHORT_LINK_BASE_URL:-}
     volumes:
       - app-logs:/app/logs
     deploy:
