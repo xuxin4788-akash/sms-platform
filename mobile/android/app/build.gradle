@@ -1,5 +1,18 @@
 apply plugin: 'com.android.application'
 
+// Release signing: read credentials from keystore.properties (not committed).
+// Falls back to env vars (KEYSTORE_STORE_PASSWORD / KEYSTORE_KEY_PASSWORD) so CI
+// can build without a properties file.
+def keystorePropsFile = rootProject.file("keystore.properties")
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystoreProps.load(new FileInputStream(keystorePropsFile))
+}
+def releaseStoreFile = keystoreProps.getProperty('storeFile') ?: System.getenv('KEYSTORE_FILE')
+def releaseStorePassword = keystoreProps.getProperty('storePassword') ?: System.getenv('KEYSTORE_STORE_PASSWORD')
+def releaseKeyAlias = keystoreProps.getProperty('keyAlias') ?: System.getenv('KEYSTORE_ALIAS') ?: 'sms-marketing'
+def releaseKeyPassword = keystoreProps.getProperty('keyPassword') ?: System.getenv('KEYSTORE_KEY_PASSWORD')
+
 android {
     namespace "com.smsmarketing.app"
     compileSdk rootProject.ext.compileSdkVersion
@@ -16,9 +29,22 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (releaseStoreFile) {
+                storeFile rootProject.file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
     buildTypes {
         release {
-            minifyEnabled false
+            // Sign with the release key when keystore is configured; else build unsigned.
+            signingConfig releaseStoreFile ? signingConfigs.release : null
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             resValue "string", "build_app_name", "SMS Marketing"
         }

@@ -37,3 +37,11 @@ assets/
 # Built mobile APK artifacts
 static/*.apk
 mobile/buildlogs/
+
+# Mobile release signing keys (never commit)
+mobile/android/sms-marketing-release.keystore
+mobile/android/keystore.properties
+mobile/android/*.jks
+*.keystore
+keystore.properties
+public/*.apk
