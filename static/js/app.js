@@ -2296,13 +2296,13 @@ async function renderMyTeam(container) {
         if (myTeam && myTeam.member_count !== undefined) {
             var teamRate = myTeam.total > 0 ? (myTeam.sent / myTeam.total * 100).toFixed(1) : '0.0';
             var sentLabel = (dateFrom || dateTo) ? 'Enviados (periodo)' : 'Enviados Hoy';
-            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen del Equipo</h3><span class="badge badge-success header-badge">' + escapeHtml(myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard(sentLabel, myTeam.today || 0, 'var(--success)') + statCard('Costo Total', formatMoney(myTeam.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', teamRate + '%') + '</div><table class="info-table"><tbody>' + statRow('SMS Enviados', myTeam.sent || 0) + statRow('SMS Fallidos', myTeam.failed || 0) + statRow('SMS Pendientes', myTeam.pending || 0) + statRow('Costo por SMS', Number(data.unit_price) > 0 ? formatPrice(data.unit_price) : 'No configurado') + statRow('Facturacion', 'Cada SMS enviado se factura (exito o fallo)') + statRow('Limite Diario', myTeam.daily_limit > 0 ? myTeam.daily_limit + ' SMS/usuario' : 'Sin limite') + statRow('Ultima Actividad', myTeam.last_activity ? timeAgo(myTeam.last_activity) : 'Sin actividad') + '</tbody></table></div></div>';
+            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen del Equipo</h3><span class="badge badge-success header-badge">' + escapeHtml(myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard(sentLabel, myTeam.today || 0, 'var(--success)') + statCard('Costo Total', formatMoney(myTeam.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', teamRate + '%') + '</div><table class="info-table"><tbody>' + statRow('SMS Enviados', myTeam.sent || 0) + statRow('SMS Fallidos', myTeam.failed || 0) + statRow('SMS Pendientes', myTeam.pending || 0) + statRow('Llamadas Realizadas', myTeam.calls || 0) + statRow('Llamadas Conectadas', myTeam.answered || 0) + statRow('Tiempo Total de Llamada', (myTeam.talk_time ? formatDuration(myTeam.talk_time) : '0s')) + statRow('Costo por SMS', Number(data.unit_price) > 0 ? formatPrice(data.unit_price) : 'No configurado') + statRow('Facturacion', 'Cada SMS enviado se factura (exito o fallo)') + statRow('Limite Diario', myTeam.daily_limit > 0 ? myTeam.daily_limit + ' SMS/usuario' : 'Sin limite') + statRow('Ultima Actividad', myTeam.last_activity ? timeAgo(myTeam.last_activity) : 'Sin actividad') + '</tbody></table></div></div>';
 
             // Per-account breakdown, ordered by total SMS (backend) then username.
             var members = myTeam.members || [];
             var roleLabels = { admin: 'Administrador', team_admin: 'Admin. de Equipo', team_member: 'Miembro' };
             var memberRows = members.length === 0
-                ? '<tr><td colspan="8" class="text-center text-secondary" style="padding:24px;">Sin cuentas</td></tr>'
+                ? '<tr><td colspan="11" class="text-center text-secondary" style="padding:24px;">Sin cuentas</td></tr>'
                 : members.map(function(mem) {
                     var rate = Number(mem.rate) || 0;
                     var rateBadge = rate >= 90 ? 'badge-green' : (rate >= 70 ? 'badge-orange' : 'badge-red');
@@ -2314,12 +2314,15 @@ async function renderMyTeam(container) {
                         '<td style="text-align:right;font-weight:600;">' + (mem.total || 0) + '</td>' +
                         '<td style="text-align:right;color:var(--success);">' + (mem.sent || 0) + '</td>' +
                         '<td style="text-align:right;color:var(--danger);">' + (mem.failed || 0) + '</td>' +
-                        '<td style="text-align:right;color:var(--primary);font-weight:600;">' + formatMoney(mem.total || 0, data.unit_price) + '</td>' +
+                        '<td style="text-align:right;color:var(--primary);font-weight:600;">' + formatMoney(mem.cost || 0, 1) + '</td>' +
+                        '<td style="text-align:right;">' + (mem.calls || 0) + '</td>' +
+                        '<td style="text-align:right;color:var(--success);">' + (mem.answered || 0) + '</td>' +
+                        '<td style="text-align:right;" class="text-secondary text-sm">' + (mem.talk_time ? formatDuration(mem.talk_time) : '0s') + '</td>' +
                         '<td style="text-align:right;"><span class="badge ' + rateBadge + '">' + rate + '%</span></td>' +
                         '<td class="text-secondary text-sm">' + (mem.last_activity ? timeAgo(mem.last_activity) : 'Sin actividad') + '</td>' +
                         '</tr>';
                 }).join('');
-            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Datos por Cuenta</h3><span class="badge badge-blue header-badge">' + members.length + ' cuentas</span></div><div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Exito</th><th>Ultima Actividad</th></tr></thead><tbody>' + memberRows + '</tbody></table></div></div>';
+            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Datos por Cuenta</h3><span class="badge badge-blue header-badge">' + members.length + ' cuentas</span></div><div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Llamadas</th><th style="text-align:right;">Conectadas</th><th style="text-align:right;">Tiempo</th><th style="text-align:right;">Exito</th><th>Ultima Actividad</th></tr></thead><tbody>' + memberRows + '</tbody></table></div></div>';
         } else {
             html += '<div class="card mb-4"><div class="card-body"><div class="empty-state"><h3>Sin datos de equipo</h3><p>No tienes acceso a datos de equipo.</p></div></div></div>';
         }

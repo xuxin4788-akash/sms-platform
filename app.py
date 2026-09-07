@@ -5039,11 +5039,39 @@ def get_unified_stats():
                 GROUP BY u.id
                 ORDER BY total DESC, u.username ASC
             """, date_params + agg_ids).fetchall()
+            # Per-account voice (phone) stats: dialed = total calls, answered =
+            # completed, talk_time = summed duration of completed calls (seconds).
+            v_date_filter = ''
+            v_date_params = []
+            if date_from:
+                v_date_filter += ' AND date(v.initiated_at) >= ?'
+                v_date_params.append(date_from)
+            if date_to:
+                v_date_filter += ' AND date(v.initiated_at) <= ?'
+                v_date_params.append(date_to)
+            voice_member_rows = db.execute(f"""
+                SELECT v.created_by AS uid,
+                       COUNT(v.id) AS calls,
+                       COALESCE(SUM(CASE WHEN v.status='completed' THEN 1 ELSE 0 END), 0) AS answered,
+                       COALESCE(SUM(CASE WHEN v.status='completed' THEN COALESCE(v.duration,0) ELSE 0 END), 0) AS talk
+                FROM voice_records v
+                WHERE v.created_by IN ({agg_ph}) {v_date_filter}
+                GROUP BY v.created_by
+            """, v_date_params + agg_ids).fetchall()
+            voice_by_uid = {r['uid']: r for r in voice_member_rows}
+            team_calls = sum((r['calls'] or 0) for r in voice_member_rows)
+            team_answered = sum((r['answered'] or 0) for r in voice_member_rows)
+            team_talk = sum((r['talk'] or 0) for r in voice_member_rows)
+
             members = []
             for m in member_rows:
                 m_total = m['total'] or 0
                 m_sent = m['sent'] or 0
                 m_price = get_sms_unit_price_for(m['id'], db=db)
+                v = voice_by_uid.get(m['id'])
+                m_calls = (v['calls'] if v else 0) or 0
+                m_answered = (v['answered'] if v else 0) or 0
+                m_talk = (v['talk'] if v else 0) or 0
                 members.append({
                     'id': m['id'],
                     'username': m['username'],
@@ -5059,6 +5087,9 @@ def get_unified_stats():
                     'unit_price': m_price,
                     'rate': round((m_sent / m_total * 100), 1) if m_total > 0 else 0,
                     'cost': round(m_total * m_price, 2),
+                    'calls': m_calls,
+                    'answered': m_answered,
+                    'talk_time': int(m_talk or 0),
                     'last_activity': m['last_activity'],
                 })
 
@@ -5078,6 +5109,9 @@ def get_unified_stats():
                 'filtered': bool(date_from or date_to or filter_uid is not None),
                 'members': members,
                 'total_cost': team_cost,
+                'calls': team_calls,
+                'answered': team_answered,
+                'talk_time': int(team_talk or 0),
                 'unit_price': get_sms_unit_price_for(account_user_id, db=db),
                 'rate': round((team_stats['sent'] / team_stats['total'] * 100), 1) if team_stats['total'] > 0 else 0
             }
