@@ -488,6 +488,9 @@ def init_db():
         # sms_api_configs: per-country SMS unit price (facturacion por pais).
         if not pg_column_exists('sms_api_configs', 'unit_price'):
             cur.execute("ALTER TABLE sms_api_configs ADD COLUMN unit_price NUMERIC(14,4) DEFAULT 0")
+        # team_config: team default country for SMS routing/pricing (mx/co/pe).
+        if not pg_column_exists('team_config', 'country'):
+            cur.execute("ALTER TABLE team_config ADD COLUMN country VARCHAR(5) DEFAULT ''")
         cur.execute("SELECT id FROM user_categories WHERE is_default=TRUE LIMIT 1")
         if cur.fetchone() is None:
             cur.execute(
@@ -1278,6 +1281,16 @@ def init_db():
             cols = [row[1] for row in cursor.fetchall()]
             if 'api_config_id' not in cols:
                 db.execute("ALTER TABLE team_config ADD COLUMN api_config_id INTEGER DEFAULT NULL REFERENCES sms_api_configs(id) ON DELETE SET NULL")
+                db.commit()
+        except Exception:
+            pass
+
+        # Migration: add country to team_config (pais por defecto del equipo)
+        try:
+            cursor = db.execute("PRAGMA table_info(team_config)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if 'country' not in cols:
+                db.execute("ALTER TABLE team_config ADD COLUMN country TEXT DEFAULT ''")
                 db.commit()
         except Exception:
             pass
