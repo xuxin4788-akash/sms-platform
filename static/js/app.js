@@ -2302,7 +2302,7 @@ async function renderMyTeam(container) {
             var members = myTeam.members || [];
             var roleLabels = { admin: 'Administrador', team_admin: 'Admin. de Equipo', team_member: 'Miembro' };
             var memberRows = members.length === 0
-                ? '<tr><td colspan="7" class="text-center text-secondary" style="padding:24px;">Sin cuentas</td></tr>'
+                ? '<tr><td colspan="8" class="text-center text-secondary" style="padding:24px;">Sin cuentas</td></tr>'
                 : members.map(function(mem) {
                     var rate = Number(mem.rate) || 0;
                     var rateBadge = rate >= 90 ? 'badge-green' : (rate >= 70 ? 'badge-orange' : 'badge-red');
@@ -2314,11 +2314,12 @@ async function renderMyTeam(container) {
                         '<td style="text-align:right;font-weight:600;">' + (mem.total || 0) + '</td>' +
                         '<td style="text-align:right;color:var(--success);">' + (mem.sent || 0) + '</td>' +
                         '<td style="text-align:right;color:var(--danger);">' + (mem.failed || 0) + '</td>' +
+                        '<td style="text-align:right;color:var(--primary);font-weight:600;">' + formatMoney(mem.total || 0, data.unit_price) + '</td>' +
                         '<td style="text-align:right;"><span class="badge ' + rateBadge + '">' + rate + '%</span></td>' +
                         '<td class="text-secondary text-sm">' + (mem.last_activity ? timeAgo(mem.last_activity) : 'Sin actividad') + '</td>' +
                         '</tr>';
                 }).join('');
-            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Datos por Cuenta</h3><span class="badge badge-blue header-badge">' + members.length + ' cuentas</span></div><div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Exito</th><th>Ultima Actividad</th></tr></thead><tbody>' + memberRows + '</tbody></table></div></div>';
+            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Datos por Cuenta</h3><span class="badge badge-blue header-badge">' + members.length + ' cuentas</span></div><div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Exito</th><th>Ultima Actividad</th></tr></thead><tbody>' + memberRows + '</tbody></table></div></div>';
         } else {
             html += '<div class="card mb-4"><div class="card-body"><div class="empty-state"><h3>Sin datos de equipo</h3><p>No tienes acceso a datos de equipo.</p></div></div></div>';
         }

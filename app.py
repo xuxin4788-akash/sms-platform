@@ -4922,6 +4922,7 @@ def get_unified_stats():
                 ORDER BY total DESC, u.username ASC
             """, date_params + agg_ids).fetchall()
             members = []
+            member_unit_price = get_sms_unit_price(db)
             for m in member_rows:
                 m_total = m['total'] or 0
                 m_sent = m['sent'] or 0
@@ -4938,6 +4939,7 @@ def get_unified_stats():
                     'pending': m['pending'] or 0,
                     'today': m_total,
                     'rate': round((m_sent / m_total * 100), 1) if m_total > 0 else 0,
+                    'cost': round(m_total * member_unit_price, 4),
                     'last_activity': m['last_activity'],
                 })
 
