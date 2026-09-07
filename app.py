@@ -4907,6 +4907,40 @@ def get_unified_stats():
             """, agg_ids).fetchone()
             last_activity = last_row['last_at'] if last_row and last_row['last_at'] else None
 
+            # Per-account breakdown for every account in the (possibly filtered) scope.
+            member_rows = db.execute(f"""
+                SELECT u.id, u.username, u.full_name, u.role, u.extnumber, u.country,
+                       COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) AS sent,
+                       COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) AS failed,
+                       COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) AS pending,
+                       COALESCE(COUNT(r.id), 0) AS total,
+                       MAX(r.created_at) AS last_activity
+                FROM users u
+                LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
+                WHERE u.id IN ({agg_ph})
+                GROUP BY u.id
+                ORDER BY total DESC, u.username ASC
+            """, date_params + agg_ids).fetchall()
+            members = []
+            for m in member_rows:
+                m_total = m['total'] or 0
+                m_sent = m['sent'] or 0
+                members.append({
+                    'id': m['id'],
+                    'username': m['username'],
+                    'full_name': m['full_name'] or '',
+                    'role': m['role'],
+                    'extnumber': m['extnumber'] or '',
+                    'country': normalize_country(m['country']) if m['country'] else '',
+                    'total': m_total,
+                    'sent': m_sent,
+                    'failed': m['failed'] or 0,
+                    'pending': m['pending'] or 0,
+                    'today': m_total,
+                    'rate': round((m_sent / m_total * 100), 1) if m_total > 0 else 0,
+                    'last_activity': m['last_activity'],
+                })
+
             my_team_data = {
                 'team_name': team_name,
                 'member_count': len(agg_ids),
@@ -4918,6 +4952,7 @@ def get_unified_stats():
                 'daily_limit': daily_limit,
                 'last_activity': last_activity,
                 'filtered': bool(date_from or date_to or filter_uid is not None),
+                'members': members,
                 'rate': round((team_stats['sent'] / team_stats['total'] * 100), 1) if team_stats['total'] > 0 else 0
             }
     # 3. All Teams stats (admin only).
