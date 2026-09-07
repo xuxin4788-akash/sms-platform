@@ -14,7 +14,7 @@ import requests as http_requests
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, session, g, send_from_directory, send_file
+from flask import Flask, request, jsonify, render_template, session, g, send_from_directory, send_file, redirect
 from flask_cors import CORS
 from flask_compress import Compress
 from werkzeug.utils import secure_filename
@@ -348,6 +348,15 @@ def init_db():
             CREATE TABLE IF NOT EXISTS role_permissions (
                 role VARCHAR(20) PRIMARY KEY,
                 permissions TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS short_links (
+                id SERIAL PRIMARY KEY,
+                code VARCHAR(16) NOT NULL UNIQUE,
+                original_url TEXT NOT NULL,
+                hit_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                last_hit_at TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS team_config (
@@ -1193,6 +1202,23 @@ def init_db():
             db.execute("PRAGMA foreign_keys=ON")
         except Exception:
             pass
+        # Migration: create short_links table
+        try:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS short_links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE,
+                    original_url TEXT NOT NULL,
+                    hit_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    last_hit_at TEXT
+                )
+            """)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            app.logger.warning(f"[shortlink] table migration warning: {e}")
+
         # Migration: create team_config table
         try:
             db.execute("""
@@ -1828,7 +1854,7 @@ def _extensions_release(extnumber):
     db.commit()
 
 
-def apply_template_vars(text, phone, contact_names=None, contact_cache=None):
+def apply_template_vars(text, phone, contact_names=None, contact_cache=None, shorten_links=False):
     """Replace {nombre}/{telefono}/{app_name}/{amount}/{discount}/{payment_link} placeholders."""
     if not text:
         return text
@@ -1850,12 +1876,89 @@ def apply_template_vars(text, phone, contact_names=None, contact_cache=None):
             amount = entry.get('amount', 0)
             discount_amount = entry.get('discount_amount', 0)
             payment_link = entry.get('payment_link', '')
+    if shorten_links and payment_link:
+        payment_link = shorten_payment_link(payment_link)
     msg = text.replace('{nombre}', name).replace('{telefono}', norm_phone)
     msg = msg.replace('{app_name}', app_name)
     msg = msg.replace('{amount}', _fmt_money(amount))
     msg = msg.replace('{discount}', _fmt_money(discount_amount))
     msg = msg.replace('{payment_link}', payment_link)
     return msg
+
+
+# ---------------------------------------------------------------------------
+# Short links
+# ---------------------------------------------------------------------------
+SHORT_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+
+def _short_code_for_url(url):
+    """Derive a short code from the URL so the same long link reuses one code."""
+    import hashlib
+    import base64
+    digest = hashlib.sha256(url.strip().encode('utf-8')).digest()
+    num = int.from_bytes(digest[:8], 'big')
+    code = ''
+    while num > 0 and len(code) < 8:
+        code += SHORT_ALPHABET[num % len(SHORT_ALPHABET)]
+        num //= len(SHORT_ALPHABET)
+    return (code or 'x0') + ('a' * (6 - len(code)) if len(code) < 6 else '')
+
+
+def _short_link_base():
+    """Absolute base URL for short links. env overrides; else the request host."""
+    override = (os.environ.get('SHORT_LINK_BASE_URL') or '').strip().rstrip('/')
+    if override:
+        return override
+    try:
+        return request.host_url.rstrip('/')
+    except Exception:
+        return ''
+
+
+def create_or_get_short_link(original_url):
+    """Return a full short URL for an original http(s) link (reused if exists)."""
+    url = (original_url or '').strip()
+    if not url or not url.lower().startswith(('http://', 'https://')):
+        return url  # nothing to shorten
+    base = _short_link_base()
+    if not base:
+        return url  # cannot build absolute link
+    db = get_db()
+    try:
+        code = _short_code_for_url(url)
+        row = db.execute(
+            "SELECT code FROM short_links WHERE code=?", (code,)
+        ).fetchone()
+        if row:
+            existing_code = row['code']
+        else:
+            try:
+                db.execute(
+                    "INSERT INTO short_links (code, original_url, hit_count) VALUES (?, ?, 0)",
+                    (code, url)
+                )
+                db.commit()
+                existing_code = code
+            except Exception:
+                db.rollback()
+                # Race or unique conflict: re-select the code for this url
+                r2 = db.execute(
+                    "SELECT code FROM short_links WHERE original_url=?", (url,)
+                ).fetchone()
+                existing_code = r2['code'] if r2 else code
+        return f"{base}/l/{existing_code}"
+    except Exception as e:
+        app.logger.warning(f"[shortlink] create failed: {e}")
+        return url
+
+
+def shorten_payment_link(value):
+    """Shorten only real http(s) links; pass through anything else."""
+    v = (value or '').strip()
+    if v.lower().startswith(('http://', 'https://')):
+        return create_or_get_short_link(v)
+    return v
 
 
 def is_sms_api_configured(user_id=None):
@@ -3986,7 +4089,7 @@ def send_sms():
         raw_phone = phones[0].strip()
         phone = normalize_phone(raw_phone)
         name = contact_names.get(raw_phone, '') or contact_names.get(phone, '')
-        msg = apply_template_vars(content, raw_phone, contact_names, contact_cache)
+        msg = apply_template_vars(content, raw_phone, contact_names, contact_cache, shorten_links=True)
         result = sms_api_send_single(phone, msg)
         api_code = result.get('code', -1)
         api_msg = result.get('msg', '')
@@ -4018,7 +4121,7 @@ def send_sms():
                 continue
             phone = normalize_phone(raw)
             name = contact_names.get(raw, '') or contact_names.get(phone, '')
-            msg = apply_template_vars(content, raw, contact_names, contact_cache)
+            msg = apply_template_vars(content, raw, contact_names, contact_cache, shorten_links=True)
             phone_content_pairs.append((phone, msg))
             phone_name_map[phone] = (name, msg)
 
@@ -4074,7 +4177,7 @@ def send_sms():
             if not phone:
                 continue
             name = contact_names.get(phone, '')
-            msg = apply_template_vars(content, phone, contact_names, contact_cache)
+            msg = apply_template_vars(content, phone, contact_names, contact_cache, shorten_links=True)
             db.execute(
                 "INSERT INTO sms_records (phone, contact_name, content, status, api_msg, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, datetime('now'), ?)",
                 (phone, name, msg, 'API no configurada - envio simulado', g.user['id'])
@@ -6766,6 +6869,38 @@ def voice_cdr_callback():
         app.logger.exception('[voice-cdr] processing failed')
         # Always 200 so Infinity does not retry-storm; log the error instead.
         return jsonify({'ok': False, 'error': str(exc)[:200]}), 200
+
+
+@app.route('/l/<code>', methods=['GET'])
+def short_link_redirect(code):
+    """Public short-link redirect for payment/collection URLs sent in SMS."""
+    from urllib.parse import urlparse
+    db = get_db()
+    clean = (code or '').strip().strip('/')
+    try:
+        row = db.execute(
+            "SELECT original_url FROM short_links WHERE code=?", (clean,)
+        ).fetchone()
+    except Exception:
+        row = None
+    if not row:
+        return "Enlace no valido", 404
+    target = row['original_url'] if 'original_url' in row.keys() else row[0]
+    # Only allow http(s) redirect targets to avoid open-redirect abuse.
+    if not (target or '').lower().startswith(('http://', 'https://')):
+        return "Enlace no valido", 400
+    # Best-effort click counting; never block the redirect on it.
+    try:
+        db.execute(
+            "UPDATE short_links SET hit_count = hit_count + 1, last_hit_at = "
+            + ("NOW()" if db.db_type == 'postgres' else "datetime('now')")
+            + " WHERE code=?",
+            (clean,)
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    return redirect(target, code=302)
 
 
 @app.route('/api/voice/recording', methods=['GET'])

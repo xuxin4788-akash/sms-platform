@@ -75,6 +75,7 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET | /api/sms/statistics | User | Dashboard stats (team: all, member: own) |
 | POST | /api/sms/query-status | User | Query delivery status via API |
 | POST | /api/sms/check-charset | User | Check charset/billing for content |
+| GET | /l/<code> | Public | Short-link 302 redirect to the original payment/collection URL |
 | POST | /api/voice/call | User | Place outbound TTS voice call (电呼) |
 | POST | /api/voice/hangup | User | Hang up an active Infinity call on the record's extension |
 | GET | /api/voice/records | User | List voice call records (team scoped) |
@@ -150,6 +151,9 @@ The `contacts` table carries both basic CRM and payment/collection fields:
 - `payment_link` (TEXT, collection/payment URL)
 
 These fields are available in create/update/list, CSV import/export (columns `app_name, amount, discount_amount, payment_link` — optional, also accept `app, monto, descuento, link_pago/url_pago`), and as SMS/voice template variables: `{app_name}`, `{amount}`, `{discount}`, `{payment_link}` (plus `{nombre}`, `{telefono}`). Variable values are resolved per-recipient at send time via `build_contact_template_cache()` + `apply_template_vars()`. Money values render with two decimals.
+
+### Short links
+The `{payment_link}` value sent in **SMS** is automatically shortened: the first time a given long http(s) URL is used, a row is created in `short_links` (code, original_url, hit_count, last_hit_at) and the message gets `<base>/l/<code>` (e.g. `http://host/l/xM57tNPp`); the same long URL always reuses its code. The public `GET /l/<code>` route 302-redirects to the original URL (http/https only) and increments the click counter. The base is `SHORT_LINK_BASE_URL` env var if set, else the request's host (`request.host_url`) — set the env var to a public HTTPS domain so recipients can open it. Voice/TTS messages are not shortened (they don't consume SMS characters). Existing stored `payment_link` values are untouched; shortening happens only at send time.
 
 ## Production Deployment
 ```bash
