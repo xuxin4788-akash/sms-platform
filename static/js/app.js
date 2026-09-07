@@ -2274,10 +2274,6 @@ async function renderMyTeam(container) {
             return '<div class="stat-card"><div class="stat-value" style="' + (color ? 'color:' + color : '') + '">' + value + '</div><div class="stat-label">' + label + '</div></div>';
         }
 
-        function statRow(label, value) {
-            return '<tr><td class="info-label">' + label + '</td><td class="info-value">' + value + '</td></tr>';
-        }
-
         var userOptions = (data.users || []).map(function(u) {
             return '<option value="' + u.id + '"' + (filterUserId == u.id ? ' selected' : '') + '>' + escapeHtml(u.username) + (u.full_name ? ' - ' + escapeHtml(u.full_name) : '') + '</option>';
         }).join('');
@@ -2296,7 +2292,30 @@ async function renderMyTeam(container) {
         if (myTeam && myTeam.member_count !== undefined) {
             var teamRate = myTeam.total > 0 ? (myTeam.sent / myTeam.total * 100).toFixed(1) : '0.0';
             var sentLabel = (dateFrom || dateTo) ? 'Enviados (periodo)' : 'Enviados Hoy';
-            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen del Equipo</h3><span class="badge badge-success header-badge">' + escapeHtml(myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard(sentLabel, myTeam.today || 0, 'var(--success)') + statCard('Costo Total', formatMoney(myTeam.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', teamRate + '%') + '</div><table class="info-table"><tbody>' + statRow('SMS Enviados', myTeam.sent || 0) + statRow('SMS Fallidos', myTeam.failed || 0) + statRow('SMS Pendientes', myTeam.pending || 0) + statRow('Llamadas Realizadas', myTeam.calls || 0) + statRow('Llamadas Conectadas', myTeam.answered || 0) + statRow('Tiempo Total de Llamada', (myTeam.talk_time ? formatDuration(myTeam.talk_time) : '0s')) + statRow('Costo por SMS', Number(data.unit_price) > 0 ? formatPrice(data.unit_price) : 'No configurado') + statRow('Facturacion', 'Cada SMS enviado se factura (exito o fallo)') + statRow('Limite Diario', myTeam.daily_limit > 0 ? myTeam.daily_limit + ' SMS/usuario' : 'Sin limite') + statRow('Ultima Actividad', myTeam.last_activity ? timeAgo(myTeam.last_activity) : 'Sin actividad') + '</tbody></table></div></div>';
+
+            // Horizontal compact metric strip (replaces the tall vertical info table).
+            var miniStat = function(label, value, color) {
+                return '<div style="flex:1 1 130px;min-width:130px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;">' +
+                    '<div style="font-size:20px;font-weight:700;color:' + (color || '#1E293B') + ';line-height:1.2;white-space:nowrap;">' + value + '</div>' +
+                    '<div style="font-size:12px;color:#64748B;margin-top:4px;">' + label + '</div></div>';
+            };
+            var statStrip = '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:18px;">' +
+                miniStat('SMS Enviados', myTeam.sent || 0, '#10B981') +
+                miniStat('SMS Fallidos', myTeam.failed || 0, '#EF4444') +
+                miniStat('SMS Pendientes', myTeam.pending || 0, '#F59E0B') +
+                miniStat('Llamadas', myTeam.calls || 0, '#2563EB') +
+                miniStat('Conectadas', myTeam.answered || 0, '#10B981') +
+                miniStat('Tiempo Llamada', myTeam.talk_time ? formatDuration(myTeam.talk_time) : '0s') +
+                miniStat('Ultima Actividad', myTeam.last_activity ? timeAgo(myTeam.last_activity) : 'Sin actividad') +
+                '</div>';
+            var footItems = [
+                '<span>Facturacion: cada SMS enviado se factura (exito o fallo)</span>',
+                '<span>Costo por SMS: se configura por pais en Configuracion API SMS</span>',
+                '<span>Limite diario: ' + (myTeam.daily_limit > 0 ? myTeam.daily_limit + ' SMS/usuario' : 'Sin limite') + '</span>'
+            ].join('');
+            var statFoot = '<div style="margin-top:14px;padding-top:12px;border-top:1px dashed #E2E8F0;display:flex;flex-wrap:wrap;gap:6px 24px;font-size:12px;color:#64748B;">' + footItems + '</div>';
+
+            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen del Equipo</h3><span class="badge badge-success header-badge">' + escapeHtml(myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard(sentLabel, myTeam.today || 0, 'var(--success)') + statCard('Costo Total', formatMoney(myTeam.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', teamRate + '%') + '</div>' + statStrip + statFoot + '</div></div>';
 
             // Per-account breakdown, ordered by total SMS (backend) then username.
             var members = myTeam.members || [];
