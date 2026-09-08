@@ -4077,10 +4077,20 @@ def import_contacts():
     group_id = request.form.get('group_id', None)
     if group_id:
         group_id = int(group_id)
+    # Validate the target group is visible/owned by the importing user
+    if group_id:
+        db_check = get_db()
+        grp = db_check.execute(
+            "SELECT id FROM contact_groups WHERE id=? AND (created_by=? OR created_by IS NULL)",
+            (group_id, g.user['id'])
+        ).fetchone()
+        if not grp:
+            return jsonify({'error': 'El grupo seleccionado no existe o no tienes acceso'}), 400
     try:
         content = file.stream.read().decode('utf-8-sig')
         reader = csv.DictReader(io.StringIO(content))
         db = get_db()
+        owner_id = g.user['id']
         imported = 0
         errors = []
         for i, row in enumerate(reader, start=2):
@@ -4096,9 +4106,9 @@ def import_contacts():
                 errors.append(f"Fila {i}: nombre y telefono son requeridos")
                 continue
             db.execute(
-                "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link)
+                "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, owner_id)
             )
             imported += 1
         db.commit()
