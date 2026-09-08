@@ -1798,3 +1798,25 @@ button.var-chip:hover {
 button.var-chip:active {
     transform: translateY(1px);
 }
+
+/* Contact activity indicators (SMS count / calls / talk time) */
+.contact-activity {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+.contact-activity .ca-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #2563EB;
+    background: #EFF6FF;
+    border: 1px solid #DBEAFE;
+    border-radius: 999px;
+    padding: 2px 8px;
+    white-space: nowrap;
+    line-height: 1.4;
+}

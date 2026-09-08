@@ -3837,6 +3837,84 @@ def _parse_money(value):
         return 0.0
 
 
+def _phone_digits_tail(phone, n=10):
+    """Return the last n digits of a phone number for loose matching."""
+    digits = re.sub(r'\D', '', str(phone or ''))
+    return digits[-n:] if len(digits) >= n else digits
+
+
+def _contact_stats_map(contacts):
+    """Aggregate per-phone SMS count, call count and total talk seconds for the
+    given contacts, matching by the last 10 digits (tolerant to +/prefix
+    differences). Scoped like SMS/voice records: admin = all, team_admin = own
+    + team members, team_member = own.
+    Returns {phone_key: {'sms': n, 'calls': n, 'talk_time': seconds}}.
+    """
+    out = {}
+    if not contacts:
+        return out
+    uid = session.get('user_id')
+    role = session.get('role')
+
+    # Build set of candidate phone keys (both full digits and last 10).
+    keys = set()
+    for c in contacts:
+        k = _phone_digits_tail(c['phone'])
+        if k:
+            keys.add(k)
+    if not keys:
+        return out
+    keylist = sorted(keys)
+
+    # Scope clause on records (mirrors sms/voice visibility).
+    scope = ''
+    sparams: list = []
+    if role != 'admin':
+        scope = ' AND (created_by = ? OR created_by IN (SELECT id FROM users WHERE team_creator_id = ?))'
+        sparams = [uid, uid]
+
+    # Coarse SQL pre-filter: match the last 8 digits with a LIKE wildcard, then
+    # exact last-10 matching is done in Python (avoids a full table scan).
+    tails8 = sorted({re.sub(r'\D', '', str(c['phone']))[-8:]
+                     for c in contacts if re.sub(r'\D', '', str(c['phone'] or ''))})
+    if not tails8:
+        return out
+    like_clause = ' OR '.join(['phone LIKE ?'] * len(tails8))
+    like_params = [f'%{t}' for t in tails8]
+
+    # SMS counts.
+    try:
+        rows = get_db().execute(
+            "SELECT phone FROM sms_records WHERE (" + like_clause + ")" + scope,
+            like_params + sparams).fetchall()
+        for r in rows:
+            k = _phone_digits_tail(r['phone'])
+            if k in keys:
+                out.setdefault(k, {'sms': 0, 'calls': 0, 'talk_time': 0})['sms'] += 1
+    except Exception:
+        pass
+
+    # Voice counts + duration.
+    try:
+        rows = get_db().execute(
+            "SELECT phone, duration FROM voice_records WHERE (" + like_clause + ")" + scope,
+            like_params + sparams).fetchall()
+        for r in rows:
+            k = _phone_digits_tail(r['phone'])
+            if k in keys:
+                d = out.setdefault(k, {'sms': 0, 'calls': 0, 'talk_time': 0})
+                d['calls'] += 1
+                try:
+                    d['talk_time'] += int(r['duration'] or 0)
+                except (TypeError, ValueError):
+                    pass
+    except Exception:
+        pass
+
+    # Re-key result for convenience callers (they look up by contact phone).
+    return out
+
+
 @app.route('/api/contacts', methods=['GET'])
 @login_required
 def list_contacts():
@@ -3870,8 +3948,19 @@ def list_contacts():
     query += " ORDER BY c.created_at DESC LIMIT ? OFFSET ?"
     params.extend([per_page, offset])
     contacts = db.execute(query, params).fetchall()
+
+    stats = _contact_stats_map(contacts)
+    contact_list = []
+    for c in contacts:
+        d = dict(c)
+        st = stats.get(_phone_digits_tail(d.get('phone')), {'sms': 0, 'calls': 0, 'talk_time': 0})
+        d['sms_count'] = st['sms']
+        d['call_count'] = st['calls']
+        d['talk_time'] = st['talk_time']
+        contact_list.append(d)
+
     return jsonify({
-        'contacts': [dict(c) for c in contacts],
+        'contacts': contact_list,
         'total': total,
         'page': page,
         'per_page': per_page,
