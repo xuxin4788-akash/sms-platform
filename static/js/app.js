@@ -3503,7 +3503,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // Voice Calls (Llamadas / 电呼)
 // ============================================================
 if (!state.calls) state.calls = { page: 1, perPage: 20, total: 0, status: '', search: '', dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE };
-if (!state.voiceCall) state.voiceCall = { phones: [], mode: 'manual' };
+if (!state.voiceCall) state.voiceCall = { phones: [], mode: 'contacts' };
 
 var VOICE_STATUS_BADGE = {
     'pending': 'badge-gray',
@@ -3572,16 +3572,16 @@ async function renderCalls(container) {
                 '<div class="stat-card"><div class="stat-label">Tasa de contacto</div><div class="stat-value" style="font-size:22px;">' + stats.answer_rate + '%</div></div>' +
                 '<div class="stat-card"><div class="stat-label">Duracion total</div><div class="stat-value" style="font-size:22px;">' + formatDuration(stats.total_duration) + '</div></div>' +
             '</div>' +
-            '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;"><h2>Nueva Llamada Masiva</h2><span class="text-secondary" style="font-size:12px;">El sistema marca los numeros seleccionados</span></div><div class="card-body">' +
-                '<div class="send-options"><button class="tab active" onclick="switchVoiceMode(\'manual\', this)">Manual</button><button class="tab" onclick="switchVoiceMode(\'contacts\', this)">Contactos</button><button class="tab" onclick="switchVoiceMode(\'group\', this)">Por Grupo</button></div>' +
-                '<div id="voice-manual" class="form-group"><label>Telefonos</label>' +
-                    '<form class="phone-add-row" onsubmit="commitVoicePhoneInput(); return false;">' +
-                      '<input type="text" id="voice-phone-input" inputmode="tel" enterkeyhint="done" placeholder="Escriba un numero y Enter" autocomplete="off" onkeydown="if(event.key===\'Enter\'){event.preventDefault();commitVoicePhoneInput();}">' +
-                      '<button type="submit" class="btn btn-primary btn-sm">Agregar</button>' +
-                    '</form>' +
-                    '<div class="phone-tags" id="voice-phone-tags"></div>' +
+            '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;"><h2>Nueva Llamada Masiva</h2><span class="text-secondary" style="font-size:12px;">El sistema marca los contactos seleccionados</span></div><div class="card-body">' +
+                '<div class="send-options"><button class="tab active" onclick="switchVoiceMode(\'contacts\', this)">Contactos</button><button class="tab" onclick="switchVoiceMode(\'group\', this)">Por Grupo</button></div>' +
+                '<div id="voice-contacts" class="form-group"><label>Seleccionar contactos</label>' +
+                    '<div class="voice-contact-filter" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+                      '<input type="text" id="voice-contact-search" placeholder="Buscar contacto por nombre, telefono o nota..." autocomplete="off" oninput="filterVoiceContactList()" style="flex:1;min-width:220px;">' +
+                      '<label class="text-secondary text-sm" style="display:flex;align-items:center;gap:6px;white-space:nowrap;"><input type="checkbox" id="voice-select-all" onchange="toggleAllVoiceContacts(this)"> Seleccionar visibles</label>' +
+                    '</div>' +
+                    '<div id="voice-contacts-list" class="contact-select-list"></div>' +
+                    '<div id="voice-contacts-count" class="text-secondary text-sm" style="margin-top:8px;"></div>' +
                 '</div>' +
-                '<div id="voice-contacts" class="form-group" style="display:none;"><label>Seleccionar contactos</label><div id="voice-contacts-list" class="contact-select-list"></div></div>' +
                 '<div id="voice-group" class="form-group" style="display:none;"><label>Grupo</label><select id="voice-group-select" onchange="loadVoiceGroupContacts(this.value)"><option value="">-- Seleccione --</option>' + groupOpts + '</select><div id="voice-group-preview" class="mt-2 text-secondary text-sm"></div></div>' +
                 '<div class="form-group mt-3"><label>Plantilla de guion (opcional)</label><select id="voice-template" onchange="loadVoiceTemplate(this.value)"><option value="">-- Personalizado --</option>' + tplOpts + '</select></div>' +
                 '<div class="form-group"><label>Guion de la llamada (opcional)</label><textarea id="voice-script" rows="5" placeholder="Hola {nombre}, le llamamos para... (opcional)"></textarea><div class="var-chips">' + variableChips('voice-script') + '</div><small class="text-secondary">El guion lo lee el agente de la extension Infinity (infin8linx). Puede dejarlo vacio para marcar directamente.</small></div>' +
@@ -3637,15 +3637,75 @@ function renderVoicePhoneTags() {
 function removeVoicePhone(i) { state.voiceCall.phones.splice(i, 1); renderVoicePhoneTags(); }
 
 async function loadVoiceContactsForSelection() {
+    var list = document.getElementById('voice-contacts-list');
+    if (!list) return;
+    list.innerHTML = '<p class="text-secondary">Cargando contactos...</p>';
     try {
         var data = await api('/api/contacts?per_page=1000');
-        var list = document.getElementById('voice-contacts-list');
-        if (!list) return;
-        if (!data.contacts || !data.contacts.length) { list.innerHTML = '<p class="text-secondary">Sin contactos.</p>'; return; }
-        list.innerHTML = data.contacts.map(function(c) {
-            return '<label class="contact-select-item"><input type="checkbox" class="voice-contact-check" data-phone="' + escapeHtml(c.phone) + '" data-name="' + escapeHtml(c.name || '') + '" onchange="syncVoiceContactSelection()"> ' + escapeHtml(c.name || '') + ' <span class="text-secondary">' + escapeHtml(c.phone) + '</span></label>';
-        }).join('');
-    } catch (e) { /* ignore */ }
+        state.voiceCall.contactList = data.contacts || [];
+        renderVoiceContactList();
+    } catch (e) {
+        list.innerHTML = '<p class="text-secondary">Error al cargar contactos: ' + escapeHtml(e.message || '') + '</p>';
+    }
+}
+
+function contactRemarkBadge(remark) {
+    if (!remark) return '';
+    var r = String(remark).toLowerCase();
+    var color = 'badge-gray';
+    if (/(promesa|promesa de pago|compromiso)/.test(r)) color = 'badge-blue';
+    else if (/(pago|pagado|pag[oó]|liquidado)/.test(r)) color = 'badge-green';
+    else if (/(no contesta|no respuesta|incorrecto|equivocado|baja|moroso|vencido|no paga)/.test(r)) color = 'badge-red';
+    else if (/(pendiente|revisar|seguimiento|recordar)/.test(r)) color = 'badge-yellow';
+    return '<span class="badge ' + color + '" style="font-size:11px;">' + escapeHtml(remark) + '</span>';
+}
+
+function renderVoiceContactList() {
+    var list = document.getElementById('voice-contacts-list');
+    if (!list) return;
+    var contacts = state.voiceCall.contactList || [];
+    if (!contacts.length) { list.innerHTML = '<p class="text-secondary">Sin contactos.</p>'; updateVoiceContactCount(); return; }
+    var q = (document.getElementById('voice-contact-search') || {}).value || '';
+    q = q.trim().toLowerCase();
+    var filtered = contacts.filter(function(c) {
+        if (!q) return true;
+        return ((c.name || '') + ' ' + (c.phone || '') + ' ' + (c.remark || '') + ' ' + (c.notes || '')).toLowerCase().indexOf(q) !== -1;
+    });
+    if (!filtered.length) { list.innerHTML = '<p class="text-secondary">Ningun contacto coincide con la busqueda.</p>'; updateVoiceContactCount(); return; }
+    list.innerHTML = filtered.map(function(c) {
+        var status = contactRemarkBadge(c.remark);
+        var notes = c.notes ? '<div class="text-secondary" style="font-size:12px;margin-top:2px;line-height:1.4;">Nota: ' + escapeHtml(c.notes) + '</div>' : '';
+        return '<label class="contact-select-item" data-name="' + escapeHtml((c.name||'').toLowerCase()) + '" data-phone="' + escapeHtml((c.phone||'').toLowerCase()) + '" data-remark="' + escapeHtml((c.remark||'').toLowerCase()) + '" data-notes="' + escapeHtml((c.notes||'').toLowerCase()) + '">' +
+            '<div style="display:flex;align-items:flex-start;gap:8px;width:100%;">' +
+              '<input type="checkbox" class="voice-contact-check" data-phone="' + escapeHtml(c.phone) + '" data-name="' + escapeHtml(c.name || '') + '" onchange="syncVoiceContactSelection()" style="margin-top:3px;">' +
+              '<div style="flex:1;min-width:0;">' +
+                '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><strong>' + escapeHtml(c.name || '(sin nombre)') + '</strong>' + status + '</div>' +
+                '<div class="text-secondary" style="font-size:12px;">' + escapeHtml(c.phone) + '</div>' +
+                notes +
+              '</div>' +
+            '</div>' +
+          '</label>';
+    }).join('');
+    syncVoiceContactSelection();
+}
+
+function filterVoiceContactList() { renderVoiceContactList(); }
+
+function toggleAllVoiceContacts(cb) {
+    document.querySelectorAll('#voice-contacts-list .voice-contact-check').forEach(function(chk){
+        if (chk.offsetParent !== null || chk.closest('.contact-select-item')) {
+            var item = chk.closest('.contact-select-item');
+            if (!item || item.style.display !== 'none') chk.checked = cb.checked;
+        }
+    });
+    syncVoiceContactSelection();
+}
+
+function updateVoiceContactCount() {
+    var el = document.getElementById('voice-contacts-count');
+    if (!el) return;
+    var n = (state.voiceCall.selectedContacts || []).length;
+    el.textContent = n ? (n + ' contacto(s) seleccionado(s).') : '';
 }
 
 function syncVoiceContactSelection() {
@@ -3656,6 +3716,7 @@ function syncVoiceContactSelection() {
         if (selected.indexOf(p) === -1) selected.push(p);
     });
     state.voiceCall.selectedContacts = selected;
+    updateVoiceContactCount();
 }
 
 async function loadVoiceGroupContacts(groupId) {
@@ -3679,12 +3740,10 @@ function collectVoicePhones() {
     var mode = state.voiceCall.mode;
     var phones = [];
     var add = function(p) { p = normalizePhone(p); if (p && phones.indexOf(p) === -1) phones.push(p); };
-    if (mode === 'manual') {
-        (state.voiceCall.phones || []).forEach(add);
-    } else if (mode === 'contacts') {
-        (state.voiceCall.selectedContacts || []).forEach(add);
-    } else if (mode === 'group') {
+    if (mode === 'group') {
         (state.voiceCall.groupPhones || []).forEach(add);
+    } else {
+        (state.voiceCall.selectedContacts || []).forEach(add);
     }
     return phones;
 }
