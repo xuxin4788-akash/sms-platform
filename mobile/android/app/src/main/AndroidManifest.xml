@@ -11,6 +11,23 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Visibilidad de apps para lanzar Zoiper / marcador (Android 11+) -->
+    <queries>
+        <package android:name="com.zoiper.softphone.android" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="zoiper" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="sip" />
+        </intent>
+    </queries>
+
     <application
                 android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

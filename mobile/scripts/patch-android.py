@@ -19,6 +19,27 @@ except Exception:
 
 text = manifest.read_text(encoding="utf-8")
 
+# Package visibility (Android 11+) so the app can launch Zoiper / dialer via
+# custom schemes (zoiper:, tel:, sip:). Injected idempotently.
+queries_block = """    <queries>
+        <package android:name="com.zoiper.softphone.android" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="zoiper" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="sip" />
+        </intent>
+    </queries>
+"""
+if "<queries>" not in text:
+    text = text.replace("    <application", queries_block + "    <application", 1)
+
 permissions = [
     '<uses-permission android:name="android.permission.INTERNET" />',
     '<uses-permission android:name="android.permission.READ_CONTACTS" />',

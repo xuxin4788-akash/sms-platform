@@ -68,13 +68,15 @@ jobs:
         working-directory: mobile
         run: pnpm run add:android || true
 
-      - name: Patch Android manifest
-        working-directory: mobile
-        run: python3 scripts/patch-android.py
-
       - name: Sync Capacitor (plugins + config)
         working-directory: mobile
         run: pnpm exec cap sync android
+
+      # Must run AFTER cap sync (which rewrites the manifest) so our custom
+      # <queries>/cleartext edits are preserved for the build.
+      - name: Patch Android manifest
+        working-directory: mobile
+        run: python3 scripts/patch-android.py
 
       - name: Resolve signing keystore
         if: ${{ env.BUILD_TYPE == 'release' && env.HAS_SIGNING == 'true' }}

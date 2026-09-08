@@ -121,6 +121,43 @@
             var plugins = getPlugins();
             return plugins ? plugins.FloatingBubble : null;
         },
+        getAppPlugin: function () {
+            var plugins = getPlugins();
+            return plugins ? plugins.App : null;
+        },
+        // Lanza Zoiper (softphone SIP) marcando el numero. Devuelve
+        // {ok, launched:'zoiper'|'dialer'|'none', reason}.
+        dialWithZoiper: async function (rawPhone) {
+            var phone = String(rawPhone || '').replace(/[^\d+]/g, '');
+            if (!phone) return { ok: false, launched: 'none', reason: 'Numero invalido' };
+            var zoiperUrl = 'zoiper:' + phone;
+            var telUrl = 'tel:' + phone;
+
+            var app = this.getAppPlugin();
+            // 1) Intentar abrir Zoiper directamente (Capacitor nativo)
+            if (app && typeof app.openUrl === 'function') {
+                try {
+                    await app.openUrl({ url: zoiperUrl });
+                    return { ok: true, launched: 'zoiper' };
+                } catch (e) {
+                    // Zoiper no instalado o no responde -> caemos al marcador
+                }
+            }
+            // 2) Marcador del sistema (abre el dial con el numero)
+            if (app && typeof app.openUrl === 'function') {
+                try {
+                    await app.openUrl({ url: telUrl });
+                    return { ok: true, launched: 'dialer' };
+                } catch (e) { /* seguimos */ }
+            }
+            // 3) Navegador comun: intentar scheme zoiper, luego tel
+            try {
+                window.location.href = zoiperUrl;
+                return { ok: true, launched: 'zoiper' };
+            } catch (e) { /* ignore */ }
+            window.location.href = telUrl;
+            return { ok: true, launched: 'dialer' };
+        },
         canDrawOverlays: async function () {
             var p = this.getFloatingPlugin();
             if (!p) return false;
