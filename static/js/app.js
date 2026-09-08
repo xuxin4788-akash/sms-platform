@@ -2706,17 +2706,17 @@ async function renderTeamApiConfig(container) {
         var configs = data.configs || [];
         var globalLimit = data.global_daily_limit || 0;
 
-        var configOptions = configs.map(function(c) {
-            return '<option value="' + c.id + '">' + escapeHtml(c.name) + ' (' + escapeHtml(c.country) + ')</option>';
-        }).join('');
-
         var teamRows = teams.map(function(t) {
-            var sel = configOptions.replace('value="' + t.api_config_id + '"', 'value="' + t.api_config_id + '" selected');
+            var currentId = t.api_config_id ? String(t.api_config_id) : '';
+            var opts = '<option value=""' + (currentId === '' ? ' selected' : '') + '>Sin asignar</option>' +
+                configs.map(function(c) {
+                    var label = c.country ? (c.name + ' (' + c.country + ')') : c.name;
+                    return '<option value="' + c.id + '"' + (String(c.id) === currentId ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+                }).join('');
             return '<tr>' +
                 '<td><strong>' + escapeHtml(t.team_admin_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.team_admin_full_name || '') + '</small></td>' +
                 '<td><input type="number" min="0" max="100000" value="' + (t.daily_sms_limit || 0) + '" id="team-limit-' + t.team_admin_id + '" style="width:90px;padding:6px 8px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;text-align:center;"><br><small class="text-secondary">0 = sin limite</small></td>' +
-                '<td><select onchange="updateTeamApiConfig(' + t.team_admin_id + ', this.value)" style="padding:6px 10px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;max-width:220px;"><option value="">Sin asignar</option>' + sel + '</select></td>' +
-                '<td><span class="badge badge-blue">' + escapeHtml(t.api_config_name) + '</span></td>' +
+                '<td><select onchange="updateTeamApiConfig(' + t.team_admin_id + ', this.value)" style="padding:6px 10px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;max-width:240px;">' + opts + '</select></td>' +
                 '<td style="text-align:center;"><button class="btn btn-primary btn-sm" onclick="saveTeamLimit(' + t.team_admin_id + ')">Guardar</button></td>' +
                 '</tr>';
         }).join('');
@@ -2731,7 +2731,7 @@ async function renderTeamApiConfig(container) {
             '</div></div></div>' +
             '<div class="card"><div class="card-header"><h3 style="margin:0;">Configuracion por equipo</h3></div><div class="card-body">' +
             '<p class="text-secondary mb-3">Asigna la API SMS y el limite diario de cada equipo. Los miembros no podran enviar mas SMS una vez alcanzado su limite diario.</p>' +
-            (teams.length > 0 ? '<div class="table-container"><table><thead><tr><th>Equipo (Admin)</th><th style="text-align:center;">Limite diario / miembro</th><th>Configuracion API</th><th>API Asignada</th><th style="text-align:center;"></th></tr></thead><tbody>' + teamRows + '</tbody></table></div>' : '<div class="empty-state"><p>No hay equipos configurados</p></div>') +
+            (teams.length > 0 ? '<div class="table-container"><table><thead><tr><th>Equipo (Admin)</th><th style="text-align:center;">Limite diario / miembro</th><th>Configuracion API (SMS)</th><th style="text-align:center;"></th></tr></thead><tbody>' + teamRows + '</tbody></table></div>' : '<div class="empty-state"><p>No hay equipos configurados</p></div>') +
             '</div></div>';
 
         container.innerHTML = html;
