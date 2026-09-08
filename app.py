@@ -2956,13 +2956,13 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
     for r in db.execute(
         "SELECT extnumber FROM users WHERE is_active = 1 AND extnumber IS NOT NULL AND TRIM(extnumber) != ''"
     ).fetchall():
-        taken_extensions.add(_normalize_extension(r['extnumber'] if not isinstance(r, tuple) else r[0]).lower())
+        taken_extensions.add(_normalize_extnumber(r['extnumber'] if not isinstance(r, tuple) else r[0]).lower())
     # Build per-country free pools (catalog first, legacy pool string fallback).
     pools_by_country = {}
     for _cc in ('mx', 'co', 'pe', ''):
         if use_catalog:
             rows = db.execute("SELECT extnumber FROM extensions WHERE country=?", (_cc,)).fetchall()
-            all_pool = [_normalize_extension(r['extnumber'] if not isinstance(r, tuple) else r[0]) for r in rows]
+            all_pool = [_normalize_extnumber(r['extnumber'] if not isinstance(r, tuple) else r[0]) for r in rows]
         else:
             all_pool = _get_extension_pool(_cc or None)
         pools_by_country[_cc] = {
