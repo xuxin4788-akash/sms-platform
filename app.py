@@ -364,6 +364,7 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 team_admin_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
                 daily_sms_limit INTEGER DEFAULT 100,
+                global_daily_sms_limit INTEGER DEFAULT 0,
                 api_config_id INTEGER REFERENCES sms_api_configs(id) ON DELETE SET NULL
             );
 
@@ -491,6 +492,9 @@ def init_db():
         # team_config: team default country for SMS routing/pricing (mx/co/pe).
         if not pg_column_exists('team_config', 'country'):
             cur.execute("ALTER TABLE team_config ADD COLUMN country VARCHAR(5) DEFAULT ''")
+        # team_config: global daily SMS limit (system-wide cap on members)
+        if not pg_column_exists('team_config', 'global_daily_sms_limit'):
+            cur.execute("ALTER TABLE team_config ADD COLUMN global_daily_sms_limit INTEGER DEFAULT 0")
         cur.execute("SELECT id FROM user_categories WHERE is_default=TRUE LIMIT 1")
         if cur.fetchone() is None:
             cur.execute(
@@ -1235,6 +1239,7 @@ def init_db():
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     team_admin_id INTEGER NOT NULL UNIQUE,
                     daily_sms_limit INTEGER DEFAULT 100,
+                    global_daily_sms_limit INTEGER DEFAULT 0,
                     api_config_id INTEGER DEFAULT NULL,
                     FOREIGN KEY (team_admin_id) REFERENCES users(id),
                     FOREIGN KEY (api_config_id) REFERENCES sms_api_configs(id) ON DELETE SET NULL
@@ -1291,6 +1296,16 @@ def init_db():
             cols = [row[1] for row in cursor.fetchall()]
             if 'country' not in cols:
                 db.execute("ALTER TABLE team_config ADD COLUMN country TEXT DEFAULT ''")
+                db.commit()
+        except Exception:
+            pass
+
+        # Migration: add global daily SMS limit to team_config
+        try:
+            cursor = db.execute("PRAGMA table_info(team_config)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if 'global_daily_sms_limit' not in cols:
+                db.execute("ALTER TABLE team_config ADD COLUMN global_daily_sms_limit INTEGER DEFAULT 0")
                 db.commit()
         except Exception:
             pass
@@ -4222,16 +4237,84 @@ def delete_template(template_id):
 # SMS API
 # ============================================================
 
+def _team_limit_value(db, team_admin_id):
+    """daily_sms_limit for a team_admin id (0 = sin limite). Returns 0 if none."""
+    if not team_admin_id:
+        return 0
+    row = db.execute(
+        "SELECT daily_sms_limit FROM team_config WHERE team_admin_id=?",
+        (team_admin_id,)
+    ).fetchone()
+    if row and row['daily_sms_limit']:
+        return int(row['daily_sms_limit'])
+    return 0
+
+
+def get_global_daily_sms_limit(db):
+    """Limite diario global (definido por el administrador del sistema).
+    Se guarda en team_config.global_daily_sms_limit (mismo valor en todas las
+    filas; se lee el maximo no nulo). 0 = sin limite."""
+    row = db.execute(
+        "SELECT MAX(global_daily_sms_limit) AS g FROM team_config"
+    ).fetchone()
+    if row and row['g']:
+        return int(row['g'])
+    return 0
+
+
+def set_global_daily_sms_limit(db, limit):
+    """Persiste el limite global. Si existe al menos una fila de team_config,
+    actualiza todas; si no existe ninguna, crea una fila marcadora asociada al
+    administrador (no viola la FK) que el listado de equipos ignora."""
+    existing = db.execute("SELECT COUNT(*) AS c FROM team_config").fetchone()
+    if existing and existing['c']:
+        db.execute("UPDATE team_config SET global_daily_sms_limit=?", (limit,))
+    else:
+        admin_id = g.user['id'] if g.get('user') else 1
+        db.execute(
+            "INSERT INTO team_config (team_admin_id, daily_sms_limit, global_daily_sms_limit) "
+            "VALUES (?, 0, ?)",
+            (admin_id, limit)
+        )
+    db.commit()
+
+
+def effective_daily_sms_limit(db, user):
+    """Limite diario efectivo para un miembro: el mas estricto (menor positivo)
+    entre el limite de su equipo y el limite global. 0 = sin limite.
+    Solo aplica a team_member."""
+    limits = []
+    # Limite del equipo del miembro
+    team_limit = _team_limit_value(db, user.get('team_creator_id'))
+    if team_limit > 0:
+        limits.append(team_limit)
+    # Limite global (definido por el administrador del sistema)
+    g_limit = get_global_daily_sms_limit(db)
+    if g_limit > 0:
+        limits.append(g_limit)
+    return min(limits) if limits else 0
+
+
+def count_today_sms(db, user_id):
+    """SMS contabilizados hoy para un usuario (enviados + pendientes)."""
+    today_expr = "date('now')" if db.db_type != 'postgres' else "CURRENT_DATE"
+    row = db.execute(
+        "SELECT COUNT(*) as cnt FROM sms_records "
+        "WHERE created_by=? AND date(created_at)=%s AND status IN ('sent','pending')" % today_expr,
+        (user_id,)
+    ).fetchone()
+    return int(row['cnt']) if row and row['cnt'] else 0
+
+
 @app.route('/api/sms/send', methods=['POST'])
 @login_required
 def send_sms():
     data = request.get_json()
     phones = data.get('phones', [])
 
-    # NOTE: Los limites de envio (limite diario por miembro y tope de 500
-    # numeros por envio) estan desactivados en produccion. El campo
-    # team_config.daily_sms_limit y su pantalla de configuracion se conservan
-    # para poder reactivarlos en el futuro sin perder datos.
+    # ---- Limites de envio (reactivados) ----
+    # Tope de numeros por envio (batch).
+    SMS_BATCH_CAP = 500
     content = data.get('content', '').strip()
     contact_names = data.get('contact_names', {})
     if not phones or not content:
@@ -4239,7 +4322,20 @@ def send_sms():
     SMS_MAX_LEN = 140
     if len(content) > SMS_MAX_LEN:
         return jsonify({'error': 'El mensaje no puede superar los %s caracteres' % SMS_MAX_LEN}), 400
+    if len(phones) > SMS_BATCH_CAP:
+        return jsonify({'error': 'Maximo %s numeros por envio' % SMS_BATCH_CAP}), 400
     db = get_db()
+    # Limite diario: solo aplica a miembros de equipo. Se toma el valor mas
+    # estricto (el menor positivo) entre el limite del equipo y el global.
+    if g.user['role'] == 'team_member':
+        eff_limit = effective_daily_sms_limit(db, g.user)
+        if eff_limit > 0:
+            used = count_today_sms(db, g.user['id'])
+            if used + len(phones) > eff_limit:
+                return jsonify({
+                    'error': 'Limite diario alcanzado: ya enviaste %s de %s SMS hoy. Este envio requiere %s numero(s).'
+                             % (used, eff_limit, len(phones))
+                }), 429
     api_configured = is_sms_api_configured(g.user['id'])
     sms_config = get_team_sms_config(g.user['id'])
     contact_cache = build_contact_template_cache(db, phones)
@@ -5627,27 +5723,24 @@ def get_team_stats():
 @app.route('/api/config/daily-limit', methods=['GET'])
 @manager_required
 def get_daily_limit():
-    """Obtener el limite diario de SMS del equipo actual"""
+    """Obtener el limite diario de SMS (global para admin, de equipo para team_admin)"""
     db = get_db()
     user = g.user
+    g_limit = get_global_daily_sms_limit(db)
     if user['role'] == 'admin':
-        # Admin: ver limite global (primer registro sin team_admin_id especifico)
-        row = db.execute(
-            "SELECT daily_sms_limit FROM team_config WHERE team_admin_id=0"
-        ).fetchone()
-        return jsonify({'daily_limit': row['daily_sms_limit'] if row else 100})
+        return jsonify({'daily_limit': g_limit, 'global_limit': g_limit})
     else:
-        # Team admin: ver limite de su equipo
         row = db.execute(
             "SELECT daily_sms_limit FROM team_config WHERE team_admin_id=?",
             (user['id'],)
         ).fetchone()
-        return jsonify({'daily_limit': row['daily_sms_limit'] if row else 100})
+        team_limit = int(row['daily_sms_limit']) if row and row['daily_sms_limit'] else 0
+        return jsonify({'daily_limit': team_limit, 'global_limit': g_limit})
 
 @app.route('/api/config/daily-limit', methods=['POST'])
 @manager_required
 def set_daily_limit():
-    """Establecer el limite diario de SMS"""
+    """Establecer el limite diario de SMS (global para admin, de equipo para team_admin)"""
     db = get_db()
     user = g.user
     data = request.get_json()
@@ -5657,10 +5750,10 @@ def set_daily_limit():
         return jsonify({'error': 'Proporcione un valor valido (entero no negativo)'}), 400
 
     if user['role'] == 'admin':
-        team_admin_id = 0  # global config
-    else:
-        team_admin_id = user['id']
+        set_global_daily_sms_limit(db, limit)
+        return jsonify({'message': 'Limite global actualizado', 'daily_limit': limit})
 
+    team_admin_id = user['id']
     existing = db.execute(
         "SELECT id FROM team_config WHERE team_admin_id=?",
         (team_admin_id,)
@@ -5690,6 +5783,7 @@ def get_team_api_configs():
         FROM team_config tc
         JOIN users u ON tc.team_admin_id = u.id
         LEFT JOIN sms_api_configs sac ON tc.api_config_id = sac.id
+        WHERE u.role = 'team_admin'
         ORDER BY u.username
     ''').fetchall()
     team_list = []
@@ -5706,34 +5800,46 @@ def get_team_api_configs():
         })
     configs = db.execute("SELECT id, name, country FROM sms_api_configs WHERE is_active=1 ORDER BY name").fetchall()
     config_list = [{'id': c['id'], 'name': c['name'], 'country': c['country']} for c in configs]
-    return jsonify({'teams': team_list, 'configs': config_list})
+    g_limit = get_global_daily_sms_limit(db)
+    return jsonify({'teams': team_list, 'configs': config_list, 'global_daily_limit': g_limit})
 
 @app.route('/api/config/team-api-config', methods=['PUT'])
 @admin_required
 def update_team_api_config():
-    """Update team's API config assignment."""
+    """Update team's API config assignment and/or daily SMS limit."""
     db = get_db()
     data = request.get_json()
     team_admin_id = data.get('team_admin_id')
     api_config_id = data.get('api_config_id')
+    daily_limit = data.get('daily_sms_limit', None)
     if not team_admin_id:
         return jsonify({'error': 'team_admin_id es requerido'}), 400
+    if daily_limit is not None:
+        if not isinstance(daily_limit, int) or daily_limit < 0:
+            return jsonify({'error': 'daily_sms_limit debe ser un entero no negativo (0 = sin limite)'}), 400
     existing = db.execute(
         "SELECT id FROM team_config WHERE team_admin_id=?",
         (team_admin_id,)
     ).fetchone()
     if existing:
-        db.execute(
-            "UPDATE team_config SET api_config_id=? WHERE team_admin_id=?",
-            (api_config_id if api_config_id else None, team_admin_id)
-        )
+        if daily_limit is not None:
+            db.execute(
+                "UPDATE team_config SET api_config_id=?, daily_sms_limit=? WHERE team_admin_id=?",
+                (api_config_id if api_config_id else None, daily_limit, team_admin_id)
+            )
+        else:
+            db.execute(
+                "UPDATE team_config SET api_config_id=? WHERE team_admin_id=?",
+                (api_config_id if api_config_id else None, team_admin_id)
+            )
     else:
         db.execute(
-            "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, 100)",
-            (team_admin_id, api_config_id if api_config_id else None)
+            "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, ?)",
+            (team_admin_id, api_config_id if api_config_id else None,
+             daily_limit if daily_limit is not None else 100)
         )
     db.commit()
-    return jsonify({'message': 'Configuracion API actualizada'})
+    return jsonify({'message': 'Configuracion actualizada'})
 
 @app.route('/api/config/logs', methods=['GET'])
 @admin_required

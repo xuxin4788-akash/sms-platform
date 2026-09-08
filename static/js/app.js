@@ -533,6 +533,9 @@ function navigateTo(page) {
         case 'my-team': renderMyTeam(content); break;
         case 'all-teams': renderAllTeams(content); break;
         case 'team-stats': renderTeamStats(content); break;
+        case 'team-api-select':
+            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            renderTeamApiConfig(content); break;
         case 'role-permissions': renderRolePermissions(content); break;
         case 'config':
             if (state.user.role === 'team_admin') renderTeamConfig(content);
@@ -2638,23 +2641,60 @@ async function renderTeamApiConfig(container) {
         var data = await api('/api/config/team-api-config');
         var teams = data.teams || [];
         var configs = data.configs || [];
+        var globalLimit = data.global_daily_limit || 0;
 
         var configOptions = configs.map(function(c) {
             return '<option value="' + c.id + '">' + escapeHtml(c.name) + ' (' + escapeHtml(c.country) + ')</option>';
         }).join('');
 
         var teamRows = teams.map(function(t) {
-            return '<tr><td><strong>' + escapeHtml(t.team_admin_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.team_admin_full_name || '') + '</small></td><td style="text-align:center;">' + t.daily_sms_limit + '</td><td><select onchange="updateTeamApiConfig(' + t.team_admin_id + ', this.value)" style="padding:6px 10px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;"><option value="">Sin asignar</option>' + configOptions.replace('value="' + t.api_config_id + '"', 'value="' + t.api_config_id + '" selected') + '</select></td><td><span class="badge badge-blue">' + escapeHtml(t.api_config_name) + '</span></td></tr>';
+            var sel = configOptions.replace('value="' + t.api_config_id + '"', 'value="' + t.api_config_id + '" selected');
+            return '<tr>' +
+                '<td><strong>' + escapeHtml(t.team_admin_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.team_admin_full_name || '') + '</small></td>' +
+                '<td><input type="number" min="0" max="100000" value="' + (t.daily_sms_limit || 0) + '" id="team-limit-' + t.team_admin_id + '" style="width:90px;padding:6px 8px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;text-align:center;"><br><small class="text-secondary">0 = sin limite</small></td>' +
+                '<td><select onchange="updateTeamApiConfig(' + t.team_admin_id + ', this.value)" style="padding:6px 10px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;max-width:220px;"><option value="">Sin asignar</option>' + sel + '</select></td>' +
+                '<td><span class="badge badge-blue">' + escapeHtml(t.api_config_name) + '</span></td>' +
+                '<td style="text-align:center;"><button class="btn btn-primary btn-sm" onclick="saveTeamLimit(' + t.team_admin_id + ')">Guardar</button></td>' +
+                '</tr>';
         }).join('');
 
-        var html = '<h1 class="mb-4" style="font-size:22px;font-weight:700;">API por Equipo</h1>' +
-            '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">Asignacion de API SMS por Equipo</h3></div><div class="card-body">' +
-            '<p class="text-secondary mb-3">Asigna una configuracion de API SMS a cada equipo. Los mensajes de los miembros del equipo se enviaran usando la API configurada.</p>' +
-            (teams.length > 0 ? '<div class="table-container"><table><thead><tr><th>Equipo (Admin)</th><th style="text-align:center;">Limite Diario</th><th>Configuracion API</th><th>API Asignada</th></tr></thead><tbody>' + teamRows + '</tbody></table></div>' : '<div class="empty-state"><p>No hay equipos configurados</p></div>') +
+        var html = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">API y Limites por Equipo</h1></div>' +
+            '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">Limite diario global (tope para todos los miembros)</h3></div><div class="card-body">' +
+            '<p class="text-secondary" style="margin-bottom:12px;">Se aplica a todos los miembros de equipo. Si un equipo tiene su propio limite, se usa el valor mas estricto (el menor). 0 = sin limite global.</p>' +
+            '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
+            '<input type="number" id="global-daily-limit" min="0" max="100000" value="' + globalLimit + '" style="width:140px;padding:8px 10px;border:1px solid #E2E8F0;border-radius:8px;font-size:14px;text-align:center;">' +
+            '<span class="text-secondary">SMS por miembro / dia (0 = sin limite)</span>' +
+            '<button class="btn btn-primary" onclick="saveGlobalLimit()">Guardar limite global</button>' +
+            '</div></div></div>' +
+            '<div class="card"><div class="card-header"><h3 style="margin:0;">Configuracion por equipo</h3></div><div class="card-body">' +
+            '<p class="text-secondary mb-3">Asigna la API SMS y el limite diario de cada equipo. Los miembros no podran enviar mas SMS una vez alcanzado su limite diario.</p>' +
+            (teams.length > 0 ? '<div class="table-container"><table><thead><tr><th>Equipo (Admin)</th><th style="text-align:center;">Limite diario / miembro</th><th>Configuracion API</th><th>API Asignada</th><th style="text-align:center;"></th></tr></thead><tbody>' + teamRows + '</tbody></table></div>' : '<div class="empty-state"><p>No hay equipos configurados</p></div>') +
             '</div></div>';
 
         container.innerHTML = html;
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+async function saveTeamLimit(teamAdminId) {
+    var el = document.getElementById('team-limit-' + teamAdminId);
+    if (!el) return;
+    var val = parseInt(el.value, 10);
+    if (isNaN(val) || val < 0) { showToast('Introduce un numero valido (0 = sin limite)', 'error'); return; }
+    try {
+        await api('/api/config/team-api-config', { method: 'PUT', body: { team_admin_id: teamAdminId, daily_sms_limit: val } });
+        showToast('Limite del equipo guardado', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function saveGlobalLimit() {
+    var el = document.getElementById('global-daily-limit');
+    if (!el) return;
+    var val = parseInt(el.value, 10);
+    if (isNaN(val) || val < 0) { showToast('Introduce un numero valido (0 = sin limite)', 'error'); return; }
+    try {
+        await api('/api/config/daily-limit', { method: 'POST', body: { limit: val } });
+        showToast('Limite global guardado', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
 }
 
 async function updateTeamApiConfig(teamAdminId, apiConfigId) {
@@ -2812,7 +2852,7 @@ async function renderTeamConfig(container) {
             <div class="card">
                 <div class="card-header"><h3>Limite diario de envio por miembro</h3></div>
                 <div class="card-body">
-                    <p class="text-secondary" style="margin-bottom:16px">Establece el numero maximo de SMS que cada miembro de tu equipo puede enviar por dia. Los miembros del equipo no podran enviar mas SMS una vez alcanzado el limite.</p>
+                    <p class="text-secondary" style="margin-bottom:16px">Numero maximo de SMS que cada miembro de tu equipo puede enviar por dia. Si el administrador define un limite global, se aplica el valor mas estricto (el menor). 0 = sin limite propio.</p>
                     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
                         <div style="flex:1;min-width:200px">
                             <label class="form-label">Limite diario (SMS por miembro)</label>
