@@ -3923,14 +3923,47 @@ def list_contacts():
     per_page = request.args.get('per_page', 20, type=int)
     search = request.args.get('search', '').strip()
     group_id = request.args.get('group_id', '', type=str)
+    # Activity filters (on aggregated SMS / call counts).
+    sms_min = request.args.get('sms_min', default=None, type=int)
+    sms_max = request.args.get('sms_max', default=None, type=int)
+    calls_min = request.args.get('calls_min', default=None, type=int)
+    calls_max = request.args.get('calls_max', default=None, type=int)
+    sort = request.args.get('sort', 'calls_asc')  # calls_asc default
     offset = (page - 1) * per_page
 
+    # Cross-DB "last 10 digits" phone key (contacts) / record phone key.
+    if get_db().db_type == 'postgres':
+        c_key = "RIGHT(REGEXP_REPLACE(COALESCE(c.phone,''), '[^0-9]', '', 'g'), 10)"
+        sms_key = "RIGHT(REGEXP_REPLACE(COALESCE(sr.phone,''), '[^0-9]', '', 'g'), 10)"
+        voc_key = "RIGHT(REGEXP_REPLACE(COALESCE(vr.phone,''), '[^0-9]', '', 'g'), 10)"
+    else:
+        c_key = "substr(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(c.phone,''),'+',''),' ',''),'-',''),'(',''),')',''),'.',''),'#',''),'*',''),'/',''),',',''), -10)"
+        sms_key = "substr(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(sr.phone,''),'+',''),' ',''),'-',''),'(',''),')',''),'.',''),'#',''),'*',''),'/',''),',',''), -10)"
+        voc_key = "substr(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(vr.phone,''),'+',''),' ',''),'-',''),'(',''),')',''),'.',''),'#',''),'*',''),'/',''),',',''), -10)"
+
+    # Record-visibility scope (same rule as SMS/voice list).
+    rec_scope_sms = ""
+    rec_scope_voc = ""
+    rec_params: list = []
+    if session.get('role') != 'admin':
+        rec_scope_sms = " WHERE sr.created_by = ? OR sr.created_by IN (SELECT id FROM users WHERE team_creator_id = ?)"
+        rec_scope_voc = " WHERE vr.created_by = ? OR vr.created_by IN (SELECT id FROM users WHERE team_creator_id = ?)"
+        rec_params = [session.get('user_id'), session.get('user_id')]
+
+    stats_join = (
+        f" LEFT JOIN (SELECT {sms_key} AS k, COUNT(*) AS n FROM sms_records sr{rec_scope_sms} GROUP BY k) sms_s "
+        f"ON sms_s.k = {c_key}"
+        f" LEFT JOIN (SELECT {voc_key} AS k, COUNT(*) AS n, COALESCE(SUM(vr.duration),0) AS t FROM voice_records vr{rec_scope_voc} GROUP BY k) voc_s "
+        f"ON voc_s.k = {c_key}"
+    )
+
     where, scope_params = _contact_visible_where("c")
-    query = ("SELECT c.*, cg.name as group_name FROM contacts c "
-             "LEFT JOIN contact_groups cg ON c.group_id = cg.id WHERE " + where)
-    count_query = ("SELECT COUNT(*) as total FROM contacts c "
-                   "LEFT JOIN contact_groups cg ON c.group_id = cg.id WHERE " + where)
-    params = list(scope_params)
+    query = ("SELECT c.*, cg.name as group_name, "
+             "COALESCE(sms_s.n,0) AS sms_count, COALESCE(voc_s.n,0) AS call_count, COALESCE(voc_s.t,0) AS talk_time "
+             "FROM contacts c "
+             "LEFT JOIN contact_groups cg ON c.group_id = cg.id " + stats_join + " WHERE " + where)
+    count_query = ("SELECT COUNT(*) as total FROM contacts c " + stats_join + " WHERE " + where)
+    params = list(scope_params) + rec_params + rec_params
     if search:
         query += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.notes LIKE ?)"
         count_query += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.notes LIKE ?)"
@@ -3944,19 +3977,40 @@ def list_contacts():
         query += " AND c.remark = ?"
         count_query += " AND c.remark = ?"
         params.append(remark)
+    # Activity range filters (reference the aggregated join aliases).
+    activity_filters = []
+    for val, alias, ismax in [(sms_min, 'sms_s', False), (sms_max, 'sms_s', True),
+                              (calls_min, 'voc_s', False), (calls_max, 'voc_s', True)]:
+        if val is not None:
+            op = '<=' if ismax else '>='
+            cond = f"COALESCE({alias}.n,0) {op} ?"
+            activity_filters.append((cond, int(val)))
+    for cond, val in activity_filters:
+        query += " AND " + cond
+        count_query += " AND " + cond
+        params.append(val)
     total = db.execute(count_query, params).fetchone()['total']
-    query += " ORDER BY c.created_at DESC LIMIT ? OFFSET ?"
+    # Ordering (default: call_count ascending, so least-called come first).
+    order = {
+        'calls_asc': "call_count ASC, sms_count ASC, c.created_at DESC",
+        'calls_desc': "call_count DESC, sms_count DESC, c.created_at DESC",
+        'sms_asc': "sms_count ASC, call_count ASC, c.created_at DESC",
+        'sms_desc': "sms_count DESC, call_count DESC, c.created_at DESC",
+        'newest': "c.created_at DESC",
+    }.get(sort, "call_count ASC, sms_count ASC, c.created_at DESC")
+    query += f" ORDER BY {order} LIMIT ? OFFSET ?"
     params.extend([per_page, offset])
     contacts = db.execute(query, params).fetchall()
 
-    stats = _contact_stats_map(contacts)
     contact_list = []
     for c in contacts:
         d = dict(c)
-        st = stats.get(_phone_digits_tail(d.get('phone')), {'sms': 0, 'calls': 0, 'talk_time': 0})
-        d['sms_count'] = st['sms']
-        d['call_count'] = st['calls']
-        d['talk_time'] = st['talk_time']
+        try:
+            d['sms_count'] = int(d.get('sms_count') or 0)
+            d['call_count'] = int(d.get('call_count') or 0)
+            d['talk_time'] = int(d.get('talk_time') or 0)
+        except (TypeError, ValueError):
+            d['sms_count'] = d['call_count'] = d['talk_time'] = 0
         contact_list.append(d)
 
     return jsonify({

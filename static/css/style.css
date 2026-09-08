@@ -1820,3 +1820,9 @@ button.var-chip:active {
     white-space: nowrap;
     line-height: 1.4;
 }
+
+/* Contact activity filter controls */
+.filter-label { font-size: 12px; font-weight: 600; color: #64748B; margin-left: 4px; }
+.filter-sep { color: #94A3B8; font-size: 12px; }
+.act-input { width: 72px; padding: 6px 8px; border: 1px solid #E2E8F0; border-radius: 8px; font-size: 13px; }
+.act-input:focus { outline: none; border-color: #2563EB; }

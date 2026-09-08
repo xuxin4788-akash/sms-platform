@@ -22,7 +22,8 @@ const state = {
     currentPage: 'dashboard',
     dashboard: { dateFrom: '', dateTo: '', userId: '', users: null },
     myTeam: { dateFrom: '', dateTo: '', userId: '' },
-    contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '', remark: '' },
+    contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '', remark: '',
+      smsMin: '', smsMax: '', callsMin: '', callsMax: '', sort: 'calls_asc' },
     records: { page: 1, perPage: 20, total: 0, totalPages: 0, status: '', dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE, search: '' },
     sendPhones: [],
     sendMode: 'manual',
@@ -687,6 +688,11 @@ async function renderContacts(container) {
         if (state.contacts.search) params.set('search', state.contacts.search);
         if (state.contacts.groupId) params.set('group_id', state.contacts.groupId);
         if (state.contacts.remark) params.set('remark', state.contacts.remark);
+        if (state.contacts.smsMin !== '' && state.contacts.smsMin != null) params.set('sms_min', state.contacts.smsMin);
+        if (state.contacts.smsMax !== '' && state.contacts.smsMax != null) params.set('sms_max', state.contacts.smsMax);
+        if (state.contacts.callsMin !== '' && state.contacts.callsMin != null) params.set('calls_min', state.contacts.callsMin);
+        if (state.contacts.callsMax !== '' && state.contacts.callsMax != null) params.set('calls_max', state.contacts.callsMax);
+        params.set('sort', state.contacts.sort || 'calls_asc');
         var data = await api('/api/contacts?' + params.toString());
         state.contacts.total = data.total;
         state.contacts.totalPages = data.total_pages;
@@ -735,7 +741,26 @@ async function renderContacts(container) {
 
         var initialHtml =
             '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Contactos</h1><div class="flex gap-2"><button class="btn btn-secondary btn-sm" onclick="showImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> Importar CSV</button><button class="btn btn-primary btn-sm" onclick="showAddContactModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Nuevo Contacto</button></div></div>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por nombre, telefono..." value="' + escapeHtml(state.contacts.search) + '" onkeyup="handleContactSearch(event)"><select onchange="handleContactGroupFilter(this.value)"><option value="">Todos los grupos</option>' + groupOptions + '</select>' + remarkSelect + '</div></div><div class="table-container"><table><thead><tr><th>Nombre</th><th>Telefono</th><th>Grupo</th><th>Nota</th><th>Actividad</th><th>Monto</th><th>Observaciones</th><th>Link</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contacts') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Buscar por nombre, telefono..." value="' + escapeHtml(state.contacts.search) + '" onkeyup="handleContactSearch(event)"><select onchange="handleContactGroupFilter(this.value)"><option value="">Todos los grupos</option>' + groupOptions + '</select>' + remarkSelect + '</div>' +
+            '<div class="toolbar" style="padding-top:0;flex-wrap:wrap;gap:8px;">' +
+              '<span class="filter-label">SMS:</span>' +
+              '<input type="number" min="0" class="act-input" placeholder="min" value="' + (state.contacts.smsMin === '' ? '' : state.contacts.smsMin) + '" onchange="setContactFilter(\'smsMin\',this.value)" title="SMS minimo">' +
+              '<span class="filter-sep">-</span>' +
+              '<input type="number" min="0" class="act-input" placeholder="max" value="' + (state.contacts.smsMax === '' ? '' : state.contacts.smsMax) + '" onchange="setContactFilter(\'smsMax\',this.value)" title="SMS maximo">' +
+              '<span class="filter-label">Llamadas:</span>' +
+              '<input type="number" min="0" class="act-input" placeholder="min" value="' + (state.contacts.callsMin === '' ? '' : state.contacts.callsMin) + '" onchange="setContactFilter(\'callsMin\',this.value)" title="Llamadas minimo">' +
+              '<span class="filter-sep">-</span>' +
+              '<input type="number" min="0" class="act-input" placeholder="max" value="' + (state.contacts.callsMax === '' ? '' : state.contacts.callsMax) + '" onchange="setContactFilter(\'callsMax\',this.value)" title="Llamadas maximo">' +
+              '<select onchange="setContactFilter(\'sort\',this.value)" title="Ordenar por actividad">' +
+                '<option value="calls_asc"' + (state.contacts.sort === 'calls_asc' ? ' selected' : '') + '>Menos llamadas</option>' +
+                '<option value="calls_desc"' + (state.contacts.sort === 'calls_desc' ? ' selected' : '') + '>Mas llamadas</option>' +
+                '<option value="sms_asc"' + (state.contacts.sort === 'sms_asc' ? ' selected' : '') + '>Menos SMS</option>' +
+                '<option value="sms_desc"' + (state.contacts.sort === 'sms_desc' ? ' selected' : '') + '>Mas SMS</option>' +
+                '<option value="newest"' + (state.contacts.sort === 'newest' ? ' selected' : '') + '>Mas recientes</option>' +
+              '</select>' +
+              '<button class="btn btn-sm btn-secondary" onclick="resetContactFilters()">Limpiar</button>' +
+            '</div>' +
+            '</div><div class="table-container"><table><thead><tr><th>Nombre</th><th>Telefono</th><th>Grupo</th><th>Nota</th><th>Actividad</th><th>Monto</th><th>Observaciones</th><th>Link</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contacts') + '</div>';
         container.innerHTML = initialHtml;
         applyMobileTableLabels(container);
     } catch (err) {
@@ -754,6 +779,21 @@ function handleContactGroupFilter(groupId) {
 
 function handleContactRemarkFilter(remark) {
     state.contacts.remark = remark; state.contacts.page = 1; renderContacts(document.getElementById('page-content'));
+}
+
+function setContactFilter(key, value) {
+    state.contacts[key] = (key === 'sort') ? value : value.replace(/[^0-9]/g, '');
+    if (key !== 'sort' && state.contacts[key] !== '' && Number(state.contacts[key]) < 0) state.contacts[key] = '';
+    state.contacts.page = 1;
+    renderContacts(document.getElementById('page-content'));
+}
+
+function resetContactFilters() {
+    state.contacts.search = ''; state.contacts.groupId = ''; state.contacts.remark = '';
+    state.contacts.smsMin = ''; state.contacts.smsMax = '';
+    state.contacts.callsMin = ''; state.contacts.callsMax = '';
+    state.contacts.sort = 'calls_asc'; state.contacts.page = 1;
+    renderContacts(document.getElementById('page-content'));
 }
 
 function showAddContactModal() {
