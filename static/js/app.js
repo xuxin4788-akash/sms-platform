@@ -5,13 +5,25 @@
 // ============================================================
 // State Management
 // ============================================================
+// Fecha local del dia en formato YYYY-MM-DD (no UTC, para que respete la zona horaria del usuario)
+function todayLocalStr() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+}
+
+// Por defecto, las listas de registros (SMS, voz, contenido) filtran el dia actual.
+const DEFAULT_LIST_DATE = todayLocalStr();
+
 const state = {
     user: null,
     currentPage: 'dashboard',
     dashboard: { dateFrom: '', dateTo: '', userId: '', users: null },
     myTeam: { dateFrom: '', dateTo: '', userId: '' },
     contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '', remark: '' },
-    records: { page: 1, perPage: 20, total: 0, totalPages: 0, status: '', dateFrom: '', dateTo: '', search: '' },
+    records: { page: 1, perPage: 20, total: 0, totalPages: 0, status: '', dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE, search: '' },
     sendPhones: [],
     sendMode: 'manual',
 };
@@ -1456,7 +1468,7 @@ async function renderRecords(container) {
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Envio</h1>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><div style="display:flex;gap:8px;flex:1;"><input type="text" class="search-input" placeholder="Buscar por numero, nombre, usuario o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)" style="flex:1;"><button onclick="triggerRecordSearch()" style="padding:8px 16px;background:#2563EB;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Buscar</button></div><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Enviado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" lang="es" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Fecha hasta"></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><div style="display:flex;gap:8px;flex:1;"><input type="text" class="search-input" placeholder="Buscar por numero, nombre, usuario o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)" style="flex:1;"><button onclick="triggerRecordSearch()" style="padding:8px 16px;background:#2563EB;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Buscar</button></div><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Enviado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" lang="es" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setRecordsToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearRecordsFilters()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
@@ -1479,11 +1491,13 @@ function triggerRecordSearch() {
 function handleRecordStatusFilter(status) { state.records.status = status; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
 function handleRecordDateFrom(date) { state.records.dateFrom = date; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
 function handleRecordDateTo(date) { state.records.dateTo = date; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
+function setRecordsToday() { state.records.dateFrom = DEFAULT_LIST_DATE; state.records.dateTo = DEFAULT_LIST_DATE; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
+function clearRecordsFilters() { state.records.status = ''; state.records.dateFrom = ''; state.records.dateTo = ''; state.records.search = ''; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
 
 // ============================================================
 // Content Search
 // ============================================================
-if (!state.contentSearch) state.contentSearch = { keyword: '', dateFrom: '', dateTo: '', page: 1, perPage: 20, total: 0, totalPages: 0 };
+if (!state.contentSearch) state.contentSearch = { keyword: '', dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE, page: 1, perPage: 20, total: 0, totalPages: 0 };
 
 async function renderContentSearch(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
@@ -1509,7 +1523,7 @@ async function renderContentSearch(container) {
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Buscar por Contenido</h1>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Ingrese palabra clave del mensaje o nombre de usuario..." value="' + escapeHtml(state.contentSearch.keyword) + '" onkeyup="handleContentSearch(event)" style="flex:2;"><input type="date" lang="es" value="' + state.contentSearch.dateFrom + '" onchange="handleContentDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.contentSearch.dateTo + '" onchange="handleContentDateTo(this.value)" title="Fecha hasta"><button class="btn btn-secondary btn-sm" onclick="clearContentSearch()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contentSearch') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Ingrese palabra clave del mensaje o nombre de usuario..." value="' + escapeHtml(state.contentSearch.keyword) + '" onkeyup="handleContentSearch(event)" style="flex:2;"><input type="date" lang="es" value="' + state.contentSearch.dateFrom + '" onchange="handleContentDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.contentSearch.dateTo + '" onchange="handleContentDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setContentToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearContentSearch()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contentSearch') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
@@ -1517,6 +1531,7 @@ function handleContentSearch(event) { if (event.key === 'Enter') { state.content
 function handleContentDateFrom(date) { state.contentSearch.dateFrom = date; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); }
 function handleContentDateTo(date) { state.contentSearch.dateTo = date; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); }
 function clearContentSearch() { state.contentSearch = { keyword: '', dateFrom: '', dateTo: '', page: 1, perPage: 20, total: 0, totalPages: 0 }; renderContentSearch(document.getElementById('page-content')); }
+function setContentToday() { state.contentSearch.dateFrom = DEFAULT_LIST_DATE; state.contentSearch.dateTo = DEFAULT_LIST_DATE; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); }
 
 function highlightText(text, keyword) {
     if (!keyword) return escapeHtml(text);
@@ -3487,7 +3502,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // ============================================================
 // Voice Calls (Llamadas / 电呼)
 // ============================================================
-if (!state.calls) state.calls = { page: 1, perPage: 20, total: 0, status: '', search: '', dateFrom: '', dateTo: '' };
+if (!state.calls) state.calls = { page: 1, perPage: 20, total: 0, status: '', search: '', dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE };
 if (!state.voiceCall) state.voiceCall = { phones: [], mode: 'manual' };
 
 var VOICE_STATUS_BADGE = {
@@ -3573,7 +3588,7 @@ async function renderCalls(container) {
                 '<div id="voice-error" class="alert alert-error" style="display:none;"></div>' +
                 '<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-primary" id="voice-place-btn" onclick="handlePlaceCalls()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Iniciar Llamada(s)</button><span class="text-secondary text-sm" style="align-self:center;">Maximo 200 numeros por tanda.</span></div>' +
             '</div></div>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;"><input type="text" id="voice-search" placeholder="Buscar telefono, nombre o guion..." value="' + escapeHtml(state.calls.search) + '" onkeydown="if(event.key===\'Enter\')triggerVoiceSearch()" style="flex:1;min-width:200px;"><button class="btn btn-primary btn-sm" onclick="triggerVoiceSearch()">Buscar</button><select id="voice-status-filter" onchange="handleVoiceStatus(this.value)"><option value="">Todos los estados</option>' + Object.keys(VOICE_STATUS_LABELS).map(function(s){return '<option value="'+s+'"'+(state.calls.status===s?' selected':'')+'>'+VOICE_STATUS_LABELS[s]+'</option>';}).join('') + '</select><input type="date" lang="es" value="' + state.calls.dateFrom + '" onchange="handleVoiceDateFrom(this.value)"><input type="date" lang="es" value="' + state.calls.dateTo + '" onchange="handleVoiceDateTo(this.value)"></div></div><div id="voice-records-container"><div class="text-center text-secondary" style="padding:24px;">Cargando registros...</div></div></div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;"><input type="text" id="voice-search" placeholder="Buscar telefono, nombre o guion..." value="' + escapeHtml(state.calls.search) + '" onkeydown="if(event.key===\'Enter\')triggerVoiceSearch()" style="flex:1;min-width:200px;"><button class="btn btn-primary btn-sm" onclick="triggerVoiceSearch()">Buscar</button><select id="voice-status-filter" onchange="handleVoiceStatus(this.value)"><option value="">Todos los estados</option>' + Object.keys(VOICE_STATUS_LABELS).map(function(s){return '<option value="'+s+'"'+(state.calls.status===s?' selected':'')+'>'+VOICE_STATUS_LABELS[s]+'</option>';}).join('') + '</select><input type="date" lang="es" value="' + state.calls.dateFrom + '" onchange="handleVoiceDateFrom(this.value)"><input type="date" lang="es" value="' + state.calls.dateTo + '" onchange="handleVoiceDateTo(this.value)"><button class="btn btn-primary btn-sm" onclick="setCallsToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearCallsFilters()">Limpiar</button></div></div><div id="voice-records-container"><div class="text-center text-secondary" style="padding:24px;">Cargando registros...</div></div></div>';
 
         loadVoiceContactsForSelection();
         loadVoiceRecords();
@@ -3786,6 +3801,8 @@ function triggerVoiceSearch() { state.calls.search = document.getElementById('vo
 function handleVoiceStatus(s) { state.calls.status = s; state.calls.page = 1; loadVoiceRecords(); }
 function handleVoiceDateFrom(d) { state.calls.dateFrom = d; state.calls.page = 1; loadVoiceRecords(); }
 function handleVoiceDateTo(d) { state.calls.dateTo = d; state.calls.page = 1; loadVoiceRecords(); }
+function setCallsToday() { state.calls.dateFrom = DEFAULT_LIST_DATE; state.calls.dateTo = DEFAULT_LIST_DATE; state.calls.page = 1; loadVoiceRecords(); }
+function clearCallsFilters() { state.calls.status = ''; state.calls.search = ''; state.calls.dateFrom = ''; state.calls.dateTo = ''; state.calls.page = 1; var si = document.getElementById('voice-search'); if (si) si.value = ''; var sf = document.getElementById('voice-status-filter'); if (sf) sf.value = ''; loadVoiceRecords(); }
 
 // ============================================================
 // Voice Config (admin) - one card per country, like API SMS config
