@@ -3894,20 +3894,21 @@ def _contact_stats_map(contacts):
     except Exception:
         pass
 
-    # Voice counts + duration.
+    # Voice counts + duration (talk time only counts answered/completed calls).
     try:
         rows = get_db().execute(
-            "SELECT phone, duration FROM voice_records WHERE (" + like_clause + ")" + scope,
+            "SELECT phone, duration, status FROM voice_records WHERE (" + like_clause + ")" + scope,
             like_params + sparams).fetchall()
         for r in rows:
             k = _phone_digits_tail(r['phone'])
             if k in keys:
                 d = out.setdefault(k, {'sms': 0, 'calls': 0, 'talk_time': 0})
                 d['calls'] += 1
-                try:
-                    d['talk_time'] += int(r['duration'] or 0)
-                except (TypeError, ValueError):
-                    pass
+                if str(r['status'] or '').lower() in ('completed', 'answered', 'conectada'):
+                    try:
+                        d['talk_time'] += int(r['duration'] or 0)
+                    except (TypeError, ValueError):
+                        pass
     except Exception:
         pass
 
@@ -3953,7 +3954,7 @@ def list_contacts():
     stats_join = (
         f" LEFT JOIN (SELECT {sms_key} AS k, COUNT(*) AS n FROM sms_records sr{rec_scope_sms} GROUP BY k) sms_s "
         f"ON sms_s.k = {c_key}"
-        f" LEFT JOIN (SELECT {voc_key} AS k, COUNT(*) AS n, COALESCE(SUM(vr.duration),0) AS t FROM voice_records vr{rec_scope_voc} GROUP BY k) voc_s "
+        f" LEFT JOIN (SELECT {voc_key} AS k, COUNT(*) AS n, COALESCE(SUM(CASE WHEN vr.status='completed' THEN vr.duration ELSE 0 END),0) AS t FROM voice_records vr{rec_scope_voc} GROUP BY k) voc_s "
         f"ON voc_s.k = {c_key}"
     )
 
