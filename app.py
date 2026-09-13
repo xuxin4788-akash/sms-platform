@@ -2460,7 +2460,7 @@ def get_me():
         role = g.user['role']
         if role == 'admin':
             # Admin always has all permissions
-            permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'voice-config', 'retention', 'role-permissions']
+            permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'voice-config', 'email', 'email-records', 'email-config', 'retention', 'role-permissions']
             perms_configured = True
         else:
             # Get permissions from role_permissions table
