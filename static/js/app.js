@@ -1149,7 +1149,7 @@ async function renderSendSMS(container) {
                 '<div class="form-group mt-4"><label>Plantilla (opcional)</label><select id="send-template" onchange="loadTemplateContent(this.value)"><option value="">-- Escribir mensaje personalizado --</option>' + templateOpts + '</select></div>' +
                 '<div class="form-group"><label>Mensaje * <span class="text-secondary" style="font-weight:400;font-size:12px;">(max. 140 caracteres, sin tildes ni simbolos espanoles: se convierten automaticamente)</span></label><textarea id="send-content" rows="4" maxlength="140" placeholder="Escriba su mensaje aqui..." oninput="onSendContentInput()"></textarea><div class="var-chips">' + variableChips('send-content') + '</div><div id="sms-counter" style="font-size:12px;color:#64748B;margin-top:4px;text-align:right;"><span id="sms-char-count">0</span>/140</div></div>' +
                 '<div class="preview-box" id="send-preview" style="display:none;"><div class="preview-label">Vista previa</div><div class="preview-content" id="preview-text"></div></div>' +
-                '<div class="flex gap-2 mt-4"><button class="btn btn-primary" onclick="handleSendSMS()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg> Enviar SMS</button><button class="btn btn-secondary" onclick="showSendPreviewModal()">Vista Previa</button></div>' +
+                '<div class="flex gap-2 mt-4"><button class="btn btn-primary" id="btn-send-sms" onclick="handleSendSMS()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg> Enviar SMS</button><button class="btn btn-secondary" onclick="showSendPreviewModal()">Vista Previa</button></div>' +
             '</div></div>';
         loadContactsForSelection();
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
@@ -1299,25 +1299,32 @@ function updatePreview() {
     } else { preview.style.display = 'none'; }
 }
 
-async function checkCharsetInfo(content) {
-    try {
-        var data = await api('/api/sms/check-charset', { method: 'POST', body: { content: content } });
-        var infoEl = document.getElementById('charset-info');
-        if (!infoEl) {
-            infoEl = document.createElement('div');
-            infoEl.id = 'charset-info';
-            infoEl.style.cssText = 'font-size:12px;color:#64748B;margin-top:4px;padding:6px 10px;background:#F8FAFC;border-radius:6px;';
-            var textarea = document.getElementById('send-content');
-            if (textarea && textarea.parentNode) {
-                textarea.parentNode.insertBefore(infoEl, textarea.nextSibling);
-            }
+// Local-only charset/part calculator. The textarea already forces every
+// message through normalizeSmsText(), so the content is plain ASCII, which
+// is a subset of the GSM 03.38 alphabet. That makes billing fully
+// deterministic client-side: a single SMS holds 160 GSM characters and each
+// concatenated part holds 153. We therefore never call the provider charset
+// endpoint while typing (that endpoint is billable/rate-limited and was the
+// source of repeated outbound requests and long hangs).
+function localSmsParts(content) {
+    var len = String(content == null ? '' : content).length;
+    if (len <= 160) return { charset: 'GSM', char_count: len, single: 160, parts: 1 };
+    return { charset: 'GSM', char_count: len, single: 153, parts: Math.ceil(len / 153) };
+}
+
+function checkCharsetInfo(content) {
+    var infoEl = document.getElementById('charset-info');
+    if (!infoEl) {
+        infoEl = document.createElement('div');
+        infoEl.id = 'charset-info';
+        infoEl.style.cssText = 'font-size:12px;color:#64748B;margin-top:4px;padding:6px 10px;background:#F8FAFC;border-radius:6px;';
+        var textarea = document.getElementById('send-content');
+        if (textarea && textarea.parentNode) {
+            textarea.parentNode.insertBefore(infoEl, textarea.nextSibling);
         }
-        var charCount = data.char_count || content.length;
-        var parts = data.parts || 1;
-        var single = data.single || 70;
-        var charset = data.charset || 'UCS2';
-        infoEl.innerHTML = 'Codificacion: <strong>' + charset + '</strong> | Caracteres: ' + charCount + '/' + single + ' | Partes: <strong>' + parts + '</strong> SMS' + (data.api_configured ? '' : ' (estimacion local)');
-    } catch (e) {}
+    }
+    var data = localSmsParts(content);
+    infoEl.innerHTML = 'Codificacion: <strong>' + data.charset + '</strong> | Caracteres: ' + data.char_count + '/' + data.single + ' | Partes: <strong>' + data.parts + '</strong> SMS';
 }
 
 function showSendPreviewModal() {
@@ -1461,7 +1468,13 @@ function clearAllPhones() {
     renderPhoneTags();
 }
 
+// Global guard so a SMS batch can only be in flight at once. Double-clicks,
+// Enter-key repeats and slow networks must never trigger a second billable
+// send for the same message.
+var smsSending = false;
+
 async function handleSendSMS() {
+    if (smsSending) return;
     // Make sure any number still sitting in the input is committed before sending
     commitPhoneInput();
     var contentEl = document.getElementById('send-content');
@@ -1473,6 +1486,9 @@ async function handleSendSMS() {
     if (phones.length === 0) return showToast('Seleccione al menos un destinatario', 'error');
     var contactNames = {};
     document.querySelectorAll('#contacts-select-list input[type="checkbox"]:checked').forEach(function(cb) { contactNames[cb.value] = cb.dataset.name || ''; });
+    var sendBtn = document.getElementById('btn-send-sms');
+    smsSending = true;
+    if (sendBtn) { sendBtn.disabled = true; sendBtn.style.opacity = '0.6'; sendBtn.style.cursor = 'not-allowed'; }
     try {
         var data = await api('/api/sms/send', { method: 'POST', body: { phones: phones, content: content, contact_names: contactNames } });
         var sentCount = (data.records || []).filter(function(r) { return r.status === 'sent'; }).length;
@@ -1492,6 +1508,10 @@ async function handleSendSMS() {
         if (charsetInfo) charsetInfo.remove();
         renderPhoneTags();
     } catch (err) { showToast(err.message, 'error'); }
+    finally {
+        smsSending = false;
+        if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = ''; sendBtn.style.cursor = ''; }
+    }
 }
 
 // ============================================================
@@ -3166,6 +3186,7 @@ function quickAddManual(ev) {
 }
 
 async function submitQuickSend() {
+    if (smsSending) return;
     const contentEl = document.getElementById('quick-content');
     if (contentEl) { applySmsInputRules(contentEl); if (contentEl.value.length > SMS_MAX_LEN) contentEl.value = contentEl.value.slice(0, SMS_MAX_LEN); }
     const content = (contentEl?.value || '').trim();
@@ -3177,6 +3198,9 @@ async function submitQuickSend() {
         content,
         contact_names: {},
     };
+    const sendBtn = document.getElementById('quick-send-btn');
+    smsSending = true;
+    if (sendBtn) { sendBtn.disabled = true; sendBtn.style.opacity = '0.6'; sendBtn.style.cursor = 'not-allowed'; }
     try {
         const result = await api('/api/sms/send', { method: 'POST', body });
         const successCount = (result.results || []).filter(r => r.success).length;
@@ -3189,6 +3213,9 @@ async function submitQuickSend() {
         if (typeof loadSmsData === 'function' && (location.hash || '').includes('records')) loadSmsData();
     } catch (e) {
         showToast(e.message || 'Error al enviar', 'error');
+    } finally {
+        smsSending = false;
+        if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = ''; sendBtn.style.cursor = ''; }
     }
 }
 
@@ -3266,7 +3293,7 @@ function renderQuickSendEmbed() {
                     '<textarea id="quick-content" rows="5" maxlength="140" placeholder="Escribe el SMS (sin tildes, max. 140)..." oninput="onQuickContentInput()"></textarea>' +
                 '</label>' +
                 '<div class="embed-counter"><span id="embed-char-count">0</span>/140 caracteres · <span id="embed-sms-count">1</span> SMS</div>' +
-                '<button class="btn btn-primary w-full" onclick="submitQuickSend()">Enviar SMS</button>' +
+                '<button class="btn btn-primary w-full" id="quick-send-btn" onclick="submitQuickSend()">Enviar SMS</button>' +
             '</div>' +
         '</div>';
     quickSendPhones = [];
@@ -3545,6 +3572,8 @@ async function submitQuickSms() {
         return;
     }
     const sendBtn = document.getElementById('quick-sms-send');
+    if (smsSending) return;
+    smsSending = true;
     sendBtn.disabled = true;
     sendBtn.textContent = 'Enviando...';
     try {
@@ -3561,6 +3590,7 @@ async function submitQuickSms() {
         errBox.textContent = e.message || 'Error al enviar';
         errBox.style.display = 'block';
     } finally {
+        smsSending = false;
         sendBtn.disabled = false;
         sendBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Enviar';
     }
