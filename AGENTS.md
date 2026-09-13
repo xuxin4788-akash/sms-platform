@@ -136,6 +136,8 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 - Auth: spid + MD5(spid + pwd + timestamp) + timestamp
 - Content encoding: UCS2 hex for Spanish (70 chars/SMS, 67 for long SMS parts)
 - Fallback: Simulation mode when API not configured
+- Delivery reconciliation: send accept (api_code=0) writes status `sent` (=submitted/in-flight). A background worker (`sms_dr_loop`, every 5 min, cross-worker lease, 72h window, 200 msgids/call, per-channel grouping) polls `/sms/state` and applies reports via `apply_delivery_reports()`: state 1 -> `delivered` (+delivered_at), state 2 -> `failed`, state 0 stays `sent`. Admin can force a run via POST /api/sms/dr-sync. Simulation is skipped.
+- Carrier-aligned stats: GET /api/sms/statistics returns a `reconciliation` block (submitted/delivered/in_flight/rejected/simulated, GSM 160-153 / UCS2 70-67 billing segments, delivery_rate, by-day series), bucketed by America/Mexico_City and excluding simulated sends. sms_records carry api_config_id (channel).
 
 ## Default Credentials
 - System Admin: `admin` / `admin123`
