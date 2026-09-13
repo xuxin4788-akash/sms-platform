@@ -68,7 +68,9 @@ services:
       - DOMAIN=${DOMAIN:-localhost}
       # Limit envsubst so it only replaces ${DOMAIN}, not nginx's own $host,
       # $scheme, $binary_remote_addr, $proxy_add_x_forwarded_for, etc.
-      - NGINX_ENVSUBST_FILTER=^DOMAIN$
+      # "$$" is Compose escaping for a literal "$" (works on both Compose v1 and v2);
+      # the container receives NGINX_ENVSUBST_FILTER=^DOMAIN$
+      - NGINX_ENVSUBST_FILTER=^DOMAIN$$
     ports:
       - "80:80"
       - "443:443"
