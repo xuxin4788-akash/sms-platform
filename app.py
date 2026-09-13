@@ -2490,11 +2490,6 @@ def get_me():
             # respecting an admin who explicitly sets permissions to [].
             if has_explicit_config:
                 permissions = raw_perms or []
-                # Auto-grant newly introduced messaging pages to existing roles
-                # so a feature launch never hides email from configured teams.
-                for _newp in ('email', 'email-records'):
-                    if _newp not in permissions:
-                        permissions.append(_newp)
                 perms_configured = True
             else:
                 permissions = list(DEFAULT_ROLE_PERMISSIONS.get(role, []))
@@ -3729,12 +3724,12 @@ DEFAULT_ROLE_PERMISSIONS = {
     'admin': [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions'],
     'team_admin': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'email', 'email-records', 'content-search', 'users', 'my-account', 'my-team', 'all-teams',
+        'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams',
         'retention',
     ],
     'team_member': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'email', 'email-records', 'my-account',
+        'calls', 'my-account',
     ],
 }
 
@@ -8204,7 +8199,7 @@ def _email_html_body(plain):
 
 
 @app.route('/api/config/email/providers', methods=['GET'])
-@login_required
+@admin_required
 def email_providers():
     return jsonify({'providers': [{'key': k, **v} for k, v in EMAIL_PROVIDER_PRESETS.items()]})
 
@@ -8295,7 +8290,7 @@ def _email_scope_where(user, alias='r'):
 
 
 @app.route('/api/email/send', methods=['POST'])
-@login_required
+@admin_required
 def send_email():
     data = request.get_json(silent=True) or {}
     mode = data.get('mode', 'contacts')
@@ -8382,7 +8377,7 @@ def send_email():
 
 
 @app.route('/api/email/records', methods=['GET'])
-@login_required
+@admin_required
 def email_records_api():
     db = get_db()
     user = g.user
@@ -8416,7 +8411,7 @@ def email_records_api():
 
 
 @app.route('/api/email/statistics', methods=['GET'])
-@login_required
+@admin_required
 def email_statistics_api():
     db = get_db()
     user = g.user
