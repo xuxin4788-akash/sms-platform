@@ -86,6 +86,12 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET/POST | /api/config/voice | Admin | List all per-country voice configs / create one (country unique) |
 | PUT/DELETE | /api/config/voice/<id> | Admin | Update/delete a per-country voice config (AccessKey write-only) |
 | POST | /api/config/voice/test | Admin | Test Infinity credentials (body `{config_id}` or `{country}`) |
+| GET | /api/config/email/providers | User | SMTP provider presets (Microsoft 365, Gmail, Amazon SES, Mailgun, SendGrid, Tencent, Aliyun, custom) |
+| GET/POST | /api/config/email | Admin | SMTP config get/save (provider/host/port/use_ssl/use_tls/username/password/from_email/from_name; password write-only, empty on save preserves it) |
+| POST | /api/config/email/test | Admin | Send a test email through SMTP (to `{to}` or the from address) |
+| POST | /api/email/send | User | Bulk email to selected contacts or a group (only contacts with an email; same template vars as SMS; records one email_records row per recipient; simulates when SMTP is unconfigured) |
+| GET | /api/email/records | User | List email send records (team scoped; search/status/date/pagination) |
+| GET | /api/email/statistics | User | Email stats (total/sent/failed/success_rate/last_7_days/configured) |
 | GET/POST | /api/extensions | Admin | List/add SIP extensions per country (?country=); bulk-upload comma/newline separated |
 | DELETE | /api/extensions/<id> | Admin | Delete a single extension (only when free/unassigned) |
 | GET | /api/admin/user-usage | Admin/TeamAdmin | Per-user usage statistics |
@@ -116,6 +122,14 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 - Per-user fixed extension: the `users.extnumber` column holds an optional fixed SIP extension/phone for an agent, and `users.country` tags the agent as `mx` (Mexico), `co` (Colombia), `pe` (Peru), or empty (general). Extensions are **never entered manually**: they are managed in the authoritative `extensions` table (extnumber+country unique, `assigned_to` FK to users) via the standalone Extensiones page (`GET/POST/DELETE /api/extensions`, bulk-upload comma/newline separated). When `assign_extension=true` is passed on user create/edit (or `assign_extensions=true` on bulk import/text), the system auto-picks a free one from that agent's country pool and assigns it permanently. Users without a country use Mexico's pool by default (resolution order: agent country → team default country → mx). Changing a user's country does NOT reassign their current extension (release it first, then assign again). If no free extension exists for that country, the operation fails with HTTP 409 and an "ask the system admin to add more extensions" message. Bulk creation honors a per-row `pais` column as well as a default `country`; each country's free set is consumed first-come-first-served and duplicates are rejected. An assigned extension can be released via `release_extension=true` (returns to the pool). The agent's own `extnumber` is always used for Infinity calls; users without one are blocked (HTTP 403) when Infinity is configured (simulation mode still works). The extension actually used is recorded in `voice_records.extnumber`.
 - Role scope mirrors SMS: team_member sees own calls, team_admin sees team calls, admin sees all.
 
+## Email Integration (SMTP)
+- Single-row `email_config`; provider presets (`EMAIL_PROVIDER_PRESETS`) prefill host/port/security: Microsoft 365 (smtp.office365.com:587 STARTTLS), Google Workspace (smtp.gmail.com:465 SSL), Amazon SES, Mailgun, SendGrid, Tencent Exmail, Aliyun Enterprise, and custom.
+- Sending uses the Python stdlib `smtplib` + `EmailMessage`: `SMTP_SSL` for SSL (465), `SMTP`+`starttls()` for STARTTLS (587), plain SMTP otherwise. Messages are multipart (plain + simple styled HTML, newlines preserved). Password is write-only; an empty password on save keeps the stored secret.
+- `is_email_configured()` requires host + username + password + from_email. When unconfigured, `POST /api/email/send` runs in simulation mode and writes `status='simulated'` (mirrors SMS/voice), returning `simulated:true`.
+- Targets come from contacts or a group, restricted to rows with a syntactically valid unique email (`EMAIL_RE`), and obey the normal contact visibility scope. Subject and body resolve the same per-contact template variables as SMS (`{nombre}`, `{telefono}`, `{app_name}`, `{amount}`, `{discount}`, `{payment_link}`); links are NOT shortened in email (only SMS shortens).
+- Records live in `email_records` with role scope identical to SMS (admin all / team_admin team / member own). Frontend pages: `#/email` (compose + stats), `#/email-records`, `#/email-config` (admin). The new email pages are auto-granted to existing roles even when their stored permission set is explicit.
+- Contacts carry an `email` column (create/update/CSV template/import with `email`/`correo`/`e-mail` headers).
+
 ## SMS API Integration (infin8linx)
 - Provider: infin8linx SMS API
 - Endpoints: /sms/send (single), /sms/rsend (batch), /sms/state (status), /sms/charset (encoding check)
@@ -132,7 +146,7 @@ Dual database support via `DBWrapper` abstraction layer:
 - **Production**: PostgreSQL 16 (via `DATABASE_URL` environment variable)
 - Auto-detection: if `DATABASE_URL` starts with `postgresql://` → PostgreSQL, otherwise SQLite
 
-Tables: users (with `category_id` FK to user_categories, `extnumber` for per-agent fixed SIP extension and `country` mx/co/pe), user_categories (id/name UNIQUE/retention_days/is_default/created_at/updated_at — classifies employees and defines how many days their contacts are kept; 0 = forever; seeded with a "General" default), contacts (with `app_name`, `amount`, `discount_amount`, `payment_link`), contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), sms_api_configs (multi-country SMS configs, one row per country), team_config, voice_config (legacy single-row table retained for migration/backward compatibility), voice_configs (multi-country Infinity voice configs, one row per country — mirrors sms_api_configs; columns id/name/country/provider/api_domain/voice_appid/voice_accesskey/from_number/dest_prefix/voice_scheme/voice_token/voice_token_expiry/is_active/updated_at), voice_records (phone/script/status/call_sid/extnumber/duration/price), extensions (extnumber+country unique, assigned_to FK users; the authoritative extension catalog managed from the Extensiones page, seeded once from legacy ext_pool_* strings), send_logs.
+Tables: users (with `category_id` FK to user_categories, `extnumber` for per-agent fixed SIP extension and `country` mx/co/pe), user_categories (id/name UNIQUE/retention_days/is_default/created_at/updated_at — classifies employees and defines how many days their contacts are kept; 0 = forever; seeded with a "General" default), contacts (with `app_name`, `amount`, `discount_amount`, `payment_link`, `email`), contact_groups, templates, sms_records (with msgid, api_code, api_msg for API tracking), sms_config (domain, spid, api_pwd, sender_name for infin8linx API), sms_api_configs (multi-country SMS configs, one row per country), team_config, email_config (single-row SMTP: provider/host/port/use_ssl/use_tls/username/password/from_email/from_name/is_active), email_records (recipient_email/contact_name/subject/body/status[pending|sent|failed|simulated]/error_msg/created_by/sent_at), voice_config (legacy single-row table retained for migration/backward compatibility), voice_configs (multi-country Infinity voice configs, one row per country — mirrors sms_api_configs; columns id/name/country/provider/api_domain/voice_appid/voice_accesskey/from_number/dest_prefix/voice_scheme/voice_token/voice_token_expiry/is_active/updated_at), voice_records (phone/script/status/call_sid/extnumber/duration/price), extensions (extnumber+country unique, assigned_to FK users; the authoritative extension catalog managed from the Extensiones page, seeded once from legacy ext_pool_* strings), send_logs.
 
 ### Contact retention (replaces the old full daily wipe)
 - Employees are classified via `user_categories`; each category has `retention_days` (0 = keep forever).
@@ -144,7 +158,7 @@ Tables: users (with `category_id` FK to user_categories, `extnumber` for per-age
 
 ### Contact fields
 The `contacts` table carries both basic CRM and payment/collection fields:
-- `name`, `phone`, `notes`, `remark` (status tag), `group_id`, `created_by`, `created_at`
+- `name`, `phone`, `email`, `notes`, `remark` (status tag), `group_id`, `created_by`, `created_at`
 - `app_name` (VARCHAR/TEXT, APP the contact belongs to)
 - `amount` (NUMERIC(14,2)/REAL, owed/transaction amount)
 - `discount_amount` (NUMERIC(14,2)/REAL, discount offered)

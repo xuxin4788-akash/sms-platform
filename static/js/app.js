@@ -224,6 +224,7 @@ function changePage(type, page) {
     else if (type === 'records') { state.records.page = page; renderRecords(document.getElementById('page-content')); }
     else if (type === 'contentSearch') { state.contentSearch.page = page; renderContentSearch(document.getElementById('page-content')); }
     else if (type === 'calls') { state.calls.page = page; loadVoiceRecords(); }
+    else if (type === 'emailRecords') { state.emailRecords.page = page; loadEmailRecords(); }
 }
 
 // ============================================================
@@ -440,11 +441,11 @@ function showMainApp() {
         state.user.permsConfigured !== true) {
         if (role === 'team_admin') {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'calls', 'content-search', 'users', 'my-account',
+                     'records', 'calls', 'email', 'email-records', 'content-search', 'users', 'my-account',
                      'my-team', 'all-teams', 'retention'];
         } else {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'calls', 'my-account'];
+                     'records', 'calls', 'email', 'email-records', 'my-account'];
         }
     }
     document.querySelectorAll('.nav-item').forEach(function(el) {
@@ -531,6 +532,11 @@ function navigateTo(page) {
         case 'send': renderSendSMS(content); break;
         case 'records': renderRecords(content); break;
         case 'calls': renderCalls(content); break;
+        case 'email': renderEmailSend(content); break;
+        case 'email-records': renderEmailRecords(content); break;
+        case 'email-config':
+            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            renderEmailConfig(content); break;
         case 'voice-config':
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
             renderVoiceConfig(content); break;
@@ -736,7 +742,7 @@ async function renderContacts(container) {
                 var linkCell = c.payment_link
                     ? '<a href="' + escapeHtml(normalizePaymentLink(c.payment_link)) + '" target="_blank" rel="noopener" class="btn btn-ghost btn-sm btn-icon" title="' + escapeHtml(c.payment_link) + '" style="color:var(--primary);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a>'
                     : '<span class="text-secondary text-sm">-</span>';
-                return '<tr><td>' + nameCell + '</td><td>' + escapeHtml(c.phone) + '</td><td>' + (c.group_name ? '<span class="badge badge-blue">' + escapeHtml(c.group_name) + '</span>' : '<span class="text-secondary text-sm">Sin grupo</span>') + '</td><td>' + remarkBadge + '</td><td>' + activityCell + '</td><td>' + amountCell + '</td><td class="text-secondary text-sm">' + escapeHtml(c.notes || '-') + '</td><td>' + linkCell + '</td><td><button class="btn btn-ghost btn-sm btn-icon" onclick="dialZoiper(\'' + escapeHtml(String(c.phone).replace(/'/g, '')) + '\',\'' + escapeHtml(String(c.name || '').replace(/'/g, '')) + '\')" title="Llamar (suena en Zoiper)" style="color:#10B981;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg></button><button class="btn btn-ghost btn-sm btn-icon" onclick="showEditContactModal(' + c.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button><button class="btn btn-ghost btn-sm btn-icon" onclick="deleteContact(' + c.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></td></tr>';
+                return '<tr><td>' + nameCell + '</td><td>' + escapeHtml(c.phone) + '</td><td class="text-secondary text-sm">' + escapeHtml(c.email || '-') + '</td><td>' + (c.group_name ? '<span class="badge badge-blue">' + escapeHtml(c.group_name) + '</span>' : '<span class="text-secondary text-sm">Sin grupo</span>') + '</td><td>' + remarkBadge + '</td><td>' + activityCell + '</td><td>' + amountCell + '</td><td class="text-secondary text-sm">' + escapeHtml(c.notes || '-') + '</td><td>' + linkCell + '</td><td><button class="btn btn-ghost btn-sm btn-icon" onclick="dialZoiper(\'' + escapeHtml(String(c.phone).replace(/'/g, '')) + '\',\'' + escapeHtml(String(c.name || '').replace(/'/g, '')) + '\')" title="Llamar (suena en Zoiper)" style="color:#10B981;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg></button><button class="btn btn-ghost btn-sm btn-icon" onclick="showEditContactModal(' + c.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button><button class="btn btn-ghost btn-sm btn-icon" onclick="deleteContact(' + c.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></td></tr>';
             }).join('');
 
         var initialHtml =
@@ -760,7 +766,7 @@ async function renderContacts(container) {
               '</select>' +
               '<button class="btn btn-sm btn-secondary" onclick="resetContactFilters()">Limpiar</button>' +
             '</div>' +
-            '</div><div class="table-container"><table><thead><tr><th>Nombre</th><th>Telefono</th><th>Grupo</th><th>Nota</th><th>Actividad</th><th>Monto</th><th>Observaciones</th><th>Link</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contacts') + '</div>';
+            '</div><div class="table-container"><table><thead><tr><th>Nombre</th><th>Telefono</th><th>Correo</th><th>Grupo</th><th>Nota</th><th>Actividad</th><th>Monto</th><th>Observaciones</th><th>Link</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contacts') + '</div>';
         container.innerHTML = initialHtml;
         applyMobileTableLabels(container);
     } catch (err) {
@@ -800,7 +806,7 @@ function showAddContactModal() {
     api('/api/groups').then(function(data) {
         var opts = data.groups.map(function(g) { return '<option value="' + g.id + '">' + escapeHtml(g.name) + '</option>'; }).join('');
         var remarkOpts = '<option value="">Sin nota</option><option value="No contactable">No contactable</option><option value="Promesa de pago">Promesa de pago</option><option value="Dispuesto a pagar sin fondos">Dispuesto a pagar sin fondos</option><option value="No dispuesto a pagar">No dispuesto a pagar</option>';
-        showModal('Nuevo Contacto', '<form id="add-contact-form" onsubmit="handleAddContact(event)"><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Nombre *</label><input type="text" name="name" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" required placeholder="+34 600 000 000"></div></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Nota</label><select name="remark">' + remarkOpts + '</select></div></div><div class="form-group"><label>Nombre de APP</label><input type="text" name="app_name" placeholder="Ej: App Recargas" maxlength="255"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Monto</label><input type="number" name="amount" step="0.01" min="0" placeholder="0.00"></div><div class="form-group"><label>Monto de descuento</label><input type="number" name="discount_amount" step="0.01" min="0" placeholder="0.00"></div></div><div class="form-group"><label>Link de pago</label><input type="text" name="payment_link" placeholder="Ej: liga.com/pago"></div><div class="form-group"><label>Observaciones</label><textarea name="notes" rows="3"></textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Guardar</button></div></form>');
+        showModal('Nuevo Contacto', '<form id="add-contact-form" onsubmit="handleAddContact(event)"><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Nombre *</label><input type="text" name="name" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" required placeholder="+34 600 000 000"></div></div><div class="form-group"><label>Correo electronico</label><input type="email" name="email" placeholder="cliente@correo.com"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Nota</label><select name="remark">' + remarkOpts + '</select></div></div><div class="form-group"><label>Nombre de APP</label><input type="text" name="app_name" placeholder="Ej: App Recargas" maxlength="255"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Monto</label><input type="number" name="amount" step="0.01" min="0" placeholder="0.00"></div><div class="form-group"><label>Monto de descuento</label><input type="number" name="discount_amount" step="0.01" min="0" placeholder="0.00"></div></div><div class="form-group"><label>Link de pago</label><input type="text" name="payment_link" placeholder="Ej: liga.com/pago"></div><div class="form-group"><label>Observaciones</label><textarea name="notes" rows="3"></textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Guardar</button></div></form>');
     });
 }
 
@@ -808,7 +814,7 @@ async function handleAddContact(event) {
     event.preventDefault();
     var form = event.target;
     try {
-        await api('/api/contacts', { method: 'POST', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), group_id: form.group_id.value || null, remark: form.remark.value, app_name: form.app_name.value.trim(), amount: form.amount.value || 0, discount_amount: form.discount_amount.value || 0, payment_link: form.payment_link.value.trim(), notes: form.notes.value.trim() } });
+        await api('/api/contacts', { method: 'POST', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), email: form.email.value.trim(), group_id: form.group_id.value || null, remark: form.remark.value, app_name: form.app_name.value.trim(), amount: form.amount.value || 0, discount_amount: form.discount_amount.value || 0, payment_link: form.payment_link.value.trim(), notes: form.notes.value.trim() } });
         hideModal(); showToast('Contacto creado exitosamente', 'success'); renderContacts(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }
 }
@@ -821,7 +827,7 @@ async function showEditContactModal(id) {
         if (!contact) return showToast('Contacto no encontrado', 'error');
         var groupOpts = groupsData.groups.map(function(g) { return '<option value="' + g.id + '"' + (contact.group_id == g.id ? ' selected' : '') + '>' + escapeHtml(g.name) + '</option>'; }).join('');
         var remarkOpts = ['No contactable', 'Promesa de pago', 'Dispuesto a pagar sin fondos', 'No dispuesto a pagar'].map(function(r) { return '<option value="' + r + '"' + (contact.remark === r ? ' selected' : '') + '>' + r + '</option>'; }).join('');
-        showModal('Editar Contacto', '<form onsubmit="handleEditContact(event, ' + id + ')"><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(contact.name) + '" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" value="' + escapeHtml(contact.phone) + '" required></div></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + groupOpts + '</select></div><div class="form-group"><label>Nota</label><select name="remark"><option value="">Sin nota</option>' + remarkOpts + '</select></div></div><div class="form-group"><label>Nombre de APP</label><input type="text" name="app_name" value="' + escapeHtml(contact.app_name || '') + '" maxlength="255"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Monto</label><input type="number" name="amount" step="0.01" min="0" value="' + escapeHtml(contact.amount != null ? String(Number(contact.amount)) : '') + '"></div><div class="form-group"><label>Monto de descuento</label><input type="number" name="discount_amount" step="0.01" min="0" value="' + escapeHtml(contact.discount_amount != null ? String(Number(contact.discount_amount)) : '') + '"></div></div><div class="form-group"><label>Link de pago</label><input type="text" name="payment_link" value="' + escapeHtml(contact.payment_link || '') + '" placeholder="Ej: liga.com/pago"></div><div class="form-group"><label>Observaciones</label><textarea name="notes" rows="3">' + escapeHtml(contact.notes || '') + '</textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+        showModal('Editar Contacto', '<form onsubmit="handleEditContact(event, ' + id + ')"><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(contact.name) + '" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" value="' + escapeHtml(contact.phone) + '" required></div></div><div class="form-group"><label>Correo electronico</label><input type="email" name="email" value="' + escapeHtml(contact.email || '') + '" placeholder="cliente@correo.com"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + groupOpts + '</select></div><div class="form-group"><label>Nota</label><select name="remark"><option value="">Sin nota</option>' + remarkOpts + '</select></div></div><div class="form-group"><label>Nombre de APP</label><input type="text" name="app_name" value="' + escapeHtml(contact.app_name || '') + '" maxlength="255"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Monto</label><input type="number" name="amount" step="0.01" min="0" value="' + escapeHtml(contact.amount != null ? String(Number(contact.amount)) : '') + '"></div><div class="form-group"><label>Monto de descuento</label><input type="number" name="discount_amount" step="0.01" min="0" value="' + escapeHtml(contact.discount_amount != null ? String(Number(contact.discount_amount)) : '') + '"></div></div><div class="form-group"><label>Link de pago</label><input type="text" name="payment_link" value="' + escapeHtml(contact.payment_link || '') + '" placeholder="Ej: liga.com/pago"></div><div class="form-group"><label>Observaciones</label><textarea name="notes" rows="3">' + escapeHtml(contact.notes || '') + '</textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
     } catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -829,7 +835,7 @@ async function handleEditContact(event, id) {
     event.preventDefault();
     var form = event.target;
     try {
-        await api('/api/contacts/' + id, { method: 'PUT', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), group_id: form.group_id.value || null, remark: form.remark.value, app_name: form.app_name.value.trim(), amount: form.amount.value || 0, discount_amount: form.discount_amount.value || 0, payment_link: form.payment_link.value.trim(), notes: form.notes.value.trim() } });
+        await api('/api/contacts/' + id, { method: 'PUT', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), email: form.email.value.trim(), group_id: form.group_id.value || null, remark: form.remark.value, app_name: form.app_name.value.trim(), amount: form.amount.value || 0, discount_amount: form.discount_amount.value || 0, payment_link: form.payment_link.value.trim(), notes: form.notes.value.trim() } });
         hideModal(); showToast('Contacto actualizado', 'success'); renderContacts(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }
 }
@@ -4374,6 +4380,331 @@ function deleteCategory(id) {
         showToast('Categoria eliminada', 'success');
         loadCategoriesForRetention();
     }).catch(function(e) { showToast(e.message || 'Error', 'error'); });
+}
+
+// ============================================================
+// Email (Correo empresarial)
+// ============================================================
+state.emailSend = { mode: 'contacts', contactList: [], filtered: [], selected: new Set(), search: '' };
+state.emailRecords = { page: 1, search: '', status: '', dateFrom: todayLocalStr(), dateTo: todayLocalStr() };
+
+async function renderEmailSend(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var [stats, groupsData] = await Promise.all([
+            api('/api/email/statistics'),
+            api('/api/groups')
+        ]);
+        window._emailGroups = groupsData.groups || [];
+        var groupOpts = window._emailGroups.map(function(g) {
+            return '<option value="' + g.id + '">' + escapeHtml(g.name) + ' (' + g.contact_count + ')</option>';
+        }).join('');
+        var simBanner = stats.configured
+            ? ''
+            : '<div class="alert alert-warning" style="margin-bottom:16px;">El servidor SMTP no esta configurado. Los correos se registraran en <strong>modo simulacion</strong>.' +
+              (state.user.role === 'admin' ? ' Configurelo en <a href="#/email-config" style="color:inherit;text-decoration:underline;">Configuracion de Correo</a>.' : ' Pida al administrador que configure el correo empresarial.') + '</div>';
+
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Correo Electronico</h1>' +
+            simBanner +
+            '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));margin-bottom:20px;">' +
+                '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></div><div class="stat-label">Total enviados</div><div class="stat-value" style="font-size:22px;">' + stats.total + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div><div class="stat-label">Entregados</div><div class="stat-value" style="font-size:22px;">' + stats.sent + '</div></div>' +
+                '<div class="stat-card" style="display:none;"></div>' +
+                '<div class="stat-card"><div class="stat-icon" style="background:#FEF2F2;color:#DC2626;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div><div class="stat-label">Fallidos</div><div class="stat-value" style="font-size:22px;">' + stats.failed + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">Tasa de exito</div><div class="stat-value" style="font-size:22px;">' + stats.success_rate + '%</div></div>' +
+            '</div>' +
+            '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><h2>Nuevo Correo Masivo</h2><a href="#/email-records" class="btn btn-secondary btn-sm">Ver registros</a></div><div class="card-body">' +
+                '<div class="send-options"><button class="tab active" onclick="switchEmailMode(\'contacts\', this)">Contactos</button><button class="tab" onclick="switchEmailMode(\'group\', this)">Por Grupo</button></div>' +
+                '<div id="email-contacts" class="form-group"><label>Destinatarios (solo contactos con correo)</label>' +
+                    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+                      '<input type="text" id="email-contact-search" placeholder="Buscar por nombre, correo o telefono..." autocomplete="off" oninput="filterEmailContactList()" style="flex:1;min-width:220px;">' +
+                      '<label class="text-secondary text-sm" style="display:flex;align-items:center;gap:6px;white-space:nowrap;"><input type="checkbox" id="email-select-all" onchange="toggleAllEmailContacts(this)"> Seleccionar visibles</label>' +
+                    '</div>' +
+                    '<div id="email-contacts-list" class="contact-select-list"></div>' +
+                    '<div id="email-contacts-count" class="text-secondary text-sm" style="margin-top:8px;"></div>' +
+                '</div>' +
+                '<div id="email-group" class="form-group" style="display:none;"><label>Grupo</label><select id="email-group-select"><option value="">-- Seleccione --</option>' + groupOpts + '</select><small class="text-secondary">Se enviara a todos los contactos del grupo que tengan correo registrado.</small></div>' +
+                '<div class="form-group mt-3"><label>Asunto *</label><input type="text" id="email-subject" maxlength="500" placeholder="Ej: Tu estado de cuenta / Recordatorio de pago"></div>' +
+                '<div class="form-group"><label>Mensaje *</label><textarea id="email-body" rows="8" placeholder="Estimado {nombre}, le recordamos que..."></textarea><div class="var-chips">' + variableChips('email-body') + '</div><small class="text-secondary">Variables por contacto: {nombre}, {telefono}, {app_name}, {amount}, {discount}, {payment_link}. Los saltos de linea se conservan.</small></div>' +
+                '<div id="email-error" class="alert alert-error" style="display:none;"></div>' +
+                '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;"><button class="btn btn-primary" id="email-send-btn" onclick="handleSendEmail()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg> Enviar Correo(s)</button><span id="email-send-hint" class="text-secondary text-sm"></span></div>' +
+            '</div></div>';
+
+        loadEmailContactsForSelection();
+    } catch (err) {
+        container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
+    }
+}
+
+function switchEmailMode(mode, btn) {
+    state.emailSend.mode = mode;
+    document.querySelectorAll('#email-contacts, #email-group').forEach(function(el) { el.style.display = 'none'; });
+    var target = document.getElementById('email-' + mode);
+    if (target) target.style.display = 'block';
+    if (btn && btn.parentNode) btn.parentNode.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    updateEmailCount();
+}
+
+async function loadEmailContactsForSelection() {
+    var list = document.getElementById('email-contacts-list');
+    if (!list) return;
+    list.innerHTML = '<p class="text-secondary">Cargando contactos...</p>';
+    try {
+        var data = await api('/api/contacts?per_page=1000');
+        state.emailSend.contactList = (data.contacts || []).filter(function(c) { return c.email && c.email.trim(); });
+        renderEmailContactList();
+    } catch (e) {
+        list.innerHTML = '<p class="text-secondary">Error al cargar contactos: ' + escapeHtml(e.message || '') + '</p>';
+    }
+}
+
+function filterEmailContactList() {
+    state.emailSend.search = (document.getElementById('email-contact-search') || {}).value || '';
+    renderEmailContactList();
+}
+
+function renderEmailContactList() {
+    var list = document.getElementById('email-contacts-list');
+    if (!list) return;
+    var q = (state.emailSend.search || '').toLowerCase();
+    var items = state.emailSend.contactList.filter(function(c) {
+        if (!q) return true;
+        return (c.name || '').toLowerCase().indexOf(q) >= 0 ||
+               (c.email || '').toLowerCase().indexOf(q) >= 0 ||
+               (c.phone || '').toLowerCase().indexOf(q) >= 0;
+    });
+    state.emailSend.filtered = items;
+    if (!items.length) {
+        list.innerHTML = '<p class="text-secondary">No hay contactos con correo que coincidan.</p>';
+    } else {
+        list.innerHTML = items.map(function(c) {
+            var ck = state.emailSend.selected.has(c.id) ? ' checked' : '';
+            return '<label class="contact-select-item"><input type="checkbox" value="' + c.id + '"' + ck + ' onchange="toggleEmailContact(' + c.id + ', this.checked)"><span><strong>' + escapeHtml(c.name || '(Sin nombre)') + '</strong> <span class="text-secondary">' + escapeHtml(c.email) + '</span></span></label>';
+        }).join('');
+    }
+    var all = document.getElementById('email-select-all');
+    if (all) all.checked = items.length > 0 && items.every(function(c) { return state.emailSend.selected.has(c.id); });
+    updateEmailCount();
+}
+
+function toggleEmailContact(id, checked) {
+    if (checked) state.emailSend.selected.add(id);
+    else state.emailSend.selected.delete(id);
+    updateEmailCount();
+}
+
+function toggleAllEmailContacts(cb) {
+    state.emailSend.filtered.forEach(function(c) {
+        if (cb.checked) state.emailSend.selected.add(c.id);
+        else state.emailSend.selected.delete(c.id);
+    });
+    renderEmailContactList();
+}
+
+function updateEmailCount() {
+    var el = document.getElementById('email-contacts-count');
+    var hint = document.getElementById('email-send-hint');
+    var n = state.emailSend.mode === 'group' ? null : state.emailSend.selected.size;
+    if (el) el.textContent = state.emailSend.mode === 'contacts' ? (n + ' contacto(s) seleccionado(s)') : '';
+    if (hint) hint.textContent = state.emailSend.mode === 'contacts' ? (n + ' destinatario(s)') : '';
+}
+
+async function handleSendEmail() {
+    var subject = (document.getElementById('email-subject') || {}).value || '';
+    var body = (document.getElementById('email-body') || {}).value || '';
+    var errEl = document.getElementById('email-error');
+    errEl.style.display = 'none';
+    if (!subject.trim() || !body.trim()) {
+        errEl.textContent = 'El asunto y el mensaje son obligatorios.';
+        errEl.style.display = 'block';
+        return;
+    }
+    var payload = { subject: subject, body: body };
+    if (state.emailSend.mode === 'group') {
+        var gid = (document.getElementById('email-group-select') || {}).value;
+        if (!gid) { errEl.textContent = 'Selecciona un grupo.'; errEl.style.display = 'block'; return; }
+        payload.mode = 'group'; payload.group_id = parseInt(gid, 10);
+    } else {
+        var ids = Array.from(state.emailSend.selected);
+        if (!ids.length) { errEl.textContent = 'Selecciona al menos un contacto con correo.'; errEl.style.display = 'block'; return; }
+        payload.mode = 'contacts'; payload.contact_ids = ids;
+    }
+    var btn = document.getElementById('email-send-btn');
+    var n = payload.mode === 'group' ? 'del grupo' : (payload.contact_ids.length + ' contacto(s)');
+    if (!confirm('Enviar correo a ' + n + '?')) return;
+    btn.disabled = true; var originalHTML = btn.innerHTML; btn.innerHTML = 'Enviando...';
+    try {
+        var res = await api('/api/email/send', { method: 'POST', body: payload });
+        showToast(res.message || 'Correos enviados', res.failed ? 'error' : 'success');
+        state.emailSend.selected.clear();
+        document.getElementById('email-subject').value = '';
+        document.getElementById('email-body').value = '';
+        renderEmailContactList();
+    } catch (e) {
+        errEl.textContent = e.message || 'Error al enviar';
+        errEl.style.display = 'block';
+    } finally {
+        btn.disabled = false; btn.innerHTML = originalHTML;
+    }
+}
+
+async function renderEmailRecords(container) {
+    container.innerHTML =
+        '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Correo</h1>' +
+        '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<input type="text" class="search-input" placeholder="Buscar correo, nombre o asunto..." value="' + escapeHtml(state.emailRecords.search) + '" onkeydown="if(event.key===\'Enter\')triggerEmailRecordSearch()" style="flex:1;min-width:200px;">' +
+            '<button class="btn btn-primary btn-sm" onclick="triggerEmailRecordSearch()">Buscar</button>' +
+            '<select onchange="handleEmailRecordStatus(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.emailRecords.status === 'sent' ? ' selected' : '') + '>Enviado</option><option value="simulated"' + (state.emailRecords.status === 'simulated' ? ' selected' : '') + '>Simulado</option><option value="failed"' + (state.emailRecords.status === 'failed' ? ' selected' : '') + '>Fallido</option></select>' +
+            '<input type="date" lang="es" value="' + state.emailRecords.dateFrom + '" onchange="handleEmailRecordDateFrom(this.value)">' +
+            '<input type="date" lang="es" value="' + state.emailRecords.dateTo + '" onchange="handleEmailRecordDateTo(this.value)">' +
+            '<button class="btn btn-primary btn-sm" onclick="setEmailRecordsToday()">Hoy</button>' +
+            '<button class="btn btn-secondary btn-sm" onclick="clearEmailRecordFilters()">Limpiar</button>' +
+        '</div></div><div id="email-records-body"><div class="text-center text-secondary" style="padding:24px;">Cargando...</div></div></div>';
+    loadEmailRecords();
+}
+
+function emailRecordQuery() {
+    var s = state.emailRecords;
+    var p = new URLSearchParams();
+    p.set('page', s.page); p.set('per_page', 20);
+    if (s.search) p.set('search', s.search);
+    if (s.status) p.set('status', s.status);
+    if (s.dateFrom) p.set('date_from', s.dateFrom);
+    if (s.dateTo) p.set('date_to', s.dateTo);
+    return p.toString();
+}
+
+async function loadEmailRecords() {
+    var body = document.getElementById('email-records-body');
+    if (!body) return;
+    try {
+        var data = await api('/api/email/records?' + emailRecordQuery());
+        var labels = { sent: ['Enviado', 'badge-green'], simulated: ['Simulado', 'badge-blue'], failed: ['Fallido', 'badge-red'], pending: ['Pendiente', 'badge-yellow'] };
+        var rows = (data.records || []).map(function(r) {
+            var lb = labels[r.status] || [r.status, 'badge-gray'];
+            var dt = r.created_at ? new Date(r.created_at.replace(' ', 'T')).toLocaleString() : '-';
+            var err = r.error_msg ? '<div class="text-secondary text-sm" style="color:#DC2626;">' + escapeHtml(r.error_msg) + '</div>' : '';
+            return '<tr><td style="white-space:nowrap;">' + dt + '</td><td>' + escapeHtml(r.recipient_email) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td>' + escapeHtml(r.subject || '') + '</td><td><span class="badge ' + lb[1] + '">' + lb[0] + '</span>' + err + '</td></tr>';
+        }).join('');
+        if (!rows) rows = '<tr><td colspan="5" class="text-center text-secondary" style="padding:24px;">Sin registros.</td></tr>';
+        body.innerHTML = '<div class="table-container"><table><thead><tr><th>Fecha</th><th>Correo</th><th>Nombre</th><th>Asunto</th><th>Estado</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+            renderPagination(data, 'emailRecords') +
+            '<div style="padding:0 16px 16px;" class="text-secondary text-sm">Total: ' + data.total + '</div>';
+    } catch (e) {
+        body.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
+    }
+}
+
+function triggerEmailRecordSearch() {
+    var input = document.querySelector('#email-records-body') ? document.querySelector('.toolbar .search-input') : null;
+    state.emailRecords.search = input ? input.value.trim() : state.emailRecords.search;
+    state.emailRecords.page = 1;
+    loadEmailRecords();
+}
+function handleEmailRecordStatus(v) { state.emailRecords.status = v; state.emailRecords.page = 1; loadEmailRecords(); }
+function handleEmailRecordDateFrom(v) { state.emailRecords.dateFrom = v; state.emailRecords.page = 1; loadEmailRecords(); }
+function handleEmailRecordDateTo(v) { state.emailRecords.dateTo = v; state.emailRecords.page = 1; loadEmailRecords(); }
+function setEmailRecordsToday() { state.emailRecords.dateFrom = todayLocalStr(); state.emailRecords.dateTo = todayLocalStr(); state.emailRecords.page = 1; navigateRefreshSafe(); }
+function clearEmailRecordFilters() { state.emailRecords = { page: 1, search: '', status: '', dateFrom: '', dateTo: '' }; navigateRefreshSafe(); }
+// Re-render current records page after a filter reset/today action
+function navigateRefreshSafe() {
+    var c = document.getElementById('page-content');
+    if ((location.hash || '').indexOf('email-records') >= 0) renderEmailRecords(c);
+    else loadEmailRecords();
+}
+
+// ---- Admin SMTP config ----
+async function renderEmailConfig(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var [prov, cfg] = await Promise.all([
+            api('/api/config/email/providers'),
+            api('/api/config/email').catch(function() { return { configured: false }; })
+        ]);
+        window._emailProviders = prov.providers || [];
+        cfg = cfg || {};
+        var provOpts = window._emailProviders.map(function(p) {
+            return '<option value="' + p.key + '"' + (cfg.provider === p.key ? ' selected' : '') + '>' + escapeHtml(p.label) + '</option>';
+        }).join('');
+        var pwdPlaceholder = cfg.has_password ? '•••••••• (dejar vacio para conservar)' : 'Contrasena o clave SMTP';
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Configuracion de Correo (SMTP)</h1>' +
+            '<div class="card mb-4"><div class="card-body">' +
+              '<div class="' + (cfg.configured ? 'alert alert-success' : 'alert alert-warning') + '" style="margin-bottom:16px;">' +
+                (cfg.configured ? 'SMTP configurado. Los correos se envian realmente.' : 'Aun no configurado: los envios quedan en modo simulacion.') +
+              '</div>' +
+              '<form onsubmit="handleSaveEmailConfig(event)">' +
+                '<div class="form-group"><label>Proveedor</label><select id="em-provider" onchange="applyEmailProviderPreset(this.value)">' + provOpts + '</select><small class="text-secondary">Elegir un proveedor autocompleta servidor y puerto; puedes ajustarlos despues.</small></div>' +
+                '<div class="form-row" style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;">' +
+                  '<div class="form-group"><label>Servidor SMTP (host)</label><input id="em-host" type="text" value="' + escapeHtml(cfg.host || '') + '" placeholder="smtp.ejemplo.com"></div>' +
+                  '<div class="form-group"><label>Puerto</label><input id="em-port" type="number" value="' + (cfg.port != null ? cfg.port : 587) + '"></div>' +
+                  '<div class="form-group"><label>Seguridad</label><select id="em-security"><option value="tls"' + ((cfg.use_tls && !cfg.use_ssl) ? ' selected' : '') + '>STARTTLS (587)</option><option value="ssl"' + (cfg.use_ssl ? ' selected' : '') + '>SSL (465)</option><option value="none"' + ((!cfg.use_tls && !cfg.use_ssl) ? ' selected' : '') + '>Ninguno (25)</option></select></div>' +
+                '</div>' +
+                '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+                  '<div class="form-group"><label>Usuario SMTP</label><input id="em-username" type="text" value="' + escapeHtml(cfg.username || '') + '" placeholder="usuario@tuempresa.com"></div>' +
+                  '<div class="form-group"><label>Contrasena SMTP</label><input id="em-password" type="password" autocomplete="new-password" placeholder="' + pwdPlaceholder + '"></div>' +
+                '</div>' +
+                '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+                  '<div class="form-group"><label>Correo remitente (From)</label><input id="em-from" type="email" value="' + escapeHtml(cfg.from_email || '') + '" placeholder="usuario@tuempresa.com"></div>' +
+                  '<div class="form-group"><label>Nombre remitente</label><input id="em-fromname" type="text" value="' + escapeHtml(cfg.from_name || '') + '" placeholder="Mi Empresa"></div>' +
+                '</div>' +
+                '<div class="form-group"><label class="text-secondary text-sm" style="display:flex;align-items:center;gap:8px;font-weight:400;"><input type="checkbox" id="em-active"' + (cfg.is_active === false ? '' : ' checked') + '> Configuracion activa</label></div>' +
+                '<div id="em-msg"></div>' +
+                '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="submit" class="btn btn-primary">Guardar configuracion</button><button type="button" class="btn btn-secondary" onclick="handleTestEmailConfig()">Enviar correo de prueba</button></div>' +
+              '</form>' +
+            '</div></div>' +
+            '<div class="card"><div class="card-body"><h3 style="margin-bottom:8px;">Proveedores soportados</h3><p class="text-secondary text-sm" style="margin-bottom:8px;">Microsoft 365 / Google Workspace usan autenticacion de aplicacion: en Google activa la verificacion en 2 pasos y crea una "contrasena de aplicacion"; en Microsoft usa una cuenta con SMTP AUTH habilitado. Amazon SES, Mailgun y SendGrid generan credenciales SMTP dedicadas en su consola.</p></div></div>';
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
+    }
+}
+
+function applyEmailProviderPreset(key) {
+    var p = (window._emailProviders || []).find(function(x) { return x.key === key; });
+    if (!p) return;
+    var host = document.getElementById('em-host'), port = document.getElementById('em-port'), sec = document.getElementById('em-security');
+    if (host && p.host && !host.value) host.value = p.host;
+    else if (host && p.host) host.value = p.host;
+    if (port) port.value = p.port;
+    if (sec) sec.value = p.use_ssl ? 'ssl' : (p.use_tls ? 'tls' : 'none');
+}
+
+function emailConfigPayload() {
+    var sec = document.getElementById('em-security').value;
+    return {
+        provider: document.getElementById('em-provider').value,
+        host: document.getElementById('em-host').value.trim(),
+        port: parseInt(document.getElementById('em-port').value || '587', 10),
+        use_ssl: sec === 'ssl',
+        use_tls: sec === 'tls',
+        username: document.getElementById('em-username').value.trim(),
+        password: document.getElementById('em-password').value,
+        from_email: document.getElementById('em-from').value.trim(),
+        from_name: document.getElementById('em-fromname').value.trim(),
+        is_active: document.getElementById('em-active').checked
+    };
+}
+
+async function handleSaveEmailConfig(e) {
+    e.preventDefault();
+    var msg = document.getElementById('em-msg');
+    msg.innerHTML = '';
+    try {
+        await api('/api/config/email', { method: 'POST', body: emailConfigPayload() });
+        msg.innerHTML = '<div class="alert alert-success">Configuracion guardada.</div>';
+        renderEmailConfig(document.getElementById('page-content'));
+    } catch (err) { msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(err.message) + '</div>'; }
+}
+
+async function handleTestEmailConfig() {
+    var msg = document.getElementById('em-msg');
+    msg.innerHTML = '<div class="alert alert-info">Enviando prueba...</div>';
+    try {
+        var res = await api('/api/config/email/test', { method: 'POST', body: { to: document.getElementById('em-from').value.trim() } });
+        msg.innerHTML = '<div class="alert alert-success">' + escapeHtml(res.message || 'Prueba enviada') + '</div>';
+    } catch (err) { msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(err.message) + '</div>'; }
 }
 
 // ============================================================

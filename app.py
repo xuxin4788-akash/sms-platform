@@ -282,6 +282,7 @@ def init_db():
                 amount NUMERIC(14,2) DEFAULT 0,
                 discount_amount NUMERIC(14,2) DEFAULT 0,
                 payment_link TEXT DEFAULT '',
+                email VARCHAR(255) DEFAULT '',
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
@@ -292,6 +293,34 @@ def init_db():
                 category VARCHAR(50) DEFAULT 'general',
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS email_config (
+                id SERIAL PRIMARY KEY,
+                provider VARCHAR(40) DEFAULT 'custom',
+                host VARCHAR(255) DEFAULT '',
+                port INTEGER DEFAULT 587,
+                use_ssl BOOLEAN DEFAULT FALSE,
+                use_tls BOOLEAN DEFAULT TRUE,
+                username VARCHAR(255) DEFAULT '',
+                password VARCHAR(255) DEFAULT '',
+                from_email VARCHAR(255) DEFAULT '',
+                from_name VARCHAR(255) DEFAULT '',
+                is_active BOOLEAN DEFAULT TRUE,
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS email_records (
+                id SERIAL PRIMARY KEY,
+                recipient_email VARCHAR(255) NOT NULL,
+                contact_name VARCHAR(255) DEFAULT '',
+                subject VARCHAR(500) DEFAULT '',
+                body TEXT DEFAULT '',
+                status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'simulated')),
+                error_msg TEXT DEFAULT '',
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                sent_at TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS sms_records (
@@ -545,6 +574,8 @@ def init_db():
             cur.execute("ALTER TABLE contacts ADD COLUMN discount_amount NUMERIC(14,2) DEFAULT 0")
         if not pg_column_exists('contacts', 'payment_link'):
             cur.execute("ALTER TABLE contacts ADD COLUMN payment_link TEXT DEFAULT ''")
+        if not pg_column_exists('contacts', 'email'):
+            cur.execute("ALTER TABLE contacts ADD COLUMN email VARCHAR(255) DEFAULT ''")
 
         # sms_records migrations
         if not pg_column_exists('sms_records', 'msgid'):
@@ -781,8 +812,38 @@ def init_db():
                 amount REAL DEFAULT 0,
                 discount_amount REAL DEFAULT 0,
                 payment_link TEXT DEFAULT '',
+                email TEXT DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (group_id) REFERENCES contact_groups(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS email_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT DEFAULT 'custom',
+                host TEXT DEFAULT '',
+                port INTEGER DEFAULT 587,
+                use_ssl INTEGER DEFAULT 0,
+                use_tls INTEGER DEFAULT 1,
+                username TEXT DEFAULT '',
+                password TEXT DEFAULT '',
+                from_email TEXT DEFAULT '',
+                from_name TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS email_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipient_email TEXT NOT NULL,
+                contact_name TEXT DEFAULT '',
+                subject TEXT DEFAULT '',
+                body TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'simulated')),
+                error_msg TEXT DEFAULT '',
+                created_by INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                sent_at TEXT,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS templates (
@@ -1306,6 +1367,16 @@ def init_db():
             cols = [row[1] for row in cursor.fetchall()]
             if 'global_daily_sms_limit' not in cols:
                 db.execute("ALTER TABLE team_config ADD COLUMN global_daily_sms_limit INTEGER DEFAULT 0")
+                db.commit()
+        except Exception:
+            pass
+
+        # Migration: add email to contacts
+        try:
+            cursor = db.execute("PRAGMA table_info(contacts)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if 'email' not in cols:
+                db.execute("ALTER TABLE contacts ADD COLUMN email TEXT DEFAULT ''")
                 db.commit()
         except Exception:
             pass
@@ -2419,6 +2490,11 @@ def get_me():
             # respecting an admin who explicitly sets permissions to [].
             if has_explicit_config:
                 permissions = raw_perms or []
+                # Auto-grant newly introduced messaging pages to existing roles
+                # so a feature launch never hides email from configured teams.
+                for _newp in ('email', 'email-records'):
+                    if _newp not in permissions:
+                        permissions.append(_newp)
                 perms_configured = True
             else:
                 permissions = list(DEFAULT_ROLE_PERMISSIONS.get(role, []))
@@ -3633,6 +3709,8 @@ AVAILABLE_PAGES = [
     {'id': 'send', 'label': 'Enviar SMS', 'icon': 'send'},
     {'id': 'records', 'label': 'Registros SMS', 'icon': 'activity'},
     {'id': 'calls', 'label': 'Llamadas', 'icon': 'phone'},
+    {'id': 'email', 'label': 'Correos', 'icon': 'mail'},
+    {'id': 'email-records', 'label': 'Registros de Correo', 'icon': 'activity'},
     {'id': 'content-search', 'label': 'Buscar Contenido', 'icon': 'search'},
     {'id': 'users', 'label': 'Usuarios', 'icon': 'user-plus'},
     {'id': 'my-account', 'label': 'Mi Cuenta', 'icon': 'user'},
@@ -3651,12 +3729,12 @@ DEFAULT_ROLE_PERMISSIONS = {
     'admin': [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions'],
     'team_admin': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams',
+        'calls', 'email', 'email-records', 'content-search', 'users', 'my-account', 'my-team', 'all-teams',
         'retention',
     ],
     'team_member': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'my-account',
+        'calls', 'email', 'email-records', 'my-account',
     ],
 }
 
@@ -4034,6 +4112,7 @@ def create_contact():
     amount = _parse_money(data.get('amount'))
     discount_amount = _parse_money(data.get('discount_amount'))
     payment_link = (data.get('payment_link') or '').strip()
+    email = (data.get('email') or '').strip()[:255]
     group_id = data.get('group_id', None)
     if not name or not phone:
         return jsonify({'error': 'Nombre y telefono son requeridos'}), 400
@@ -4051,9 +4130,9 @@ def create_contact():
         if not group:
             group_id = None
     db.execute(
-        "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, created_by) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link,
+        "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, created_by) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email,
          session.get('user_id'))
     )
     db.commit()
@@ -4136,9 +4215,10 @@ def update_contact(contact_id):
     amount = _parse_money(data.get('amount', contact['amount']))
     discount_amount = _parse_money(data.get('discount_amount', contact['discount_amount']))
     payment_link = (str(data.get('payment_link', contact['payment_link'] or '') or '')).strip()
+    email = (str(data.get('email', contact['email'] if 'email' in contact.keys() else '') or '')).strip()[:255]
     db.execute(
-        "UPDATE contacts SET name=?, phone=?, notes=?, remark=?, group_id=?, app_name=?, amount=?, discount_amount=?, payment_link=? WHERE id=?",
-        (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, contact_id)
+        "UPDATE contacts SET name=?, phone=?, notes=?, remark=?, group_id=?, app_name=?, amount=?, discount_amount=?, payment_link=?, email=? WHERE id=?",
+        (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, contact_id)
     )
     db.commit()
     return jsonify({'message': 'Contacto actualizado'})
@@ -4167,10 +4247,11 @@ def download_contact_template():
     # Write UTF-8 BOM so Excel opens the file with correct encoding
     buf.write('\ufeff')
     writer = csv.writer(buf)
-    writer.writerow(['name', 'phone', 'notes', 'remark', 'app_name', 'amount', 'discount_amount', 'payment_link'])
+    writer.writerow(['name', 'phone', 'email', 'notes', 'remark', 'app_name', 'amount', 'discount_amount', 'payment_link'])
     writer.writerow([
         'Juan Perez',
         '5215512345678',
+        'juan.perez@ejemplo.com',
         'Cliente interesado en promo MXN',
         'Dispuesto a pagar sin fondos',
         'App Recargas',
@@ -4181,6 +4262,7 @@ def download_contact_template():
     writer.writerow([
         'Maria Lopez',
         '5215587654321',
+        'maria.lopez@ejemplo.com',
         'No molestar despues de las 20h',
         'No contactable',
         '',
@@ -4191,6 +4273,7 @@ def download_contact_template():
     writer.writerow([
         'Carlos Ruiz',
         '5215511223344',
+        'carlos.ruiz@ejemplo.com',
         '',
         'Promesa de pago',
         'App Prestamos',
@@ -4246,13 +4329,14 @@ def import_contacts():
             amount = _parse_money(row.get('amount') or row.get('monto'))
             discount_amount = _parse_money(row.get('discount_amount') or row.get('descuento'))
             payment_link = (row.get('payment_link') or row.get('link_pago') or row.get('url_pago') or '').strip()
+            email = (row.get('email') or row.get('correo') or row.get('e-mail') or '').strip()[:255]
             if not name or not phone:
                 errors.append(f"Fila {i}: nombre y telefono son requeridos")
                 continue
             db.execute(
-                "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, owner_id)
+                "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, owner_id)
             )
             imported += 1
         db.commit()
@@ -8031,6 +8115,341 @@ def delete_extension(ext_id):
     db.execute("DELETE FROM extensions WHERE id=?", (ext_id,))
     db.commit()
     return jsonify({'message': 'Extension eliminada'})
+
+
+# ============================================================
+# Email (Correo empresarial via SMTP)
+# ============================================================
+
+EMAIL_PROVIDER_PRESETS = {
+    'microsoft365': {'label': 'Microsoft 365 (Outlook)', 'host': 'smtp.office365.com', 'port': 587, 'use_ssl': False, 'use_tls': True},
+    'gmail':         {'label': 'Google Workspace (Gmail)', 'host': 'smtp.gmail.com', 'port': 465, 'use_ssl': True, 'use_tls': False},
+    'ses':           {'label': 'Amazon SES', 'host': 'email-smtp.us-east-1.amazonaws.com', 'port': 587, 'use_ssl': False, 'use_tls': True},
+    'mailgun':       {'label': 'Mailgun', 'host': 'smtp.mailgun.org', 'port': 587, 'use_ssl': False, 'use_tls': True},
+    'sendgrid':      {'label': 'SendGrid', 'host': 'smtp.sendgrid.net', 'port': 587, 'use_ssl': False, 'use_tls': True},
+    'tencent':       {'label': 'Tencent Exmail', 'host': 'smtp.exmail.qq.com', 'port': 465, 'use_ssl': True, 'use_tls': False},
+    'aliyun':        {'label': 'Aliyun Enterprise', 'host': 'smtp.qiye.aliyun.com', 'port': 465, 'use_ssl': True, 'use_tls': False},
+    'custom':        {'label': 'Otro / Personalizado', 'host': '', 'port': 587, 'use_ssl': False, 'use_tls': True},
+}
+
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+
+
+def get_email_config_row():
+    db = get_db()
+    return db.execute("SELECT * FROM email_config ORDER BY id LIMIT 1").fetchone()
+
+
+def get_email_config():
+    row = get_email_config_row()
+    if not row:
+        return None
+    return dict(row)
+
+
+def is_email_configured():
+    cfg = get_email_config()
+    return bool(cfg and cfg.get('host') and cfg.get('username') and cfg.get('password')
+                and cfg.get('from_email'))
+
+
+def send_email_via_smtp(cfg, to_email, subject, body_html):
+    """Send one email through SMTP. Raises on failure. Returns (ok, error)."""
+    import smtplib
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    from_name = (cfg.get('from_name') or '').strip()
+    from_email = cfg['from_email'].strip()
+    msg['From'] = f'{from_name} <{from_email}>' if from_name else from_email
+    msg['To'] = to_email
+    msg['Subject'] = subject
+    # Plain text fallback: strip tags minimally.
+    plain = re.sub(r'<br\s*/?>', '\n', body_html or '')
+    plain = re.sub(r'</p\s*>', '\n', plain, flags=re.I)
+    plain = re.sub(r'<[^>]+>', '', plain)
+    msg.set_content(plain.strip() or body_html or '')
+    msg.add_alternative(body_html or '', subtype='html')
+
+    host = cfg['host'].strip()
+    port = int(cfg.get('port') or 587)
+    use_ssl = bool(cfg.get('use_ssl'))
+    use_tls = bool(cfg.get('use_tls'))
+    if use_ssl:
+        server = smtplib.SMTP_SSL(host, port, timeout=25)
+    else:
+        server = smtplib.SMTP(host, port, timeout=25)
+    try:
+        server.ehlo()
+        if use_tls and not use_ssl:
+            server.starttls()
+            server.ehlo()
+        server.login(cfg['username'].strip(), cfg.get('password') or '')
+        server.send_message(msg)
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            pass
+    return True, ''
+
+
+def _email_html_body(plain):
+    """Turn plain-text-with-vars into a simple styled HTML email."""
+    esc = (plain or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    esc = esc.replace('\n', '<br>')
+    return (
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
+        'color:#1E293B;line-height:1.6;">' + esc + '</div>'
+    )
+
+
+@app.route('/api/config/email/providers', methods=['GET'])
+@login_required
+def email_providers():
+    return jsonify({'providers': [{'key': k, **v} for k, v in EMAIL_PROVIDER_PRESETS.items()]})
+
+
+@app.route('/api/config/email', methods=['GET'])
+@admin_required
+def get_email_config_api():
+    cfg = get_email_config()
+    if not cfg:
+        return jsonify({'configured': False, 'has_password': False})
+    cfg.pop('password', None)
+    cfg['configured'] = is_email_configured()
+    cfg['has_password'] = bool(get_email_config_row()['password'])
+    return jsonify(cfg)
+
+
+@app.route('/api/config/email', methods=['POST', 'PUT'])
+@admin_required
+def save_email_config_api():
+    data = request.get_json() or {}
+    provider = (data.get('provider') or 'custom').strip()
+    preset = EMAIL_PROVIDER_PRESETS.get(provider, EMAIL_PROVIDER_PRESETS['custom'])
+    host = (data.get('host') or preset['host'] or '').strip()
+    port = int(data.get('port') or preset['port'] or 587)
+    use_ssl = bool(data.get('use_ssl', preset['use_ssl']))
+    use_tls = bool(data.get('use_tls', preset['use_tls']))
+    username = (data.get('username') or '').strip()
+    from_email = (data.get('from_email') or '').strip()
+    from_name = (data.get('from_name') or '').strip()
+    is_active = bool(data.get('is_active', True))
+    password = data.get('password')  # None/'' => keep existing
+
+    db = get_db()
+    row = get_email_config_row()
+    now = datetime.now()
+    if row:
+        new_pwd = row['password']
+        if password not in (None, ''):
+            new_pwd = password
+        db.execute(
+            "UPDATE email_config SET provider=?, host=?, port=?, use_ssl=?, use_tls=?, "
+            "username=?, password=?, from_email=?, from_name=?, is_active=?, updated_at=? "
+            "WHERE id=?",
+            (provider, host, port, use_ssl, use_tls, username, new_pwd,
+             from_email, from_name, is_active, now, row['id'])
+        )
+    else:
+        db.execute(
+            "INSERT INTO email_config (provider, host, port, use_ssl, use_tls, username, password, "
+            "from_email, from_name, is_active, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (provider, host, port, use_ssl, use_tls, username,
+             password or '', from_email, from_name, is_active, now)
+        )
+    db.commit()
+    return jsonify({'message': 'Configuracion de correo guardada'})
+
+
+@app.route('/api/config/email/test', methods=['POST'])
+@admin_required
+def test_email_config_api():
+    cfg = get_email_config()
+    if not cfg:
+        return jsonify({'error': 'El correo no esta configurado'}), 400
+    data = request.get_json(silent=True) or {}
+    to = (data.get('to') or cfg.get('from_email') or '').strip()
+    if not EMAIL_RE.match(to or ''):
+        return jsonify({'error': 'Correo de prueba invalido'}), 400
+    try:
+        send_email_via_smtp(
+            cfg, to, 'Prueba SMS Marketing',
+            _email_html_body('Este es un correo de prueba enviado correctamente desde la plataforma SMS Marketing.')
+        )
+        return jsonify({'message': f'Correo de prueba enviado a {to}'})
+    except Exception as e:
+        return jsonify({'error': f'No se pudo enviar: {str(e)}'}), 400
+
+
+def _email_scope_where(user, alias='r'):
+    """Visibility scope for email records, mirroring SMS/voice."""
+    uid = user['id']
+    role = user['role']
+    if role == 'admin':
+        return "1=1", []
+    if role == 'team_admin':
+        return (f"({alias}.created_by = ? OR {alias}.created_by IN "
+                f"(SELECT id FROM users WHERE team_creator_id = ?))"), [uid, uid]
+    return f"{alias}.created_by=?", [uid]
+
+
+@app.route('/api/email/send', methods=['POST'])
+@login_required
+def send_email():
+    data = request.get_json(silent=True) or {}
+    mode = data.get('mode', 'contacts')
+    contact_ids = data.get('contact_ids') or []
+    group_id = data.get('group_id')
+    subject_tpl = (data.get('subject') or '').strip()
+    body_tpl = (data.get('body') or '').strip()
+    if not subject_tpl or not body_tpl:
+        return jsonify({'error': 'Asunto y mensaje son requeridos'}), 400
+
+    db = get_db()
+    user = g.user
+    # Resolve target contacts (must have an email)
+    if mode == 'group' and group_id:
+        where, params = _contact_visible_where('c')
+        rows = db.execute(
+            f"SELECT id, name, phone, email, app_name, amount, discount_amount, payment_link, notes, remark "
+            f"FROM contacts c WHERE c.group_id=? AND COALESCE(c.email,'')<>'' AND {where}",
+            [int(group_id)] + params
+        ).fetchall()
+    else:
+        if not isinstance(contact_ids, list) or not contact_ids:
+            return jsonify({'error': 'Selecciona al menos un contacto con correo'}), 400
+        where, params = _contact_visible_where('c')
+        ph = ','.join(['?'] * len(contact_ids))
+        rows = db.execute(
+            f"SELECT id, name, phone, email, app_name, amount, discount_amount, payment_link, notes, remark "
+            f"FROM contacts c WHERE c.id IN ({ph}) AND COALESCE(c.email,'')<>'' AND {where}",
+            [int(x) for x in contact_ids] + params
+        ).fetchall()
+
+    targets = []
+    seen = set()
+    for r in rows:
+        email = (r['email'] or '').strip()
+        if not EMAIL_RE.match(email) or email.lower() in seen:
+            continue
+        seen.add(email.lower())
+        targets.append((dict(r), email))
+    if not targets:
+        return jsonify({'error': 'Ningun contacto valido con correo electronico'}), 400
+
+    cfg = get_email_config()
+    simulated = not (cfg and is_email_configured())
+
+    def render(text, c):
+        msg = text.replace('{nombre}', c.get('name') or '')
+        msg = msg.replace('{telefono}', c.get('phone') or '')
+        msg = msg.replace('{app_name}', c.get('app_name') or '')
+        msg = msg.replace('{amount}', _fmt_money(c.get('amount') or 0))
+        msg = msg.replace('{discount}', _fmt_money(c.get('discount_amount') or 0))
+        msg = msg.replace('{payment_link}', c.get('payment_link') or '')
+        return msg
+
+    results = []
+    sent = failed = 0
+    uid = user['id']
+    now = datetime.now()
+    for c, email in targets:
+        subj = render(subject_tpl, c)
+        html = _email_html_body(render(body_tpl, c))
+        status, err = 'sent', ''
+        if simulated:
+            status = 'simulated'
+            sent += 1
+        else:
+            try:
+                send_email_via_smtp(cfg, email, subj, html)
+                sent += 1
+            except Exception as e:
+                status, err = 'failed', str(e)[:500]
+                failed += 1
+        db.execute(
+            "INSERT INTO email_records (recipient_email, contact_name, subject, body, status, error_msg, created_by, created_at, sent_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (email, c.get('name') or '', subj, html, status, err, uid, now, now)
+        )
+        results.append({'email': email, 'name': c.get('name') or '', 'status': status, 'error': err})
+    db.commit()
+    return jsonify({
+        'message': f'{sent} correo(s) enviado(s)' + (' (modo simulacion - SMTP no configurado)' if simulated else ''),
+        'sent': sent, 'failed': failed, 'simulated': simulated, 'results': results,
+    })
+
+
+@app.route('/api/email/records', methods=['GET'])
+@login_required
+def email_records_api():
+    db = get_db()
+    user = g.user
+    page = max(1, int(request.args.get('page', 1)))
+    per_page = min(200, max(1, int(request.args.get('per_page', 20))))
+    search = request.args.get('search', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    where, params = _email_scope_where(user)
+    if search:
+        where += " AND (r.recipient_email LIKE ? OR r.contact_name LIKE ? OR r.subject LIKE ?)"
+        params += [f'%{search}%'] * 3
+    if date_from:
+        where += " AND DATE(r.created_at) >= ?"
+        params.append(date_from)
+    if date_to:
+        where += " AND DATE(r.created_at) <= ?"
+        params.append(date_to)
+    total = db.execute(f"SELECT COUNT(*) AS total FROM email_records r WHERE {where}", params).fetchone()['total']
+    offset = (page - 1) * per_page
+    rows = db.execute(
+        f"SELECT r.*, u.username AS sender_username, u.full_name AS sender_full_name "
+        f"FROM email_records r LEFT JOIN users u ON u.id=r.created_by "
+        f"WHERE {where} ORDER BY r.created_at DESC LIMIT ? OFFSET ?",
+        params + [per_page, offset]
+    ).fetchall()
+    return jsonify({
+        'records': [dict(r) for r in rows], 'total': total, 'page': page,
+        'per_page': per_page, 'total_pages': (total + per_page - 1) // per_page,
+    })
+
+
+@app.route('/api/email/statistics', methods=['GET'])
+@login_required
+def email_statistics_api():
+    db = get_db()
+    user = g.user
+    where, params = _email_scope_where(user)
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    if date_from:
+        where += " AND DATE(created_at) >= ?"; params.append(date_from)
+    if date_to:
+        where += " AND DATE(created_at) <= ?"; params.append(date_to)
+    row = db.execute(
+        f"SELECT COUNT(*) AS total, "
+        f"SUM(CASE WHEN status IN ('sent','simulated') THEN 1 ELSE 0 END) AS sent, "
+        f"SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed "
+        f"FROM email_records WHERE {where}", params
+    ).fetchone()
+    total = int(row['total'] or 0)
+    sent = int(row['sent'] or 0)
+    failed = int(row['failed'] or 0)
+    # last 7 days (date filter reused for the windowed query)
+    cutoff = (datetime.now() - timedelta(days=6)).strftime('%Y-%m-%d')
+    chart_where = where + " AND DATE(created_at) >= ?"
+    chart_params = params + [cutoff]
+    chart = db.execute(
+        f"SELECT DATE(created_at) AS d, COUNT(*) AS n FROM email_records "
+        f"WHERE {chart_where} GROUP BY DATE(created_at)", chart_params
+    ).fetchall()
+    return jsonify({
+        'total': total, 'sent': sent, 'failed': failed,
+        'success_rate': round(sent * 100.0 / total, 1) if total else 0.0,
+        'configured': is_email_configured(),
+        'last_7_days': [{'date': r['d'], 'count': int(r['n'] or 0)} for r in chart],
+    })
 
 
 init_db()
