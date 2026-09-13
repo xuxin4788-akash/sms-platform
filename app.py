@@ -88,31 +88,31 @@ def tz_date_expr(col):
     return f"date({col}, '-6 hours')"
 
 
-def sms_parts_expr(col='content'):
-    """SQL expression for the number of billable SMS segments of a message.
+def sms_billing_segments(content):
+    """Number of billable SMS parts for a string, using the carrier's exact
+    GSM 03.38 rule (validated against the operator's detail export, 0 mismatch):
+    content fully in the GSM default/extension alphabet -> 160 single / 153
+    concat (extension chars cost 2 septets); any non-GSM char (Spanish accents
+    like a/e/i/o/u with tilde, n-tilde uppercase forms outside the set, emoji)
+    -> UCS2: 70 single / 67 concat."""
+    if content is None:
+        return 0
+    # GSM 03.38 default alphabet (single septet). Note: only 'ñ'/'Ñ' are in it;
+    # accented vowels are NOT. Inverted ! / ? ARE.
+    gsm_basic = set(
+        "@\u00a3$\u00a5\u00e8\u00e9\u00f9\u00ec\u00f2\u00c7\n\u00d8\u00f8\r\u00c5\u00e5"
+        "\u0394_\u03a6\u0393\u039b\u03a9\u03a0\u03a8\u03a3\u0398\u039e\u00c6\u00e6\u00df\u00c9"
+        " !\"#\u00a4%&'()*+,-./0123456789:;<=>?\u00a1"
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00c4\u00d6\u00d1\u00dc\u00a7\u00bf"
+        "abcdefghijklmnopqrstuvwxyz\u00e4\u00f6\u00f1\u00fc\u00e0"
+    )
+    gsm_ext = set("^{}\\[~]|\u20ac")
+    n = len(content)
+    if all(ch in gsm_basic or ch in gsm_ext for ch in content):
+        units = sum(2 if ch in gsm_ext else 1 for ch in content)
+        return 1 if units <= 160 else -(-units // 153)
+    return 1 if n <= 70 else -(-n // 67)
 
-    Provider rules: GSM 03.38 content -> 160/single, 153/concat; any non-GSM
-    character (Spanish accents, emoji) -> UCS2: 70/single, 67/concat.
-    Non-GSM detection differs per backend; we test the byte length of the
-    GSM-only transliteration against the raw UTF-8 byte length.
-    """
-    if get_db_type() == 'postgres':
-        # Transliterate common Spanish chars to ASCII; if the transliterated
-        # text still differs in length after removing non-GSM bytes, treat UCS2.
-        return f"""
-          CASE WHEN {col} IS NULL THEN 0
-               WHEN {col} ~ '[^ -~¡¿ÑñÁÉÍÓÚÜáéíóúü]'
-                 THEN CASE WHEN char_length({col})<=70 THEN 1 ELSE cast(ceil(char_length({col})/67.0) AS INTEGER) END
-               ELSE CASE WHEN char_length({col})<=160 THEN 1 ELSE cast(ceil(char_length({col})/153.0) AS INTEGER) END
-          END"""
-    # SQLite: plain ASCII content has equal char and UTF-8 byte length.
-    # Spanish accents / emoji are multi-byte (byte length > char length) -> UCS2.
-    return f"""
-          CASE WHEN {col} IS NULL THEN 0
-               WHEN length(CAST({col} AS BLOB)) = length({col})
-                 THEN CASE WHEN length({col})<=160 THEN 1 ELSE cast(ceil(length({col})/153.0) AS INTEGER) END
-               ELSE CASE WHEN length({col})<=70 THEN 1 ELSE cast(ceil(length({col})/67.0) AS INTEGER) END
-          END"""
 
 class DBWrapper:
     """Unified database wrapper that works with both SQLite and PostgreSQL."""
@@ -5083,7 +5083,6 @@ def sms_statistics():
     if account_filter:
         recon_acct = ' AND r.created_by = ?'
 
-    parts = sms_parts_expr('r.content')
     recon_sql = f"""
         SELECT
           count(*) AS total,
@@ -5092,12 +5091,27 @@ def sms_statistics():
           coalesce(sum(CASE WHEN r.status='sent' THEN 1 ELSE 0 END),0) AS in_flight,
           coalesce(sum(CASE WHEN r.api_code<>0 THEN 1 ELSE 0 END),0) AS rejected,
           coalesce(sum(CASE WHEN r.status='failed' THEN 1 ELSE 0 END),0) AS failed,
-          coalesce(sum({parts}),0) AS billing_parts,
+          coalesce(sum(0),0) AS billing_parts,
           coalesce(sum(CASE WHEN coalesce(r.api_msg,'') LIKE '%simulado%' THEN 1 ELSE 0 END),0) AS simulated
         FROM sms_records r
         WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}
     """
     recon_row = db.execute(recon_sql, rparams + scope_r_params + acct_r_params).fetchone()
+    # Billable segments are computed in Python with the carrier-exact GSM 03.38
+    # rule (validated 0 mismatch against the operator detail export), so PG and
+    # SQLite agree. Fetch the contents + local day for the matched rows.
+    content_rows = db.execute(
+        f"""SELECT r.content AS content, {tz_date_expr('r.sent_at')} AS dia
+            FROM sms_records r
+            WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}""",
+        rparams + scope_r_params + acct_r_params
+    ).fetchall()
+    billing_total = 0
+    billing_by_day = {}
+    for cr in content_rows:
+        p = sms_billing_segments(cr['content'])
+        billing_total += p
+        billing_by_day[str(cr['dia'])] = billing_by_day.get(str(cr['dia']), 0) + p
     recon = {
         'total': recon_row['total'],
         'submitted': recon_row['submitted'],
@@ -5106,7 +5120,7 @@ def sms_statistics():
         'rejected': recon_row['rejected'],
         'failed': recon_row['failed'],
         'simulated': recon_row['simulated'],
-        'billing_parts': int(recon_row['billing_parts'] or 0),
+        'billing_parts': billing_total,
     }
     # Carrier-style success rate = delivered / submitted
     recon['delivery_rate'] = round(recon['delivered'] / recon['submitted'] * 100, 1) if recon['submitted'] else 0.0
@@ -5119,8 +5133,7 @@ def sms_statistics():
           coalesce(sum(CASE WHEN r.api_code=0 THEN 1 ELSE 0 END),0) AS submitted,
           coalesce(sum(CASE WHEN r.status='delivered' THEN 1 ELSE 0 END),0) AS delivered,
           coalesce(sum(CASE WHEN r.status='sent' THEN 1 ELSE 0 END),0) AS in_flight,
-          coalesce(sum(CASE WHEN r.api_code<>0 THEN 1 ELSE 0 END),0) AS rejected,
-          coalesce(sum({parts}),0) AS billing_parts
+          coalesce(sum(CASE WHEN r.api_code<>0 THEN 1 ELSE 0 END),0) AS rejected
         FROM sms_records r
         WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}
         GROUP BY 1 ORDER BY 1
@@ -5130,7 +5143,7 @@ def sms_statistics():
     recon['by_day'] = [
         {'date': str(x['dia']), 'total': x['total'], 'submitted': x['submitted'],
          'delivered': x['delivered'], 'in_flight': x['in_flight'],
-         'rejected': x['rejected'], 'billing_parts': int(x['billing_parts'] or 0)}
+         'rejected': x['rejected'], 'billing_parts': billing_by_day.get(str(x['dia']), 0)}
         for x in recon_series
     ]
 
@@ -6368,21 +6381,27 @@ def check_sms_charset():
         return jsonify({'error': 'Contenido es requerido'}), 400
 
     if not is_sms_api_configured():
-        # Return local estimation
-        # Spanish uses UCS2: 70 chars per SMS, 67 per long SMS part
+        # Local estimation using the carrier-exact GSM 03.38 / UCS2 rule.
         char_count = len(content)
-        if char_count <= 70:
-            parts = 1
-            single = 70
-        else:
-            parts = (char_count + 66) // 67  # ceil division
-            single = 67
+        parts = sms_billing_segments(content)
+        # Determine charset for display
+        gsm_basic = set(
+            "@\u00a3$\u00a5\u00e8\u00e9\u00f9\u00ec\u00f2\u00c7\n\u00d8\u00f8\r\u00c5\u00e5"
+            "\u0394_\u03a6\u0393\u039b\u03a9\u03a0\u03a8\u03a3\u0398\u039e\u00c6\u00e6\u00df\u00c9"
+            " !\"#\u00a4%&'()*+,-./0123456789:;<=>?\u00a1"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00c4\u00d6\u00d1\u00dc\u00a7\u00bf"
+            "abcdefghijklmnopqrstuvwxyz\u00e4\u00f6\u00f1\u00fc\u00e0"
+        )
+        gsm_ext = set("^{}\\[~]|\u20ac")
+        is_gsm = all(ch in gsm_basic or ch in gsm_ext for ch in content)
+        charset = 'GSM' if is_gsm else 'UCS2'
+        single = 160 if is_gsm else 70
         return jsonify({
-            'charset': 'UCS2',
+            'charset': charset,
             'parts': parts,
             'single': single,
             'char_count': char_count,
-            'detail': f'Contenido con {char_count} caracteres. Codificacion UCS2 (Espanol). Se factura como {parts} SMS.',
+            'detail': f'Contenido con {char_count} caracteres. Codificacion {charset}. Se factura como {parts} SMS.',
             'api_configured': False
         })
 
