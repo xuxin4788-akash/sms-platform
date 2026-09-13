@@ -73,6 +73,47 @@ def get_db_type():
         return 'postgres'
     return 'sqlite'
 
+
+# Business timezone (all teams are LATAM: Mexico/Colombia/Peru = UTC-6/-5).
+# Stats are bucketed by local day to match provider reconciliation reports.
+REPORT_TZ = 'America/Mexico_City'
+
+
+def tz_date_expr(col):
+    """SQL expression returning the local (business-tz) calendar date of a
+    stored UTC timestamp, for both PostgreSQL and SQLite."""
+    if get_db_type() == 'postgres':
+        return f"({col} AT TIME ZONE 'UTC' AT TIME ZONE '{REPORT_TZ}')::date"
+    # SQLite stores ISO UTC strings; Mexico is UTC-6 (no DST since 2023).
+    return f"date({col}, '-6 hours')"
+
+
+def sms_parts_expr(col='content'):
+    """SQL expression for the number of billable SMS segments of a message.
+
+    Provider rules: GSM 03.38 content -> 160/single, 153/concat; any non-GSM
+    character (Spanish accents, emoji) -> UCS2: 70/single, 67/concat.
+    Non-GSM detection differs per backend; we test the byte length of the
+    GSM-only transliteration against the raw UTF-8 byte length.
+    """
+    if get_db_type() == 'postgres':
+        # Transliterate common Spanish chars to ASCII; if the transliterated
+        # text still differs in length after removing non-GSM bytes, treat UCS2.
+        return f"""
+          CASE WHEN {col} IS NULL THEN 0
+               WHEN {col} ~ '[^ -~¡¿ÑñÁÉÍÓÚÜáéíóúü]'
+                 THEN CASE WHEN char_length({col})<=70 THEN 1 ELSE cast(ceil(char_length({col})/67.0) AS INTEGER) END
+               ELSE CASE WHEN char_length({col})<=160 THEN 1 ELSE cast(ceil(char_length({col})/153.0) AS INTEGER) END
+          END"""
+    # SQLite: plain ASCII content has equal char and UTF-8 byte length.
+    # Spanish accents / emoji are multi-byte (byte length > char length) -> UCS2.
+    return f"""
+          CASE WHEN {col} IS NULL THEN 0
+               WHEN length(CAST({col} AS BLOB)) = length({col})
+                 THEN CASE WHEN length({col})<=160 THEN 1 ELSE cast(ceil(length({col})/153.0) AS INTEGER) END
+               ELSE CASE WHEN length({col})<=70 THEN 1 ELSE cast(ceil(length({col})/67.0) AS INTEGER) END
+          END"""
+
 class DBWrapper:
     """Unified database wrapper that works with both SQLite and PostgreSQL."""
     def __init__(self, conn, db_type):
@@ -328,10 +369,14 @@ def init_db():
                 phone VARCHAR(50) NOT NULL,
                 contact_name VARCHAR(255) DEFAULT '',
                 content TEXT NOT NULL,
-                status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'scheduled')),
+                status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'scheduled', 'delivered')),
                 msgid VARCHAR(255) DEFAULT '',
                 api_code INTEGER DEFAULT 0,
                 api_msg TEXT DEFAULT '',
+                api_config_id INTEGER,
+                dr_state INTEGER DEFAULT 0,
+                dr_checked_at TIMESTAMP,
+                delivered_at TIMESTAMP,
                 scheduled_at TIMESTAMP,
                 sent_at TIMESTAMP,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -524,6 +569,34 @@ def init_db():
         # team_config: global daily SMS limit (system-wide cap on members)
         if not pg_column_exists('team_config', 'global_daily_sms_limit'):
             cur.execute("ALTER TABLE team_config ADD COLUMN global_daily_sms_limit INTEGER DEFAULT 0")
+
+        # sms_records: delivery-receipt reconciliation columns + status 'delivered'.
+        if not pg_column_exists('sms_records', 'api_config_id'):
+            cur.execute("ALTER TABLE sms_records ADD COLUMN api_config_id INTEGER")
+        if not pg_column_exists('sms_records', 'dr_state'):
+            cur.execute("ALTER TABLE sms_records ADD COLUMN dr_state INTEGER DEFAULT 0")
+        if not pg_column_exists('sms_records', 'dr_checked_at'):
+            cur.execute("ALTER TABLE sms_records ADD COLUMN dr_checked_at TIMESTAMP")
+        if not pg_column_exists('sms_records', 'delivered_at'):
+            cur.execute("ALTER TABLE sms_records ADD COLUMN delivered_at TIMESTAMP")
+        # Widen the status CHECK constraint to allow 'delivered' (final delivery).
+        cur.execute("""
+            SELECT conname FROM pg_constraint
+            WHERE conrelid='sms_records'::regclass AND contype='c'
+              AND pg_get_constraintdef(oid) LIKE '%status%'
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        conname = row[0] if row else None
+        if conname:
+            cur.execute("""
+                SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                WHERE conrelid='sms_records'::regclass AND conname=%s
+            """, (conname,))
+            defn = cur.fetchone()[0]
+            if 'delivered' not in defn:
+                cur.execute(f'ALTER TABLE sms_records DROP CONSTRAINT "{conname}"')
+                cur.execute("ALTER TABLE sms_records ADD CONSTRAINT sms_records_status_check CHECK(status IN ('pending','sent','failed','scheduled','delivered'))")
         cur.execute("SELECT id FROM user_categories WHERE is_default=TRUE LIMIT 1")
         if cur.fetchone() is None:
             cur.execute(
@@ -860,10 +933,14 @@ def init_db():
                 phone TEXT NOT NULL,
                 contact_name TEXT DEFAULT '',
                 content TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'scheduled')),
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'scheduled', 'delivered')),
                 msgid TEXT DEFAULT '',
                 api_code INTEGER DEFAULT 0,
                 api_msg TEXT DEFAULT '',
+                api_config_id INTEGER,
+                dr_state INTEGER DEFAULT 0,
+                dr_checked_at TEXT,
+                delivered_at TEXT,
                 scheduled_at TEXT,
                 sent_at TEXT,
                 created_by INTEGER,
@@ -1391,6 +1468,61 @@ def init_db():
         except Exception:
             pass
 
+        # Migration: sms_records delivery-receipt columns + allow status 'delivered'.
+        # SQLite cannot ALTER a CHECK constraint, so when needed rebuild the table.
+        try:
+            cursor = db.execute("PRAGMA table_info(sms_records)")
+            cols = [row[1] for row in cursor.fetchall()]
+            need_cols = [c for c in ('api_config_id', 'dr_state', 'dr_checked_at', 'delivered_at') if c not in cols]
+            # Detect whether the live CHECK permits 'delivered'
+            sql_src = db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='sms_records'"
+            ).fetchone()
+            sql_text = (sql_src[0] if sql_src else '') or ''
+            need_rebuild = bool(need_cols) or ('delivered' not in sql_text)
+            if need_rebuild:
+                for c in need_cols:
+                    default = "INTEGER DEFAULT 0" if c in ('api_config_id', 'dr_state') else "TEXT"
+                    db.execute(f"ALTER TABLE sms_records ADD COLUMN {c} {default}")
+                # Rebuild to widen CHECK (preserve all rows/indexes are recreated separately)
+                db.execute("PRAGMA foreign_keys=OFF")
+                db.execute("ALTER TABLE sms_records RENAME TO sms_records_old")
+                db.execute('''
+                    CREATE TABLE sms_records (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        phone TEXT NOT NULL,
+                        contact_name TEXT DEFAULT '',
+                        content TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent','failed','scheduled','delivered')),
+                        msgid TEXT DEFAULT '',
+                        api_code INTEGER DEFAULT 0,
+                        api_msg TEXT DEFAULT '',
+                        api_config_id INTEGER,
+                        dr_state INTEGER DEFAULT 0,
+                        dr_checked_at TEXT,
+                        delivered_at TEXT,
+                        scheduled_at TEXT,
+                        sent_at TEXT,
+                        created_by INTEGER,
+                        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                ''')
+                db.execute('''
+                    INSERT INTO sms_records
+                      (id, phone, contact_name, content, status, msgid, api_code, api_msg,
+                       api_config_id, dr_state, dr_checked_at, delivered_at,
+                       scheduled_at, sent_at, created_by, created_at)
+                    SELECT id, phone, contact_name, content, status, msgid, api_code, api_msg,
+                           api_config_id, dr_state, dr_checked_at, delivered_at,
+                           scheduled_at, sent_at, created_by, created_at
+                    FROM sms_records_old
+                ''')
+                db.execute("DROP TABLE sms_records_old")
+                db.execute("PRAGMA foreign_keys=ON")
+                db.commit()
+        except Exception as e:
+            print(f"Migration sms_records error: {e}")
+
         # Migration: add last_login_ip and last_login_at to users
         try:
             if db_type == 'postgres':
@@ -1669,6 +1801,9 @@ SMS_STATUS_CODES = {
     23: 'Contenido sensible',
     24: 'Numero en lista negra',
 }
+
+# Delivery report (DR) state returned by /sms/state
+SMS_DR_STATE_NAMES = {0: 'En proceso', 1: 'Entregado', 2: 'Fallido'}
 
 def str_to_hex(s):
     """Convert a string to hex encoding (UTF-8)."""
@@ -4571,6 +4706,7 @@ def send_sms():
                 }), 429
     api_configured = is_sms_api_configured(g.user['id'])
     sms_config = get_team_sms_config(g.user['id'])
+    api_config_id = sms_config.get('id') if sms_config else None
     contact_cache = build_contact_template_cache(db, phones)
     records = []
     errors = []
@@ -4581,7 +4717,7 @@ def send_sms():
         phone = normalize_phone(raw_phone)
         name = contact_names.get(raw_phone, '') or contact_names.get(phone, '')
         msg = apply_template_vars(content, raw_phone, contact_names, contact_cache, shorten_links=True)
-        result = sms_api_send_single(phone, msg)
+        result = sms_api_send_single(phone, msg, sms_config)
         api_code = result.get('code', -1)
         api_msg = result.get('msg', '')
         if api_code == 0:
@@ -4589,15 +4725,15 @@ def send_sms():
             if result.get('data'):
                 msgid = result['data'].get('msgid', '')
             db.execute(
-                "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, ?, ?, datetime('now'), ?)",
-                (phone, name, msg, msgid, api_code, api_msg, g.user['id'])
+                "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, api_config_id, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, ?, ?, ?, datetime('now'), ?)",
+                (phone, name, msg, msgid, api_code, api_msg, api_config_id, g.user['id'])
             )
             records.append({'phone': phone, 'status': 'sent', 'msgid': msgid})
         else:
             status_text = SMS_STATUS_CODES.get(api_code, api_msg)
             db.execute(
-                "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, datetime('now'), ?)",
-                (phone, name, msg, api_code, f"Code {api_code}: {status_text}", g.user['id'])
+                "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, api_config_id, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, ?, datetime('now'), ?)",
+                (phone, name, msg, api_code, f"Code {api_code}: {status_text}", api_config_id, g.user['id'])
             )
             records.append({'phone': phone, 'status': 'failed', 'error': status_text})
             errors.append(f"{phone}: {status_text}")
@@ -4619,7 +4755,7 @@ def send_sms():
         # Split into batches of 200
         for batch_start in range(0, len(phone_content_pairs), 200):
             batch = phone_content_pairs[batch_start:batch_start + 200]
-            result = sms_api_send_batch(batch)
+            result = sms_api_send_batch(batch, sms_config)
             api_code = result.get('code', -1)
             api_msg = result.get('msg', '')
 
@@ -4644,8 +4780,8 @@ def send_sms():
                     else:
                         status = 'failed'
                     db.execute(
-                        "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, sent_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)",
-                        (phone, name, msg, status, msgid, item_code, api_msg, g.user['id'])
+                        "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, api_config_id, sent_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)",
+                        (phone, name, msg, status, msgid, item_code, api_msg, api_config_id, g.user['id'])
                     )
                     records.append({'phone': phone, 'status': status, 'msgid': msgid})
                     if status == 'failed':
@@ -4656,8 +4792,8 @@ def send_sms():
                 for phone, msg in batch:
                     name = phone_name_map[phone][0]
                     db.execute(
-                        "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, datetime('now'), ?)",
-                        (phone, name, msg, api_code, f"Code {api_code}: {status_text}", g.user['id'])
+                        "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, api_config_id, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, ?, datetime('now'), ?)",
+                        (phone, name, msg, api_code, f"Code {api_code}: {status_text}", api_config_id, g.user['id'])
                     )
                     records.append({'phone': phone, 'status': 'failed', 'error': status_text})
                     errors.append(f"{phone}: {status_text}")
@@ -4915,6 +5051,89 @@ def sms_statistics():
             last_7_days.append({'date': day, 'count': count})
 
     success_rate = (total_sent / total_all * 100) if total_all > 0 else 0
+
+    # ---------------------------------------------------------------
+    # Provider-reconciliation view (carrier-style accounting).
+    #  - excludes simulated sends (never reached the provider)
+    #  - submitted = api_code=0 (provider accepted the message)
+    #  - delivered = status 'delivered' (final DR state=1)
+    #  - in_flight = status 'sent' (accepted, DR not yet final)
+    #  - rejected  = api_code<>0 (provider refused at submit time)
+    #  - billing_parts = GSM segment count (160 single / 153 concat)
+    # Bucketed by business-timezone local day.
+    # ---------------------------------------------------------------
+    recon_scope = ''
+    recon_acct = ''
+    rwhere = ["coalesce(r.api_msg,'') NOT LIKE '%simulado%'"]
+    rparams = []
+    if date_from:
+        rwhere.append(f"{tz_date_expr('r.sent_at')} >= ?")
+        rparams.append(date_from)
+    if date_to:
+        rwhere.append(f"{tz_date_expr('r.sent_at')} <= ?")
+        rparams.append(date_to)
+    scope_r_params = []
+    if g.user['role'] == 'team_admin':
+        recon_scope = ' AND (r.created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?))'
+        scope_r_params = [g.user['id'], g.user['id']]
+    elif g.user['role'] == 'team_member':
+        recon_scope = ' AND r.created_by = ?'
+        scope_r_params = [g.user['id']]
+    acct_r_params = list(account_params)
+    if account_filter:
+        recon_acct = ' AND r.created_by = ?'
+
+    parts = sms_parts_expr('r.content')
+    recon_sql = f"""
+        SELECT
+          count(*) AS total,
+          coalesce(sum(CASE WHEN r.api_code=0 THEN 1 ELSE 0 END),0) AS submitted,
+          coalesce(sum(CASE WHEN r.status='delivered' THEN 1 ELSE 0 END),0) AS delivered,
+          coalesce(sum(CASE WHEN r.status='sent' THEN 1 ELSE 0 END),0) AS in_flight,
+          coalesce(sum(CASE WHEN r.api_code<>0 THEN 1 ELSE 0 END),0) AS rejected,
+          coalesce(sum(CASE WHEN r.status='failed' THEN 1 ELSE 0 END),0) AS failed,
+          coalesce(sum({parts}),0) AS billing_parts,
+          coalesce(sum(CASE WHEN coalesce(r.api_msg,'') LIKE '%simulado%' THEN 1 ELSE 0 END),0) AS simulated
+        FROM sms_records r
+        WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}
+    """
+    recon_row = db.execute(recon_sql, rparams + scope_r_params + acct_r_params).fetchone()
+    recon = {
+        'total': recon_row['total'],
+        'submitted': recon_row['submitted'],
+        'delivered': recon_row['delivered'],
+        'in_flight': recon_row['in_flight'],
+        'rejected': recon_row['rejected'],
+        'failed': recon_row['failed'],
+        'simulated': recon_row['simulated'],
+        'billing_parts': int(recon_row['billing_parts'] or 0),
+    }
+    # Carrier-style success rate = delivered / submitted
+    recon['delivery_rate'] = round(recon['delivered'] / recon['submitted'] * 100, 1) if recon['submitted'] else 0.0
+
+    # Per-local-day reconciliation series (for charts / export alignment)
+    recon_series = db.execute(
+        f"""
+        SELECT {tz_date_expr('r.sent_at')} AS dia,
+          count(*) AS total,
+          coalesce(sum(CASE WHEN r.api_code=0 THEN 1 ELSE 0 END),0) AS submitted,
+          coalesce(sum(CASE WHEN r.status='delivered' THEN 1 ELSE 0 END),0) AS delivered,
+          coalesce(sum(CASE WHEN r.status='sent' THEN 1 ELSE 0 END),0) AS in_flight,
+          coalesce(sum(CASE WHEN r.api_code<>0 THEN 1 ELSE 0 END),0) AS rejected,
+          coalesce(sum({parts}),0) AS billing_parts
+        FROM sms_records r
+        WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}
+        GROUP BY 1 ORDER BY 1
+        """,
+        rparams + scope_r_params + acct_r_params
+    ).fetchall()
+    recon['by_day'] = [
+        {'date': str(x['dia']), 'total': x['total'], 'submitted': x['submitted'],
+         'delivered': x['delivered'], 'in_flight': x['in_flight'],
+         'rejected': x['rejected'], 'billing_parts': int(x['billing_parts'] or 0)}
+        for x in recon_series
+    ]
+
     return jsonify({
         'today_sent': today_sent,
         'today_total': today_total,
@@ -4924,6 +5143,7 @@ def sms_statistics():
         'total_all': total_all,
         'success_rate': round(success_rate, 1),
         'last_7_days': last_7_days,
+        'reconciliation': recon,
         'filters': {'date_from': date_from, 'date_to': date_to, 'user_id': user_id if account_filter else ''},
         'total_contacts': db.execute("SELECT COUNT(*) as count FROM contacts").fetchone()['count'],
         'total_templates': db.execute("SELECT COUNT(*) as count FROM templates").fetchone()['count']
@@ -6123,21 +6343,17 @@ def query_sms_status_endpoint():
     api_code = result.get('code', -1)
 
     if api_code == 0 and result.get('data'):
-        # Update records with status
-        state_map = {0: 'pending', 1: 'sent', 2: 'failed'}
-        state_names = {0: 'Sin回执 (Enviado)', 1: 'Entregado', 2: 'Fallido'}
-        updates = []
-        for item in result['data']:
-            msgid = item.get('msgid', '')
-            state = item.get('state', 0)
-            status = state_map.get(state, 'pending')
-            db.execute(
-                "UPDATE sms_records SET status=? WHERE msgid=?",
-                (status, msgid)
-            )
-            updates.append({'msgid': msgid, 'state': state, 'state_name': state_names.get(state, 'Desconocido')})
+        # Apply provider delivery reports: 1 = delivered, 2 = failed,
+        # anything else = still submitted (keep 'sent').
+        updated = apply_delivery_reports(db, result['data'])
         db.commit()
-        return jsonify({'message': f'{len(updates)} estado(s) actualizado(s)', 'updates': updates})
+        return jsonify({'message': f'{updated} estado(s) actualizado(s)',
+                        'updates': [
+                            {'msgid': it.get('msgid', ''),
+                             'state': it.get('state', 0),
+                             'state_name': SMS_DR_STATE_NAMES.get(it.get('state', 0), 'En proceso')}
+                            for it in result['data']
+                        ]})
     else:
         error_msg = SMS_STATUS_CODES.get(api_code, result.get('msg', 'Error'))
         return jsonify({'error': f'Error al consultar estado (codigo {api_code}): {error_msg}'}), 400
@@ -6434,6 +6650,173 @@ def api_auto_clear_run_now():
         return jsonify({'success': True, 'deleted': count, 'details': details})
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+# ============================================================
+# SMS delivery report (DR) reconciliation — background sync
+# ============================================================
+
+# How long after submission we keep polling /sms/state before giving up.
+DR_POLL_WINDOW_HOURS = 72
+# Cap messages synced per tick per channel (provider API limits).
+DR_BATCH_LIMIT = 200
+
+
+def apply_delivery_reports(db, items):
+    """Apply provider /sms/state rows to sms_records.
+
+    state 1 -> delivered (set delivered_at), state 2 -> failed,
+    0/other -> keep 'sent' (still in flight). Always stamps dr_checked_at
+    and dr_state. Returns number of rows whose status changed.
+    """
+    changed = 0
+    now = datetime.now().isoformat(sep=' ', timespec='seconds')
+    for item in items or []:
+        msgid = str(item.get('msgid', '') or '').strip()
+        if not msgid:
+            continue
+        state = item.get('state', 0)
+        try:
+            state = int(state)
+        except (TypeError, ValueError):
+            state = 0
+        if state == 1:
+            new_status, delivered_clause = 'delivered', "delivered_at=datetime('now'),"
+        elif state == 2:
+            new_status, delivered_clause = 'failed', ''
+        else:
+            new_status, delivered_clause = 'sent', ''
+        cur = db.execute(
+            f"UPDATE sms_records SET {delivered_clause} status=?, dr_state=?, dr_checked_at=? "
+            "WHERE msgid=? AND status<>?",
+            (new_status, state, now, msgid, new_status)
+        )
+        if cur.rowcount:
+            changed += cur.rowcount
+        else:
+            # Still record the check time for in-flight messages so the
+            # backoff window advances even when state stays 0.
+            db.execute(
+                "UPDATE sms_records SET dr_state=?, dr_checked_at=? WHERE msgid=? AND status='sent'",
+                (state, now, msgid)
+            )
+    return changed
+
+
+def run_sms_dr_sync(triggered_by='scheduler'):
+    """Poll /sms/state for recently submitted, not-yet-final messages.
+
+    Groups pending records by api_config_id (channel) so the right
+    credentials are used. Best-effort; never raises to the caller.
+    Returns a summary dict.
+    """
+    db = get_db()
+    summary = {'checked': 0, 'delivered': 0, 'failed': 0, 'channels': 0, 'errors': []}
+    # Cross-worker lease so only one Gunicorn worker hits the provider per tick.
+    try:
+        row = db.execute("SELECT value FROM system_settings WHERE key='sms_dr_last_sync'").fetchone()
+        if row and row['value']:
+            last = datetime.fromisoformat(row['value'])
+            if (datetime.now() - last).total_seconds() < 240:
+                summary['skipped'] = 'lease'
+                return summary
+        _setting_set('sms_dr_last_sync', datetime.now().isoformat(timespec='seconds'))
+        db.commit()
+    except Exception:
+        pass
+    try:
+        rows = db.execute(
+            """
+            SELECT id, msgid, api_config_id FROM sms_records
+            WHERE status='sent' AND coalesce(msgid,'')<>''
+              AND sent_at >= ?
+            ORDER BY sent_at DESC LIMIT ?
+            """,
+            ((datetime.now() - timedelta(hours=DR_POLL_WINDOW_HOURS)).strftime('%Y-%m-%d %H:%M:%S'),
+             DR_BATCH_LIMIT * 4)
+        ).fetchall()
+        if not rows:
+            return summary
+
+        # Group by channel; records without a stored channel fall back to
+        # the team/global default config.
+        groups = {}
+        for r in rows:
+            groups.setdefault(r['api_config_id'], []).append(r)
+
+        for config_id, recs in groups.items():
+            config = get_sms_api_config(config_id) if config_id else None
+            if not config:
+                config = get_sms_api_config(None)
+            if not config or not config.get('domain'):
+                summary['errors'].append('no_config')
+                continue
+            # Query in chunks of DR_BATCH_LIMIT
+            for i in range(0, len(recs), DR_BATCH_LIMIT):
+                chunk = recs[i:i + DR_BATCH_LIMIT]
+                msgids = [c['msgid'] for c in chunk]
+                try:
+                    result = sms_api_query_status(msgids, config)
+                except Exception as exc:  # network/provider hiccup
+                    summary['errors'].append(str(exc)[:120])
+                    continue
+                if result.get('code') == 0 and result.get('data'):
+                    before_del = db.execute(
+                        "SELECT count(*) c FROM sms_records WHERE status='delivered'"
+                    ).fetchone()['c']
+                    before_fail = db.execute(
+                        "SELECT count(*) c FROM sms_records WHERE status='failed'"
+                    ).fetchone()['c']
+                    apply_delivery_reports(db, result['data'])
+                    db.commit()
+                    after_del = db.execute(
+                        "SELECT count(*) c FROM sms_records WHERE status='delivered'"
+                    ).fetchone()['c']
+                    after_fail = db.execute(
+                        "SELECT count(*) c FROM sms_records WHERE status='failed'"
+                    ).fetchone()['c']
+                    summary['checked'] += len(result['data'])
+                    summary['delivered'] += max(0, after_del - before_del)
+                    summary['failed'] += max(0, after_fail - before_fail)
+                    summary['channels'] += 1
+                else:
+                    summary['errors'].append(str(result.get('code', 'err')))
+                time.sleep(0.4)  # be gentle with the provider
+    except Exception as exc:
+        summary['errors'].append(str(exc)[:160])
+        app.logger.warning('[sms-dr] sync error: %s', exc)
+    app.logger.info('SMS DR sync (%s): %s', triggered_by, summary)
+    return summary
+
+
+@app.route('/api/sms/dr-sync', methods=['POST'])
+@login_required
+@admin_required
+def api_sms_dr_sync():
+    """Admin: force a delivery-report reconciliation right now."""
+    try:
+        return jsonify(run_sms_dr_sync(triggered_by=f'admin:{session.get("user_id")}'))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+def sms_dr_loop():
+    """Background worker: reconcile delivery reports every 5 minutes."""
+    time.sleep(20)
+    while True:
+        try:
+            with app.app_context():
+                # Only sync against a real provider; simulation has no DR.
+                db = get_db()
+                has_real = db.execute(
+                    "SELECT count(*) c FROM sms_api_configs "
+                    "WHERE is_active=1 AND coalesce(domain,'')<>'' AND coalesce(spid,'')<>''"
+                ).fetchone()['c']
+                if has_real:
+                    run_sms_dr_sync('scheduler')
+        except Exception as exc:
+            app.logger.warning('[sms-dr] loop error: %s', exc)
+        time.sleep(300)
 
 
 # ============================================================
@@ -8455,6 +8838,11 @@ init_db()
 _auto_clear_thread = threading.Thread(target=_auto_clear_loop, name='auto-clear-contacts', daemon=True)
 _auto_clear_thread.start()
 app.logger.info('Daily auto-clear contacts worker thread started')
+
+# Background delivery-report reconciliation (provider /sms/state polling).
+_dr_thread = threading.Thread(target=sms_dr_loop, name='sms-dr-sync', daemon=True)
+_dr_thread.start()
+app.logger.info('SMS delivery-report worker thread started')
 
 if __name__ == '__main__':
     port = int(os.environ.get('DEPLOY_RUN_PORT', 5000))

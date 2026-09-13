@@ -197,7 +197,8 @@ function timeAgo(dateStr) {
 
 function getStatusBadge(status) {
     const map = {
-        sent: '<span class="badge badge-green">Enviado</span>',
+        sent: '<span class="badge badge-blue">Aceptado</span>',
+        delivered: '<span class="badge badge-green">Entregado</span>',
         failed: '<span class="badge badge-red">Fallido</span>',
         pending: '<span class="badge badge-yellow">Pendiente</span>',
         scheduled: '<span class="badge badge-blue">Programado</span>'
@@ -644,7 +645,44 @@ async function renderDashboard(container) {
                 '<div class="stat-card"><div class="stat-label">Total Contactos</div><div class="stat-value" style="font-size:22px;">' + stats.total_contacts + '</div></div>' +
                 '<div class="stat-card"><div class="stat-label">Total Plantillas</div><div class="stat-value" style="font-size:22px;">' + stats.total_templates + '</div></div>' +
                 '<div class="stat-card"><div class="stat-label">' + (filtering ? 'Enviados (filtro)' : 'Total Enviados') + '</div><div class="stat-value" style="font-size:22px;">' + stats.total_sent + '</div></div>' +
+            '</div>';
+
+        // Provider reconciliation view (carrier-style accounting)
+        var rc = stats.reconciliation || {};
+        var syncBtn = state.user && state.user.role === 'admin'
+            ? '<button class="btn btn-secondary btn-sm" id="dr-sync-btn" onclick="runDrSync()">Sincronizar estados</button>'
+            : '';
+        var reconHtml =
+            '<div class="card mt-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+                '<h2 style="margin:0;">Conciliacion con operador</h2>' + syncBtn +
+            '</div><div class="card-body">' +
+              '<p style="font-size:12px;color:#64748B;margin:0 0 14px;">Cuenta real con el proveedor (excluye envios simulados). "Aceptados" = recibidos por el operador; "Entregados" = confirmacion de entrega final; "En proceso" aun sin reporte; "Rechazados" no se facturan.</p>' +
+              '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">' +
+                '<div class="stat-card"><div class="stat-label">Aceptados</div><div class="stat-value" style="font-size:22px;">' + (rc.submitted || 0) + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">Entregados</div><div class="stat-value" style="font-size:22px;color:var(--success);">' + (rc.delivered || 0) + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">En proceso</div><div class="stat-value" style="font-size:22px;color:var(--warning);">' + (rc.in_flight || 0) + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">Rechazados</div><div class="stat-value" style="font-size:22px;color:var(--danger);">' + (rc.rejected || 0) + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">SMS facturados (segmentos)</div><div class="stat-value" style="font-size:22px;">' + (rc.billing_parts || 0) + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">Tasa de entrega</div><div class="stat-value" style="font-size:22px;">' + (rc.delivery_rate || 0) + '%</div></div>' +
+              '</div>' +
+              ((rc.simulated || 0) > 0 ? '<p style="font-size:12px;color:var(--warning);margin:12px 0 0;">' + rc.simulated + ' envio(s) simulados excluidos de esta conciliacion.</p>' : '') +
+            '</div></div>';
+
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Panel Principal</h1>' +
+            filterBar +
+            '<div class="stats-grid">' +
+                '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg></div><div class="stat-label">' + sentLabel + '</div><div class="stat-value">' + stats.today_sent + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg></div><div class="stat-label">Tasa de Exito</div><div class="stat-value">' + stats.success_rate + '%</div></div>' +
+                '<div class="stat-card"><div class="stat-icon yellow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></div><div class="stat-label">Pendientes</div><div class="stat-value">' + stats.total_pending + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg></div><div class="stat-label">Fallidos</div><div class="stat-value">' + stats.total_failed + '</div></div>' +
             '</div>' +
+            '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">' +
+                '<div class="stat-card"><div class="stat-label">Total Contactos</div><div class="stat-value" style="font-size:22px;">' + stats.total_contacts + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">Total Plantillas</div><div class="stat-value" style="font-size:22px;">' + stats.total_templates + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">' + (filtering ? 'Enviados (filtro)' : 'Total Enviados') + '</div><div class="stat-value" style="font-size:22px;">' + stats.total_sent + '</div></div>' +
+            '</div>' +
+            reconHtml +
             '<div class="card mt-4"><div class="card-header"><h2>' + (filtering ? 'Envios en el Periodo' : 'Envios de los Ultimos 7 Dias') + '</h2></div><div class="chart-container"><div class="bar-chart" id="weekly-chart"></div></div></div>';
         var chartEl = document.getElementById('weekly-chart');
         var maxCount = Math.max.apply(null, stats.last_7_days.map(function(d) { return d.count; }).concat([1]));
@@ -685,6 +723,21 @@ function resetDashboardFilters() {
     state.dashboard.userId = '';
     var content = document.getElementById('page-content');
     if (content) renderDashboard(content);
+}
+
+async function runDrSync() {
+    var btn = document.getElementById('dr-sync-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Sincronizando...'; }
+    try {
+        var res = await api('/api/sms/dr-sync', { method: 'POST' });
+        showToast('Sincronizacion: ' + (res.checked || 0) + ' consultados, ' +
+            (res.delivered || 0) + ' entregados, ' + (res.failed || 0) + ' fallidos', 'success');
+    } catch (err) {
+        showToast('Error al sincronizar: ' + err.message, 'error');
+    } finally {
+        var content = document.getElementById('page-content');
+        if (content) renderDashboard(content);
+    }
 }
 
 // ============================================================
@@ -1544,7 +1597,7 @@ async function renderRecords(container) {
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Envio</h1>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><div style="display:flex;gap:8px;flex:1;"><input type="text" class="search-input" placeholder="Buscar por numero, nombre, usuario o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)" style="flex:1;"><button onclick="triggerRecordSearch()" style="padding:8px 16px;background:#2563EB;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Buscar</button></div><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Enviado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" lang="es" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setRecordsToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearRecordsFilters()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><div style="display:flex;gap:8px;flex:1;"><input type="text" class="search-input" placeholder="Buscar por numero, nombre, usuario o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)" style="flex:1;"><button onclick="triggerRecordSearch()" style="padding:8px 16px;background:#2563EB;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Buscar</button></div><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="delivered"' + (state.records.status==='delivered'?' selected':'') + '>Entregado</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Aceptado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" lang="es" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setRecordsToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearRecordsFilters()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
