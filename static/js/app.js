@@ -22,6 +22,8 @@ const state = {
     currentPage: 'dashboard',
     dashboard: { dateFrom: '', dateTo: '', userId: '', users: null },
     myTeam: { dateFrom: '', dateTo: '', userId: '' },
+    allTeams: { dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE },
+    userUsage: { dateFrom: '', dateTo: '' },
     contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '', remark: '',
       smsMin: '', smsMax: '', callsMin: '', callsMax: '', sort: 'calls_asc' },
     records: { page: 1, perPage: 20, total: 0, totalPages: 0, status: '', dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE, search: '' },
@@ -156,10 +158,8 @@ function formatMoney(value, unitPrice) {
 async function exportAllTeamsStats() {
     try {
         var params = new URLSearchParams();
-        var fromEl = document.getElementById('stats-date-from');
-        var toEl = document.getElementById('stats-date-to');
-        if (fromEl && fromEl.value) params.set('date_from', fromEl.value);
-        if (toEl && toEl.value) params.set('date_to', toEl.value);
+        if (state.allTeams.dateFrom) params.set('date_from', state.allTeams.dateFrom);
+        if (state.allTeams.dateTo) params.set('date_to', state.allTeams.dateTo);
         var qs = params.toString();
         var response = await fetch('/api/admin/export-teams' + (qs ? '?' + qs : ''), { credentials: 'include' });
         if (!response.ok) {
@@ -2288,8 +2288,8 @@ async function renderUserUsage(container) {
     container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando estadisticas...</p></div>';
     try {
         var params = new URLSearchParams();
-        var dateFrom = document.getElementById('usage-date-from') ? document.getElementById('usage-date-from').value : '';
-        var dateTo = document.getElementById('usage-date-to') ? document.getElementById('usage-date-to').value : '';
+        var dateFrom = state.userUsage.dateFrom || '';
+        var dateTo = state.userUsage.dateTo || '';
         if (dateFrom) params.set('date_from', dateFrom);
         if (dateTo) params.set('date_to', dateTo);
         var results = await Promise.all([
@@ -2328,11 +2328,25 @@ async function renderUserUsage(container) {
         var chartLabels = dailyData.labels || [];
         var chartValues = dailyData.values || [];
 
-        container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Uso por Usuario</h1><div style="display:flex;gap:8px;align-items:center;"><input type="date" id="usage-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '"><span class="text-secondary">a</span><input type="date" id="usage-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderUserUsage(document.getElementById(\'page-content\'))">Filtrar</button></div></div><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px;"><div class="stat-card"><div class="stat-value">' + s.total_users + '</div><div class="stat-label">Usuarios activos</div></div><div class="stat-card"><div class="stat-value">' + teamTotal + '</div><div class="stat-label">Total SMS</div></div><div class="stat-card"><div class="stat-value" style="color:var(--success);">' + teamToday + '</div><div class="stat-label">Hoy</div></div><div class="stat-card"><div class="stat-value">' + teamRate + '%</div><div class="stat-label">Tasa de exito</div></div></div>' + teamSummaryHtml + '<div class="card mb-4"><div class="card-header"><h3>Envios diarios</h3></div><div class="card-body" style="padding:16px;"><canvas id="dailyChart" height="100"></canvas></div></div><div class="card"><div class="table-container"><table><thead><tr><th>Usuario</th><th>Equipo</th><th>Rol</th><th style="text-align:right;">Total</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Pendientes</th><th style="text-align:right;">Exito</th><th>Ultima actividad</th></tr></thead><tbody>' + (rows || '<tr><td colspan="9" class="empty-state">Sin datos</td></tr>') + '</tbody></table></div></div>';
+        container.innerHTML = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Uso por Usuario</h1><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><input type="date" lang="es" id="usage-date-from" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateFrom + '" onchange="handleUsageDateFrom(this.value)"><span class="text-secondary">a</span><input type="date" lang="es" id="usage-date-to" class="form-control" style="width:auto;padding:6px 10px;" value="' + dateTo + '" onchange="handleUsageDateTo(this.value)"><button class="btn btn-primary btn-sm" onclick="applyUsageFilter()">Filtrar</button><button class="btn btn-secondary btn-sm" onclick="setUsageToday()">Hoy</button><button class="btn btn-ghost btn-sm" onclick="clearUsageFilters()">Limpiar</button></div></div><div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px;"><div class="stat-card"><div class="stat-value">' + s.total_users + '</div><div class="stat-label">Usuarios activos</div></div><div class="stat-card"><div class="stat-value">' + teamTotal + '</div><div class="stat-label">Total SMS</div></div><div class="stat-card"><div class="stat-value" style="color:var(--success);">' + teamToday + '</div><div class="stat-label">Hoy</div></div><div class="stat-card"><div class="stat-value">' + teamRate + '%</div><div class="stat-label">Tasa de exito</div></div></div>' + teamSummaryHtml + '<div class="card mb-4"><div class="card-header"><h3>Envios diarios</h3></div><div class="card-body" style="padding:16px;"><canvas id="dailyChart" height="100"></canvas></div></div><div class="card"><div class="table-container"><table><thead><tr><th>Usuario</th><th>Equipo</th><th>Rol</th><th style="text-align:right;">Total</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Pendientes</th><th style="text-align:right;">Exito</th><th>Ultima actividad</th></tr></thead><tbody>' + (rows || '<tr><td colspan="9" class="empty-state">Sin datos</td></tr>') + '</tbody></table></div></div>';
 
         // Draw chart
         if (chartLabels.length > 0) drawDailyChart(chartLabels, chartValues);
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function handleUsageDateFrom(v) { state.userUsage.dateFrom = v; }
+function handleUsageDateTo(v) { state.userUsage.dateTo = v; }
+function applyUsageFilter() { renderUserUsage(document.getElementById('page-content')); }
+function setUsageToday() {
+    state.userUsage.dateFrom = todayLocalStr();
+    state.userUsage.dateTo = todayLocalStr();
+    renderUserUsage(document.getElementById('page-content'));
+}
+function clearUsageFilters() {
+    state.userUsage.dateFrom = '';
+    state.userUsage.dateTo = '';
+    renderUserUsage(document.getElementById('page-content'));
 }
 
 async function renderMyAccount(container) {
@@ -2490,8 +2504,8 @@ async function renderAllTeams(container) {
     container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando estadisticas...</p></div>';
     try {
         var params = new URLSearchParams();
-        var dateFrom = document.getElementById('stats-date-from') ? document.getElementById('stats-date-from').value : '';
-        var dateTo = document.getElementById('stats-date-to') ? document.getElementById('stats-date-to').value : '';
+        var dateFrom = state.allTeams.dateFrom || '';
+        var dateTo = state.allTeams.dateTo || '';
         if (dateFrom) params.set('date_from', dateFrom);
         if (dateTo) params.set('date_to', dateTo);
 
@@ -2502,7 +2516,7 @@ async function renderAllTeams(container) {
             return '<div class="stat-card"><div class="stat-value" style="' + (color ? 'color:' + color : '') + '">' + value + '</div><div class="stat-label">' + label + '</div></div>';
         }
 
-        var filterHtml = '<div class="page-header page-filter mb-4"><h1 style="font-size:22px;font-weight:700;">Todos los Equipos</h1><div class="filter-row filter-row-multi"><input type="date" id="stats-date-from" class="form-control" value="' + dateFrom + '"><span class="text-secondary filter-sep">a</span><input type="date" id="stats-date-to" class="form-control" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderAllTeams(document.getElementById(\'page-content\'))">Filtrar</button><button class="btn btn-secondary btn-sm" onclick="exportAllTeamsStats()">Exportar</button></div></div>';
+        var filterHtml = '<div class="page-header page-filter mb-4"><h1 style="font-size:22px;font-weight:700;">Todos los Equipos</h1><div class="filter-row filter-row-multi"><input type="date" lang="es" id="stats-date-from" class="form-control" value="' + dateFrom + '" onchange="handleAllTeamsDateFrom(this.value)"><span class="text-secondary filter-sep">a</span><input type="date" lang="es" id="stats-date-to" class="form-control" value="' + dateTo + '" onchange="handleAllTeamsDateTo(this.value)"><button class="btn btn-primary btn-sm" onclick="applyAllTeamsFilter()">Filtrar</button><button class="btn btn-secondary btn-sm" onclick="setAllTeamsToday()">Hoy</button><button class="btn btn-ghost btn-sm" onclick="clearAllTeamsFilters()">Limpiar</button><button class="btn btn-secondary btn-sm" onclick="exportAllTeamsStats()">Exportar</button></div></div>';
 
         var html = filterHtml;
         if (allTeamsList && allTeamsList.length > 0) {
@@ -2521,6 +2535,20 @@ async function renderAllTeams(container) {
 
         container.innerHTML = html;
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function handleAllTeamsDateFrom(v) { state.allTeams.dateFrom = v; }
+function handleAllTeamsDateTo(v) { state.allTeams.dateTo = v; }
+function applyAllTeamsFilter() { renderAllTeams(document.getElementById('page-content')); }
+function setAllTeamsToday() {
+    state.allTeams.dateFrom = todayLocalStr();
+    state.allTeams.dateTo = todayLocalStr();
+    renderAllTeams(document.getElementById('page-content'));
+}
+function clearAllTeamsFilters() {
+    state.allTeams.dateFrom = '';
+    state.allTeams.dateTo = '';
+    renderAllTeams(document.getElementById('page-content'));
 }
 
 function drawDailyChart(labels, values) {
