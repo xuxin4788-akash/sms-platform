@@ -5449,7 +5449,7 @@ def get_unified_stats():
                 FROM voice_records v
                 WHERE v.created_by IN ({agg_ph}) {v_date_filter}
                 GROUP BY v.created_by
-            """, v_date_params + agg_ids).fetchall()
+            """, agg_ids + v_date_params).fetchall()
             voice_by_uid = {r['uid']: r for r in voice_member_rows}
             team_calls = sum((r['calls'] or 0) for r in voice_member_rows)
             team_answered = sum((r['answered'] or 0) for r in voice_member_rows)
