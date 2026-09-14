@@ -158,6 +158,13 @@ Tables: users (with `category_id` FK to user_categories, `extnumber` for per-age
 - The daily background job (`run_auto_clear_contacts`, scheduled at `auto_clear_time`, default 03:00) deletes ONLY contacts whose owning user belongs to a category with a finite window AND whose `created_at` is older than `now - retention_days`. Contacts without a creator or whose creator has no category are never deleted, and groups are never deleted. This replaces the previous behavior that deleted ALL contacts and groups every day.
 - The same rule runs on-demand via POST /api/config/auto-clear/run-now and is configured on the "Retencion de Contactos" admin page.
 - `users.category_id` is set on create/update (admin-managed); if omitted it defaults to the default category. Users without a category retain contacts permanently.
+
+### Stats panel caching (15 minutes)
+- Read-only aggregate endpoints are cached for 15 minutes to save resources at scale: `/api/sms/statistics`, `/api/admin/unified-stats`, `/api/admin/user-usage`, `/api/voice/statistics`, `/api/email/statistics`.
+- Cache lives in the `stats_cache` table (`cache_key` PK, `payload` JSON, `expires_at` epoch seconds) so it is shared across all Gunicorn workers. The decorator `@stats_cache_namespace('<name>')` wraps a view; key = namespace + user id + role + sorted query string, so per-user/role/filter results never leak. Payloads gain `cached` and `cache_ttl_minutes` markers.
+- `?refresh=1` bypasses and repopulates a single key. `invalidate_stats_cache()` clears everything and is called after a forced DR sync and after changing the SMS unit price.
+- List/CRUD endpoints (contacts, groups, templates, SMS/voice/email **records** management, imports, sends) are NOT cached and always return real-time data — only the Contactos panel requirement: contacts stay live.
+
 - Employee categories are **shared across all teams** (not per-team): both system admins and team admins can create/edit/delete them (POST/PUT/DELETE `/api/user-categories` use `@manager_required`). The daily auto-clear schedule (`/api/config/auto-clear`, run-now) remains system-admin only; team admins see the Retención page without the scheduler card.
 
 

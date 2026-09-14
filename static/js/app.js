@@ -579,7 +579,8 @@ window.addEventListener('hashchange', function() {
 // ============================================================
 // Dashboard
 // ============================================================
-async function renderDashboard(container) {
+async function renderDashboard(container, opts) {
+    opts = opts || {};
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
         var isManager = state.user && (state.user.role === 'admin' || state.user.role === 'team_admin');
@@ -597,6 +598,7 @@ async function renderDashboard(container) {
         if (state.dashboard.dateTo) params.set('date_to', state.dashboard.dateTo);
         if (state.dashboard.userId) params.set('user_id', state.dashboard.userId);
         params.set('report_tz', state.dashboard.reportTz || 'carrier');
+        if (opts.forceRefresh) params.set('refresh', '1');
         var qs = params.toString();
         var stats = await api('/api/sms/statistics' + (qs ? '?' + qs : ''));
 
@@ -653,6 +655,11 @@ async function renderDashboard(container) {
         var syncBtn = state.user && state.user.role === 'admin'
             ? '<button class="btn btn-secondary btn-sm" id="dr-sync-btn" onclick="runDrSync()">Sincronizar estados</button>'
             : '';
+        var cacheNote = '<span style="font-size:12px;color:#64748B;display:inline-flex;align-items:center;gap:6px;" title="Los paneles se actualizan automaticamente cada 15 minutos. Contactos y gestion siempre en tiempo real.">' +
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>' +
+            (stats.cached ? 'Datos en cache (15 min)' : 'Datos actualizados ahora') +
+            '</span>';
+        var refreshBtn = '<button class="btn btn-ghost btn-sm" id="dash-refresh-btn" onclick="refreshDashboard()" title="Actualizar paneles ahora">Actualizar ahora</button>';
         var curTz = state.dashboard.reportTz || 'carrier';
         var tzSelect =
             '<label style="font-size:12px;font-weight:600;color:#64748B;display:flex;flex-direction:column;gap:4px;">Zona horaria del reporte' +
@@ -664,7 +671,7 @@ async function renderDashboard(container) {
         var reconHtml =
             '<div class="card mt-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
                 '<h2 style="margin:0;">Conciliacion con operador</h2>' +
-                '<div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;">' + tzSelect + syncBtn + '</div>' +
+                '<div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;">' + cacheNote + tzSelect + refreshBtn + syncBtn + '</div>' +
             '</div><div class="card-body">' +
               '<p style="font-size:12px;color:#64748B;margin:0 0 14px;">Cuenta real con el proveedor (excluye envios simulados). El corte de dia usa la zona horaria seleccionada; para cuadrar con el Excel de Rileci elige "Operador (UTC+8)". "Aceptados" = recibidos por el operador; "Entregados" = confirmacion de entrega final; "En proceso" aun sin reporte; "Rechazados" no se facturan. Los segmentos usan la regla de facturacion por idioma (70 car. espanol/chino, 160 ingles/indonesio).</p>' +
               '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">' +
@@ -747,8 +754,15 @@ async function runDrSync() {
         showToast('Error al sincronizar: ' + err.message, 'error');
     } finally {
         var content = document.getElementById('page-content');
-        if (content) renderDashboard(content);
+        if (content) renderDashboard(content, { forceRefresh: true });
     }
+}
+
+async function refreshDashboard() {
+    var btn = document.getElementById('dash-refresh-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Actualizando...'; }
+    var content = document.getElementById('page-content');
+    if (content) await renderDashboard(content, { forceRefresh: true });
 }
 
 function handleReportTz(value) {

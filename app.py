@@ -14,7 +14,7 @@ import requests as http_requests
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, session, g, send_from_directory, send_file, redirect
+from flask import Flask, request, jsonify, render_template, session, g, send_from_directory, send_file, redirect, Response
 from flask_cors import CORS
 from flask_compress import Compress
 from werkzeug.utils import secure_filename
@@ -182,6 +182,126 @@ def sms_billing_segments(content):
     if sms_billing_class(content) == 'latin':
         return 1 if n <= 160 else -(-n // 153)
     return 1 if n <= 70 else -(-n // 67)
+
+
+# ---------------------------------------------------------------------------
+# Stats response cache (15 minutes, DB-backed, shared across Gunicorn workers)
+# Only read-only aggregate panels are cached; list/CRUD endpoints (contacts,
+# groups, records management) always hit the database and stay real-time.
+# ---------------------------------------------------------------------------
+STATS_CACHE_TTL_SECONDS = 15 * 60
+
+
+def _now_ts():
+    return int(time.time())
+
+
+def _stats_cache_get(cache_key):
+    """Return cached payload dict if fresh, else None. Best-effort: any DB
+    error simply disables caching for this request (never breaks the panel)."""
+    try:
+        db = get_db()
+        row = db.execute(
+            "SELECT payload, expires_at FROM stats_cache WHERE cache_key=?",
+            (cache_key,),
+        ).fetchone()
+        if not row:
+            return None
+        expires = row['expires_at']
+        if int(expires or 0) < _now_ts():
+            return None
+        return json.loads(row['payload'])
+    except Exception:
+        return None
+
+
+def _stats_cache_set(cache_key, payload):
+    try:
+        db = get_db()
+        body = json.dumps(payload, ensure_ascii=False, default=str)
+        expires = _now_ts() + STATS_CACHE_TTL_SECONDS
+        if get_db_type() == 'postgres':
+            db.execute(
+                "INSERT INTO stats_cache (cache_key, payload, expires_at, created_at) "
+                "VALUES (?, ?, ?, NOW()) ON CONFLICT (cache_key) DO UPDATE SET "
+                "payload=EXCLUDED.payload, expires_at=EXCLUDED.expires_at, created_at=NOW()",
+                (cache_key, body, expires),
+            )
+        else:
+            db.execute(
+                "INSERT INTO stats_cache (cache_key, payload, expires_at, created_at) "
+                "VALUES (?, ?, ?, datetime('now')) ON CONFLICT(cache_key) DO UPDATE SET "
+                "payload=excluded.payload, expires_at=excluded.expires_at, "
+                "created_at=datetime('now')",
+                (cache_key, body, expires),
+            )
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def invalidate_stats_cache():
+    """Clear all cached stats (e.g. after a forced DR sync or billing change).
+    Next request to each panel repopulates its entry."""
+    try:
+        db = get_db()
+        db.execute("DELETE FROM stats_cache")
+        db.commit()
+    except Exception:
+        try:
+            get_db().rollback()
+        except Exception:
+            pass
+
+
+def stats_cache_namespace(namespace):
+    """Decorator: cache a GET stats view for STATS_CACHE_TTL_SECONDS.
+    Cache key = namespace + user id + role + sorted query string. ?refresh=1
+    forces a recompute. The cached payload gains a `cached`/`cached_at` marker.
+    The wrapped function must return a plain dict (it will be jsonified)."""
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            force_refresh = request.args.get('refresh') in ('1', 'true', 'yes')
+            qs = '&'.join(
+                f"{k}={v}" for k, v in sorted(request.args.items()) if k != 'refresh'
+            )
+            uid = getattr(g, 'user', None)
+            uid = uid['id'] if uid else 0
+            role = (getattr(g, 'user', None) or {}).get('role', 'anon')
+            cache_key = f"{namespace}|u{uid}|{role}|{qs}"
+            if not force_refresh:
+                hit = _stats_cache_get(cache_key)
+                if hit is not None:
+                    hit['cached'] = True
+                    return jsonify(hit)
+            result = fn(*args, **kwargs)
+            # Accept either a plain dict or a Flask Response (jsonify). Only
+            # successful JSON object payloads are cached.
+            status = 200
+            if isinstance(result, tuple):
+                resp, status = result[0], result[1]
+            else:
+                resp = result
+            payload = None
+            if isinstance(resp, dict):
+                payload = resp
+            elif isinstance(resp, Response) and status == 200 and resp.is_json:
+                try:
+                    payload = resp.get_json()
+                except Exception:
+                    payload = None
+            if not isinstance(payload, dict):
+                return result
+            payload['cached'] = False
+            payload['cache_ttl_minutes'] = STATS_CACHE_TTL_SECONDS // 60
+            _stats_cache_set(cache_key, payload)
+            return jsonify(payload)
+        return wrapper
+    return decorator
 
 
 class DBWrapper:
@@ -475,6 +595,14 @@ def init_db():
                 value TEXT NOT NULL DEFAULT '',
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
+
+            CREATE TABLE IF NOT EXISTS stats_cache (
+                cache_key VARCHAR(255) PRIMARY KEY,
+                payload TEXT NOT NULL,
+                expires_at BIGINT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_stats_cache_expires ON stats_cache(expires_at);
 
             CREATE TABLE IF NOT EXISTS sms_api_configs (
                 id SERIAL PRIMARY KEY,
@@ -1051,6 +1179,14 @@ def init_db():
                 value TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS stats_cache (
+                cache_key TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_stats_cache_expires ON stats_cache(expires_at);
 
             CREATE TABLE IF NOT EXISTS sms_api_configs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1889,6 +2025,7 @@ def set_sms_unit_price(price, db=None):
         )
     if own:
         db.commit()
+        invalidate_stats_cache()
 
 def calc_cost(count, price):
     """Calcula el coste total redondeado a 2 decimales."""
@@ -5066,6 +5203,7 @@ def list_sms_records():
 
 @app.route('/api/sms/statistics', methods=['GET'])
 @login_required
+@stats_cache_namespace('sms_stats')
 def sms_statistics():
     db = get_db()
     # Build scope filter based on role
@@ -5518,6 +5656,7 @@ def update_billing_settings():
 
 @app.route('/api/admin/user-usage', methods=['GET'])
 @manager_required
+@stats_cache_namespace('user_usage')
 def get_user_usage():
     """Get per-user SMS Usage statistics. System admin sees all; team admin sees own team."""
     db = get_db()
@@ -5708,6 +5847,7 @@ def get_user_usage():
 
 @app.route('/api/admin/unified-stats', methods=['GET'])
 @login_required
+@stats_cache_namespace('unified_stats')
 def get_unified_stats():
     """Get unified statistics with 3 panels: my account, my team, all teams"""
     db = get_db()
@@ -7059,7 +7199,9 @@ def run_sms_dr_sync(triggered_by='scheduler'):
 def api_sms_dr_sync():
     """Admin: force a delivery-report reconciliation right now."""
     try:
-        return jsonify(run_sms_dr_sync(triggered_by=f'admin:{session.get("user_id")}'))
+        result = run_sms_dr_sync(triggered_by=f'admin:{session.get("user_id")}')
+        invalidate_stats_cache()
+        return jsonify(result)
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
 
@@ -8015,6 +8157,7 @@ def voice_list_records():
 
 @app.route('/api/voice/statistics', methods=['GET'])
 @login_required
+@stats_cache_namespace('voice_stats')
 def voice_statistics():
     db = get_db()
     scope = ''
@@ -9059,6 +9202,7 @@ def email_records_api():
 
 @app.route('/api/email/statistics', methods=['GET'])
 @admin_required
+@stats_cache_namespace('email_stats')
 def email_statistics_api():
     db = get_db()
     user = g.user
