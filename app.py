@@ -2112,15 +2112,20 @@ def sms_segments_for_scope(where, params, db=None, group=False):
     own = db is None
     if own:
         db = get_db()
+    # Billing/cost never counts simulated sends (provider was not configured);
+    # this keeps segment totals aligned with the carrier reconciliation panel.
+    _BILLING_REAL_ONLY = "COALESCE(api_msg,'') NOT LIKE '%simulado%'"
+
     if group:
         rows = db.execute(
             f"SELECT created_by, COALESCE(SUM(billed_segments),0) AS segs "
-            f"FROM sms_records WHERE {where} GROUP BY created_by",
+            f"FROM sms_records WHERE ({where}) AND {_BILLING_REAL_ONLY} GROUP BY created_by",
             params
         ).fetchall()
         return {r['created_by']: int(r['segs'] or 0) for r in rows}
     row = db.execute(
-        f"SELECT COALESCE(SUM(billed_segments),0) AS segs FROM sms_records WHERE {where}",
+        f"SELECT COALESCE(SUM(billed_segments),0) AS segs FROM sms_records "
+        f"WHERE ({where}) AND {_BILLING_REAL_ONLY}",
         params
     ).fetchone()
     return int(row['segs'] or 0)
@@ -2156,7 +2161,8 @@ def sms_segment_breakdown(user_ids, date_filter_sql, date_params, db=None):
         f"SELECT COALESCE(SUM(billed_segments),0) AS total, "
         f"COALESCE(SUM(CASE WHEN status IN ('sent','delivered') THEN billed_segments ELSE 0 END),0) AS sent, "
         f"COALESCE(SUM(CASE WHEN status='failed' THEN billed_segments ELSE 0 END),0) AS failed "
-        f"FROM sms_records WHERE created_by IN ({ph}) {date_filter_sql}",
+        f"FROM sms_records WHERE created_by IN ({ph}) {date_filter_sql} "
+        f"AND COALESCE(api_msg,'') NOT LIKE '%simulado%'",
         list(user_ids) + list(date_params)
     ).fetchone()
     return int(row['total'] or 0), int(row['sent'] or 0), int(row['failed'] or 0)
@@ -2176,7 +2182,8 @@ def sms_segment_breakdown_grouped(user_ids, date_filter_sql, date_params, db=Non
         f"COALESCE(SUM(billed_segments),0) AS total, "
         f"COALESCE(SUM(CASE WHEN status IN ('sent','delivered') THEN billed_segments ELSE 0 END),0) AS sent, "
         f"COALESCE(SUM(CASE WHEN status='failed' THEN billed_segments ELSE 0 END),0) AS failed "
-        f"FROM sms_records WHERE created_by IN ({ph}) {date_filter_sql} GROUP BY created_by",
+        f"FROM sms_records WHERE created_by IN ({ph}) {date_filter_sql} "
+        f"AND COALESCE(api_msg,'') NOT LIKE '%simulado%' GROUP BY created_by",
         list(user_ids) + list(date_params)
     ).fetchall()
     for r in rows:
@@ -6330,7 +6337,7 @@ def get_unified_stats():
             t_today = (today_row['cnt'] if today_row else 0) or 0
             t_rate = round((t_sent / t_total * 100), 1) if t_total > 0 else 0
             def _scope_cost(status_filter):
-                wwhere = f"{status_filter} {date_filter} AND created_by IN ({placeholders})"
+                wwhere = f"({status_filter}) {date_filter} AND created_by IN ({placeholders})"
                 return sms_cost_for_scope(wwhere, list(date_params) + user_ids, db=db)
             t_cost = _scope_cost("1=1")
             s_cost = _scope_cost("status='sent' OR status='delivered'")
