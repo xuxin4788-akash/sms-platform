@@ -7091,6 +7091,8 @@ def api_auto_clear_run_now():
 DR_POLL_WINDOW_HOURS = 72
 # Cap messages synced per tick per channel (provider API limits).
 DR_BATCH_LIMIT = 200
+# Advisory lock id so only one Gunicorn worker runs a DR sync per tick.
+DR_LOCK_ID = 82347110
 
 
 def apply_delivery_reports(db, items):
@@ -7102,7 +7104,11 @@ def apply_delivery_reports(db, items):
     """
     changed = 0
     now = datetime.now().isoformat(sep=' ', timespec='seconds')
-    for item in items or []:
+    # Sort deterministically so concurrent updaters would lock rows in the
+    # same order (the scheduler already holds a cross-worker advisory lock;
+    # this is defense in depth against deadlocks).
+    items = sorted(items or [], key=lambda it: str(it.get('msgid', '') or ''))
+    for item in items:
         msgid = str(item.get('msgid', '') or '').strip()
         if not msgid:
             continue
@@ -7134,23 +7140,17 @@ def apply_delivery_reports(db, items):
     return changed
 
 
-def run_sms_dr_sync(triggered_by='scheduler'):
+def _sms_dr_sync_impl(triggered_by='scheduler'):
     """Poll /sms/state for recently submitted, not-yet-final messages.
 
     Groups pending records by api_config_id (channel) so the right
     credentials are used. Best-effort; never raises to the caller.
-    Returns a summary dict.
+    Returns a summary dict. Caller (run_sms_dr_sync) holds the cross-worker
+    advisory lock so this body runs in a single Gunicorn worker per tick.
     """
     db = get_db()
     summary = {'checked': 0, 'delivered': 0, 'failed': 0, 'channels': 0, 'errors': []}
-    # Cross-worker lease so only one Gunicorn worker hits the provider per tick.
     try:
-        row = db.execute("SELECT value FROM system_settings WHERE key='sms_dr_last_sync'").fetchone()
-        if row and row['value']:
-            last = datetime.fromisoformat(row['value'])
-            if (datetime.now() - last).total_seconds() < 240:
-                summary['skipped'] = 'lease'
-                return summary
         _setting_set('sms_dr_last_sync', datetime.now().isoformat(timespec='seconds'))
         db.commit()
     except Exception:
@@ -7218,6 +7218,54 @@ def run_sms_dr_sync(triggered_by='scheduler'):
         app.logger.warning('[sms-dr] sync error: %s', exc)
     app.logger.info('SMS DR sync (%s): %s', triggered_by, summary)
     return summary
+
+
+def run_sms_dr_sync(triggered_by='scheduler'):
+    """Acquire a cross-worker advisory lock, then run one DR sync pass.
+
+    Guarantees only ONE Gunicorn worker polls the provider / updates rows per
+    tick, which prevents the multi-worker deadlock on sms_records seen when
+    several workers raced on the same tuples. On SQLite a maintenance_locks
+    row is used instead. Skipping returns {'skipped': 'lock'}.
+    """
+    db = get_db()
+    lock_acquired = False
+    try:
+        if get_db_type() == 'postgres':
+            cur = db.execute("SELECT pg_try_advisory_lock(?) AS got", (DR_LOCK_ID,))
+            row = cur.fetchone()
+            got = row['got'] if isinstance(row, dict) else row[0]
+            lock_acquired = bool(got)
+        else:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS maintenance_locks "
+                "(lock_name TEXT PRIMARY KEY, locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            db.execute(
+                "DELETE FROM maintenance_locks WHERE lock_name='sms_dr_sync' "
+                "AND locked_at < datetime('now','-10 minutes')"
+            )
+            try:
+                db.execute("INSERT INTO maintenance_locks(lock_name) VALUES('sms_dr_sync')")
+                db.commit()
+                lock_acquired = True
+            except Exception:
+                lock_acquired = False
+
+        if not lock_acquired:
+            return {'skipped': 'lock'}
+
+        return _sms_dr_sync_impl(triggered_by)
+    finally:
+        if lock_acquired:
+            try:
+                if get_db_type() == 'postgres':
+                    db.execute("SELECT pg_advisory_unlock(?)", (DR_LOCK_ID,))
+                else:
+                    db.execute("DELETE FROM maintenance_locks WHERE lock_name='sms_dr_sync'")
+                db.commit()
+            except Exception:
+                pass
 
 
 @app.route('/api/sms/dr-sync', methods=['POST'])
