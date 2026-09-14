@@ -4882,6 +4882,7 @@ async function renderEmailConfig(container) {
                   '<div class="form-group"><label>Nombre remitente</label><input id="em-fromname" type="text" value="' + escapeHtml(cfg.from_name || '') + '" placeholder="Mi Empresa"></div>' +
                 '</div>' +
                 '<div class="form-group"><label class="text-secondary text-sm" style="display:flex;align-items:center;gap:8px;font-weight:400;"><input type="checkbox" id="em-active"' + (cfg.is_active === false ? '' : ' checked') + '> Configuracion activa</label></div>' +
+                '<div class="form-group"><label>Correo para la prueba</label><input id="em-test-to" type="email" placeholder="business@rileciones.com" value=""><small class="text-secondary">En modo sandbox de SES, usa una direccion verificada. Si se deja vacio, se envia al correo remitente.</small></div>' +
                 '<div id="em-msg"></div>' +
                 '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="submit" class="btn btn-primary">Guardar configuracion</button><button type="button" class="btn btn-secondary" onclick="handleTestEmailConfig()">Enviar correo de prueba</button></div>' +
               '</form>' +
@@ -4933,7 +4934,12 @@ async function handleTestEmailConfig() {
     var msg = document.getElementById('em-msg');
     msg.innerHTML = '<div class="alert alert-info">Enviando prueba...</div>';
     try {
-        var res = await api('/api/config/email/test', { method: 'POST', body: { to: document.getElementById('em-from').value.trim() } });
+        var testToEl = document.getElementById('em-test-to');
+        var testTo = testToEl ? testToEl.value.trim() : '';
+        var res = await api('/api/config/email/test', {
+            method: 'POST',
+            body: { to: testTo || document.getElementById('em-from').value.trim() }
+        });
         msg.innerHTML = '<div class="alert alert-success">' + escapeHtml(res.message || 'Prueba enviada') + '</div>';
     } catch (err) { msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(err.message) + '</div>'; }
 }
