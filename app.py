@@ -483,6 +483,16 @@ def init_db():
         conn = psycopg2.connect(app.config['DATABASE_URL'])
         conn.autocommit = True
         cur = conn.cursor()
+        # Serialize the whole bootstrap across the many Gunicorn workers that
+        # boot simultaneously. Workers queue on a session-level advisory lock;
+        # the first one performs CREATE/migration/backfill, the rest wait and,
+        # once they enter, find every column/index already present and skip the
+        # expensive one-time work (guarded by column-existence checks). This is
+        # safe on a brand-new empty DB and prevents concurrent DDL/backfill from
+        # saturating the single-CPU Postgres during every restart.
+        cur.execute("SET lock_timeout = '120000'")
+        cur.execute("SELECT pg_advisory_lock(hashtext('sms_platform_init_db'))")
+        _got_init_lock = True
         # Full schema matching SQLite version
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_categories (
@@ -797,10 +807,20 @@ def init_db():
         if not pg_column_exists('sms_records', 'billed_segments'):
             cur.execute("ALTER TABLE sms_records ADD COLUMN billed_segments INTEGER NOT NULL DEFAULT 1")
             # One-time backfill: re-rate historical rows with the commercial rule.
+            # Do it in ONE short transaction with executemany (instead of thousands
+            # of auto-committed round trips) to minimize lock/CPU while other
+            # Gunicorn workers queue on the advisory lock.
             cur.execute("SELECT id, content FROM sms_records")
-            for rid, content in cur.fetchall():
-                cur.execute("UPDATE sms_records SET billed_segments=%s WHERE id=%s",
-                            (sms_billing_segments(content or ''), rid))
+            _backfill = [(sms_billing_segments(content or ''), rid) for rid, content in cur.fetchall()]
+            if _backfill:
+                cur.execute("BEGIN")
+                try:
+                    cur.executemany(
+                        "UPDATE sms_records SET billed_segments=%s WHERE id=%s", _backfill)
+                    cur.execute("COMMIT")
+                except Exception:
+                    cur.execute("ROLLBACK")
+                    raise
             # Speed up dashboard SUM / group-by aggregation.
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_records_creator_segments ON sms_records(created_by, billed_segments)")
         # Widen the status CHECK constraint to allow 'delivered' (final delivery).
@@ -1057,6 +1077,12 @@ def init_db():
                 # A missing table/column shouldn't block startup.
                 print(f"Index warning: {e}")
         conn.commit()
+        # Release the bootstrap session-level advisory lock so the next worker
+        # waiting on it can proceed (the connection close would also release it).
+        try:
+            cur.execute("SELECT pg_advisory_unlock(hashtext('sms_platform_init_db'))")
+        except Exception:
+            pass
 
         cur.close()
         conn.close()
@@ -1764,9 +1790,10 @@ def init_db():
             if 'billed_segments' not in cols:
                 db.execute("ALTER TABLE sms_records ADD COLUMN billed_segments INTEGER NOT NULL DEFAULT 1")
                 rows = db.execute("SELECT id, content FROM sms_records").fetchall()
-                for r in rows:
-                    db.execute("UPDATE sms_records SET billed_segments=? WHERE id=?",
-                               (sms_billing_segments(r[1] or ''), r[0]))
+                # Single batch update instead of one round trip per row.
+                if rows:
+                    db.executemany("UPDATE sms_records SET billed_segments=? WHERE id=?",
+                                   [(sms_billing_segments(r[1] or ''), r[0]) for r in rows])
                 db.execute("CREATE INDEX IF NOT EXISTS idx_sms_records_creator_segments ON sms_records(created_by, billed_segments)")
                 db.commit()
         except Exception as e:
