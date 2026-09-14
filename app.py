@@ -463,6 +463,7 @@ def init_db():
                 dr_state INTEGER DEFAULT 0,
                 dr_checked_at TIMESTAMP,
                 delivered_at TIMESTAMP,
+                billed_segments INTEGER NOT NULL DEFAULT 1,
                 scheduled_at TIMESTAMP,
                 sent_at TIMESTAMP,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -665,6 +666,15 @@ def init_db():
             cur.execute("ALTER TABLE sms_records ADD COLUMN dr_checked_at TIMESTAMP")
         if not pg_column_exists('sms_records', 'delivered_at'):
             cur.execute("ALTER TABLE sms_records ADD COLUMN delivered_at TIMESTAMP")
+        if not pg_column_exists('sms_records', 'billed_segments'):
+            cur.execute("ALTER TABLE sms_records ADD COLUMN billed_segments INTEGER NOT NULL DEFAULT 1")
+            # One-time backfill: re-rate historical rows with the commercial rule.
+            cur.execute("SELECT id, content FROM sms_records")
+            for rid, content in cur.fetchall():
+                cur.execute("UPDATE sms_records SET billed_segments=%s WHERE id=%s",
+                            (sms_billing_segments(content or ''), rid))
+            # Speed up dashboard SUM / group-by aggregation.
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_records_creator_segments ON sms_records(created_by, billed_segments)")
         # Widen the status CHECK constraint to allow 'delivered' (final delivery).
         cur.execute("""
             SELECT conname FROM pg_constraint
@@ -894,6 +904,7 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_send_logs_created_at ON send_logs(created_at DESC)",
             # SMS records: list filtering by owner + time range, plus scheduling
             "CREATE INDEX IF NOT EXISTS idx_sms_records_created_by ON sms_records(created_by)",
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_creator_segments ON sms_records(created_by, billed_segments)",
             "CREATE INDEX IF NOT EXISTS idx_sms_records_created_at ON sms_records(created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_sms_records_status_created_at ON sms_records(status, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_sms_records_status_sent_at ON sms_records(status, sent_at DESC)",
@@ -1027,6 +1038,7 @@ def init_db():
                 dr_state INTEGER DEFAULT 0,
                 dr_checked_at TEXT,
                 delivered_at TEXT,
+                billed_segments INTEGER NOT NULL DEFAULT 1,
                 scheduled_at TEXT,
                 sent_at TEXT,
                 created_by INTEGER,
@@ -1609,6 +1621,21 @@ def init_db():
         except Exception as e:
             print(f"Migration sms_records error: {e}")
 
+        # Migration: billed_segments (commercial billing parts stored at send time).
+        # Plain INTEGER column -> no table rebuild needed; backfill historical rows once.
+        try:
+            cols = [row[1] for row in db.execute("PRAGMA table_info(sms_records)").fetchall()]
+            if 'billed_segments' not in cols:
+                db.execute("ALTER TABLE sms_records ADD COLUMN billed_segments INTEGER NOT NULL DEFAULT 1")
+                rows = db.execute("SELECT id, content FROM sms_records").fetchall()
+                for r in rows:
+                    db.execute("UPDATE sms_records SET billed_segments=? WHERE id=?",
+                               (sms_billing_segments(r[1] or ''), r[0]))
+                db.execute("CREATE INDEX IF NOT EXISTS idx_sms_records_creator_segments ON sms_records(created_by, billed_segments)")
+                db.commit()
+        except Exception as e:
+            print(f"Migration billed_segments error: {e}")
+
         # Migration: add last_login_ip and last_login_at to users
         try:
             if db_type == 'postgres':
@@ -1642,6 +1669,7 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_send_logs_created_at ON send_logs(created_at DESC)",
             # SMS records: list filtering by owner + time range, plus scheduling
             "CREATE INDEX IF NOT EXISTS idx_sms_records_created_by ON sms_records(created_by)",
+            "CREATE INDEX IF NOT EXISTS idx_sms_records_creator_segments ON sms_records(created_by, billed_segments)",
             "CREATE INDEX IF NOT EXISTS idx_sms_records_created_at ON sms_records(created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_sms_records_status_created_at ON sms_records(status, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_sms_records_status_sent_at ON sms_records(status, sent_at DESC)",
@@ -1758,24 +1786,25 @@ def get_sms_unit_price_for(user_id, db=None):
     return get_sms_unit_price(db=db)
 
 def sms_segments_for_scope(where, params, db=None, group=False):
-    """Total billable SMS segments for a scope, computed on the fly from each
-    message content with the commercial language rule (Chinese/Spanish 70-67,
-    English/Indonesian 160-153). When group=True returns {created_by: segments}.
-    Works for both SQLite and PostgreSQL so historical data is re-rated without
-    any data migration."""
+    """Total billable SMS segments for a scope. Reads the stored
+    `billed_segments` column (computed once at send time and backfilled for
+    historical rows) via SUM, so dashboards stay fast even on large tables.
+    When group=True returns {created_by: segments}."""
     own = db is None
     if own:
         db = get_db()
-    rows = db.execute(
-        f"SELECT created_by, content FROM sms_records WHERE {where}",
-        params
-    ).fetchall()
     if group:
-        totals = {}
-        for r in rows:
-            totals[r['created_by']] = totals.get(r['created_by'], 0) + sms_billing_segments(r['content'])
-        return totals
-    return sum(sms_billing_segments(r['content']) for r in rows)
+        rows = db.execute(
+            f"SELECT created_by, COALESCE(SUM(billed_segments),0) AS segs "
+            f"FROM sms_records WHERE {where} GROUP BY created_by",
+            params
+        ).fetchall()
+        return {r['created_by']: int(r['segs'] or 0) for r in rows}
+    row = db.execute(
+        f"SELECT COALESCE(SUM(billed_segments),0) AS segs FROM sms_records WHERE {where}",
+        params
+    ).fetchone()
+    return int(row['segs'] or 0)
 
 
 def sms_cost_for_scope(where, params, db=None):
@@ -1804,20 +1833,14 @@ def sms_segment_breakdown(user_ids, date_filter_sql, date_params, db=None):
     if not user_ids:
         return 0, 0, 0
     ph = ','.join('?' * len(user_ids))
-    rows = db.execute(
-        f"SELECT status, content FROM sms_records "
-        f"WHERE created_by IN ({ph}) {date_filter_sql}",
+    row = db.execute(
+        f"SELECT COALESCE(SUM(billed_segments),0) AS total, "
+        f"COALESCE(SUM(CASE WHEN status IN ('sent','delivered') THEN billed_segments ELSE 0 END),0) AS sent, "
+        f"COALESCE(SUM(CASE WHEN status='failed' THEN billed_segments ELSE 0 END),0) AS failed "
+        f"FROM sms_records WHERE created_by IN ({ph}) {date_filter_sql}",
         list(user_ids) + list(date_params)
-    ).fetchall()
-    total = sent = failed = 0
-    for r in rows:
-        p = sms_billing_segments(r['content'])
-        total += p
-        if r['status'] in ('sent', 'delivered'):
-            sent += p
-        elif r['status'] == 'failed':
-            failed += p
-    return total, sent, failed
+    ).fetchone()
+    return int(row['total'] or 0), int(row['sent'] or 0), int(row['failed'] or 0)
 
 
 def sms_segment_breakdown_grouped(user_ids, date_filter_sql, date_params, db=None):
@@ -1830,18 +1853,19 @@ def sms_segment_breakdown_grouped(user_ids, date_filter_sql, date_params, db=Non
         return result
     ph = ','.join('?' * len(user_ids))
     rows = db.execute(
-        f"SELECT created_by, status, content FROM sms_records "
-        f"WHERE created_by IN ({ph}) {date_filter_sql}",
+        f"SELECT created_by, "
+        f"COALESCE(SUM(billed_segments),0) AS total, "
+        f"COALESCE(SUM(CASE WHEN status IN ('sent','delivered') THEN billed_segments ELSE 0 END),0) AS sent, "
+        f"COALESCE(SUM(CASE WHEN status='failed' THEN billed_segments ELSE 0 END),0) AS failed "
+        f"FROM sms_records WHERE created_by IN ({ph}) {date_filter_sql} GROUP BY created_by",
         list(user_ids) + list(date_params)
     ).fetchall()
     for r in rows:
-        d = result.setdefault(r['created_by'], {'total': 0, 'sent': 0, 'failed': 0})
-        p = sms_billing_segments(r['content'])
-        d['total'] += p
-        if r['status'] in ('sent', 'delivered'):
-            d['sent'] += p
-        elif r['status'] == 'failed':
-            d['failed'] += p
+        result[r['created_by']] = {
+            'total': int(r['total'] or 0),
+            'sent': int(r['sent'] or 0),
+            'failed': int(r['failed'] or 0),
+        }
     return result
 
 
@@ -4878,15 +4902,15 @@ def send_sms():
             if result.get('data'):
                 msgid = result['data'].get('msgid', '')
             db.execute(
-                "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, api_config_id, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, ?, ?, ?, datetime('now'), ?)",
-                (phone, name, msg, msgid, api_code, api_msg, api_config_id, g.user['id'])
+                "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, api_config_id, billed_segments, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, ?, ?, ?, ?, datetime('now'), ?)",
+                (phone, name, msg, msgid, api_code, api_msg, api_config_id, sms_billing_segments(msg), g.user['id'])
             )
             records.append({'phone': phone, 'status': 'sent', 'msgid': msgid})
         else:
             status_text = SMS_STATUS_CODES.get(api_code, api_msg)
             db.execute(
-                "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, api_config_id, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, ?, datetime('now'), ?)",
-                (phone, name, msg, api_code, f"Code {api_code}: {status_text}", api_config_id, g.user['id'])
+                "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, api_config_id, billed_segments, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, ?, ?, datetime('now'), ?)",
+                (phone, name, msg, api_code, f"Code {api_code}: {status_text}", api_config_id, sms_billing_segments(msg), g.user['id'])
             )
             records.append({'phone': phone, 'status': 'failed', 'error': status_text})
             errors.append(f"{phone}: {status_text}")
@@ -4933,8 +4957,8 @@ def send_sms():
                     else:
                         status = 'failed'
                     db.execute(
-                        "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, api_config_id, sent_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)",
-                        (phone, name, msg, status, msgid, item_code, api_msg, api_config_id, g.user['id'])
+                        "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, api_config_id, billed_segments, sent_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)",
+                        (phone, name, msg, status, msgid, item_code, api_msg, api_config_id, sms_billing_segments(msg), g.user['id'])
                     )
                     records.append({'phone': phone, 'status': status, 'msgid': msgid})
                     if status == 'failed':
@@ -4945,8 +4969,8 @@ def send_sms():
                 for phone, msg in batch:
                     name = phone_name_map[phone][0]
                     db.execute(
-                        "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, api_config_id, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, ?, datetime('now'), ?)",
-                        (phone, name, msg, api_code, f"Code {api_code}: {status_text}", api_config_id, g.user['id'])
+                        "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, api_config_id, billed_segments, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, ?, ?, datetime('now'), ?)",
+                        (phone, name, msg, api_code, f"Code {api_code}: {status_text}", api_config_id, sms_billing_segments(msg), g.user['id'])
                     )
                     records.append({'phone': phone, 'status': 'failed', 'error': status_text})
                     errors.append(f"{phone}: {status_text}")
@@ -4959,8 +4983,8 @@ def send_sms():
             name = contact_names.get(phone, '')
             msg = apply_template_vars(content, phone, contact_names, contact_cache, shorten_links=True)
             db.execute(
-                "INSERT INTO sms_records (phone, contact_name, content, status, api_msg, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, datetime('now'), ?)",
-                (phone, name, msg, 'API no configurada - envio simulado', g.user['id'])
+                "INSERT INTO sms_records (phone, contact_name, content, status, api_msg, billed_segments, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, ?, datetime('now'), ?)",
+                (phone, name, msg, 'API no configurada - envio simulado', sms_billing_segments(msg), g.user['id'])
             )
             records.append({'phone': phone, 'status': 'sent', 'simulated': True})
 
@@ -5284,21 +5308,15 @@ def _sms_reconciliation_block(db, user, date_from, date_to, account_filter, acco
         WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}
     """
     recon_row = db.execute(recon_sql, rparams + scope_r_params + acct_r_params).fetchone()
-    # Billable segments are computed in Python with the commercial language
-    # rule (Chinese/Spanish 70/67; English/Indonesian 160/153), so PG and
-    # SQLite agree and historical data is re-derived from message content.
-    content_rows = db.execute(
-        f"""SELECT r.content AS content, {tz_date_expr('r.sent_at', rtz_offset)} AS dia
+    # Billable segments come from the stored billed_segments column (SUM), so no
+    # per-row Python recomputation happens at request time (fast on large tables).
+    billing_row = db.execute(
+        f"""SELECT COALESCE(SUM(r.billed_segments),0) AS segs
             FROM sms_records r
             WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}""",
         rparams + scope_r_params + acct_r_params
-    ).fetchall()
-    billing_total = 0
-    billing_by_day = {}
-    for cr in content_rows:
-        p = sms_billing_segments(cr['content'])
-        billing_total += p
-        billing_by_day[str(cr['dia'])] = billing_by_day.get(str(cr['dia']), 0) + p
+    ).fetchone()
+    billing_total = int(billing_row['segs'] or 0)
     recon = {
         'total': recon_row['total'],
         'submitted': recon_row['submitted'],
@@ -5319,7 +5337,8 @@ def _sms_reconciliation_block(db, user, date_from, date_to, account_filter, acco
           coalesce(sum(CASE WHEN r.api_code=0 THEN 1 ELSE 0 END),0) AS submitted,
           coalesce(sum(CASE WHEN r.status='delivered' THEN 1 ELSE 0 END),0) AS delivered,
           coalesce(sum(CASE WHEN r.status='sent' THEN 1 ELSE 0 END),0) AS in_flight,
-          coalesce(sum(CASE WHEN r.api_code<>0 THEN 1 ELSE 0 END),0) AS rejected
+          coalesce(sum(CASE WHEN r.api_code<>0 THEN 1 ELSE 0 END),0) AS rejected,
+          coalesce(sum(r.billed_segments),0) AS billing_parts
         FROM sms_records r
         WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}
         GROUP BY 1 ORDER BY 1
@@ -5329,7 +5348,7 @@ def _sms_reconciliation_block(db, user, date_from, date_to, account_filter, acco
     recon['by_day'] = [
         {'date': str(x['dia']), 'total': x['total'], 'submitted': x['submitted'],
          'delivered': x['delivered'], 'in_flight': x['in_flight'],
-         'rejected': x['rejected'], 'billing_parts': billing_by_day.get(str(x['dia']), 0)}
+         'rejected': x['rejected'], 'billing_parts': int(x['billing_parts'] or 0)}
         for x in recon_series
     ]
     recon['report_tz'] = report_tz
