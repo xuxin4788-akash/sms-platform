@@ -1416,61 +1416,41 @@ function updatePreview() {
 // Commercial billing rule (independent of the carrier's low-level charset):
 // Chinese / Spanish (and Chinese-mixed) -> 70 chars per SMS, long parts 67;
 // English / Indonesian / other Latin -> 160 chars per SMS, long parts 153.
-// The textarea transliterates accents to ASCII, so Spanish is also recognised
-// from common unambiguous Spanish words.
-const SMS_BILLING_SPANISH_WORDS = {
-  hola:1, buenos:1, buenas:1, dias:1, tardes:1, noches:1, gracias:1, muchas:1,
-  favor:1, saludos:1, cordial:1, atentamente:1, estimado:1, estimada:1,
-  estimados:1, estimadas:1, cliente:1, clientes:1, cuenta:1, cuentas:1,
-  pago:1, pagos:1, pagar:1, pendiente:1, pendientes:1, adeuda:1, adeudan:1,
-  vencido:1, vencida:1, vencidos:1, vencidas:1, monto:1, saldo:1, deuda:1,
-  credito:1, prestamo:1, prestamos:1, banco:1, transferencia:1, deposito:1,
-  fecha:1, limite:1, plazo:1, mensaje:1, responder:1, comunicarse:1,
-  contacto:1, telefono:1, whatsapp:1, correo:1, direccion:1, numero:1,
-  recibo:1, recargos:1, interes:1, intereses:1, promocion:1, descuento:1,
-  oferta:1, compra:1, venta:1, ventas:1, dinero:1, pesos:1, enviamos:1,
-  recordatorio:1, recordarle:1, invitamos:1, usted:1, ustedes:1, para:1,
-  como:1, donde:1, porque:1, cuando:1, ahora:1, antes:1, despues:1,
-  descuentos:1, beneficio:1, beneficios:1, adicional:1, adicionales:1,
-  verificar:1, confirmar:1, cancelar:1, siguiente:1, informacion:1,
-  servicio:1, servicios:1, atencion:1, horario:1, oficina:1, sucursal:1,
-  tarjeta:1, efectivo:1, linea:1, plan:1, planes:1, debe:1, deben:1,
-  realice:1, realizar:1, evite:1, suspension:1, corte:1, inmediato:1,
-  importante:1, urgente:1, aprovecha:1, aproveche:1, solo:1, valido:1,
-  hasta:1, cada:1, todo:1, toda:1, todos:1, todas:1, nuestro:1, nuestra:1,
-  nuestros:1, nuestras:1, empresa:1, negocio:1, equipo:1, mensual:1,
-  semanal:1, anual:1, minimo:1, maximo:1, total:1, parcial:1, abono:1,
-  abonar:1, liquidar:1, prorroga:1, reestructura:1, cartera:1, cobranza:1
-};
+// Billing language rule (per product owner): the 70-char rate applies ONLY when
+// the message contains Spanish-specific marks (accented vowels, diaeresis,
+// n-tilde, inverted ?/!) or CJK characters. Plain-ASCII Spanish is ordinary
+// Latin at 160 chars/SMS. Rated on the ORIGINAL text before accent stripping.
 const SMS_CJK_RE = /[㐀-鿿豈-﫿　-〿＀-￯]/;
 const SMS_SPANISH_ACCENT_RE = /[áéíóúüñ¿¡ÁÉÍÓÚÜÑ]/;
 
 function smsBillingClass(content) {
   var s = String(content == null ? '' : content);
   if (!s) return 'latin';
+  // Compose decomposed (NFD) accents so mobile keyboards/paste are detected.
+  if (s.normalize) s = s.normalize('NFC');
   if (SMS_CJK_RE.test(s)) return 'cjk';
   if (SMS_SPANISH_ACCENT_RE.test(s)) return 'spanish';
-  var words = s.toLowerCase().match(/[a-zñ]+/g) || [];
-  for (var i = 0; i < words.length; i++) {
-    if (Object.prototype.hasOwnProperty.call(SMS_BILLING_SPANISH_WORDS, words[i])) return 'spanish';
-  }
   return 'latin';
 }
 
 // Local-only billing calculator. Never calls the provider charset endpoint
 // while typing (that endpoint is billable/rate-limited and was the source of
-// repeated outbound requests).
+// repeated outbound requests). Billing class is rated on the ORIGINAL text
+// (Spanish marks -> 70 rate); length/parts use the GSM-normalized text that
+// actually goes out, matching the server.
 function localSmsParts(content) {
-  var s = String(content == null ? '' : content);
-  var len = s.length;
-  var cls = smsBillingClass(s);
+  var raw = String(content == null ? '' : content);
+  var cls = smsBillingClass(raw);
+  var normalized = normalizeSmsText(raw);
+  var len = normalized.length;
   if (cls === 'latin') {
-    if (len <= 160) return { charset: 'GSM', billing_class: 'latin', lang: 'Ingles / Indonesio', char_count: len, single: 160, parts: len === 0 ? 1 : 1 };
-    return { charset: 'GSM', billing_class: 'latin', lang: 'Ingles / Indonesio', char_count: len, single: 153, parts: Math.ceil(len / 153) };
+    if (len <= 160) return { charset: 'GSM', billing_class: 'latin', lang: 'Latin / ingles', char_count: len, single: 160, parts: len === 0 ? 1 : 1 };
+    return { charset: 'GSM', billing_class: 'latin', lang: 'Latin / ingles', char_count: len, single: 153, parts: Math.ceil(len / 153) };
   }
-  var lang = cls === 'cjk' ? 'Chino / mixto' : 'Espanol';
-  if (len <= 70) return { charset: 'UCS2', billing_class: cls, lang: lang, char_count: len, single: 70, parts: len === 0 ? 1 : 1 };
-  return { charset: 'UCS2', billing_class: cls, lang: lang, char_count: len, single: 67, parts: Math.ceil(len / 67) };
+  var lang = cls === 'cjk' ? 'Chino / mixto' : 'Espanol con acentos/n';
+  var charset = cls === 'cjk' ? 'UCS2' : 'GSM';
+  if (len <= 70) return { charset: charset, billing_class: cls, lang: lang, char_count: len, single: 70, parts: len === 0 ? 1 : 1 };
+  return { charset: charset, billing_class: cls, lang: lang, char_count: len, single: 67, parts: Math.ceil(len / 67) };
 }
 
 function checkCharsetInfo(content) {

@@ -117,57 +117,32 @@ import re as _re
 #   * Chinese (any CJK char) and Spanish                    ->  70 chars / SMS,
 #     long messages split every 67.
 #   * Any Chinese+Latin mixed content is billed at the 70-char (CJK) rate.
-# Spanish is detected from language markers (accented Latin letters or common,
-# unambiguous Spanish words) so it works even after accent-stripping to ASCII.
-_SPANISH_WORDS = {
-    'hola', 'buenos', 'buenas', 'dias', 'tardes', 'noches', 'gracias', 'muchas',
-    'favor', 'saludos', 'cordial', 'atentamente', 'estimado',
-    'estimada', 'estimados', 'estimadas', 'cliente', 'clientes', 'cuenta',
-    'cuentas', 'pago', 'pagos', 'pagar', 'pendiente', 'pendientes', 'adeuda',
-    'adeudan', 'vencido', 'vencida', 'vencidos', 'vencidas', 'monto', 'saldo',
-    'deuda', 'credito', 'prestamo', 'prestamos', 'banco', 'transferencia',
-    'deposito', 'fecha', 'limite', 'plazo', 'mensaje', 'responder',
-    'comunicarse', 'contacto', 'telefono', 'whatsapp', 'correo', 'direccion',
-    'numero', 'recibo', 'recargos', 'interes', 'intereses', 'promocion',
-    'descuento', 'oferta', 'compra', 'venta', 'ventas', 'dinero', 'pesos',
-    'enviamos', 'recordatorio', 'recordarle', 'invitamos', 'usted', 'ustedes',
-    'para', 'como', 'donde', 'porque', 'cuando', 'ahora', 'antes', 'despues',
-    'descuentos', 'beneficio', 'beneficios', 'adicional', 'adicionales',
-    'verificar', 'confirmar', 'cancelar', 'siguiente', 'informacion',
-    'servicio', 'servicios', 'atencion', 'horario', 'oficina', 'sucursal',
-    'tarjeta', 'efectivo', 'linea', 'plan', 'planes', 'debe', 'deben',
-    'realice', 'realizar', 'evite', 'suspension', 'corte', 'inmediato',
-    'importante', 'urgente', 'aprovecha', 'aproveche', 'solo', 'valido',
-    'hasta', 'cada', 'todo', 'toda', 'todos', 'todas', 'nuestro', 'nuestra',
-    'nuestros', 'nuestras', 'empresa', 'negocio', 'equipo', 'mensual',
-    'semanal', 'anual', 'minimo', 'maximo', 'total', 'parcial', 'abono',
-    'abonar', 'liquidar', 'prorroga', 'reestructura', 'cartera', 'cobranza',
-}
+# Billing language detection (business rule, per product owner):
+# A message is billed at the 70-char rate ONLY when it contains Spanish-specific
+# glyphs (accented vowels, diaeresis, n-tilde, inverted marks) or CJK chars.
+# Plain-ASCII Spanish text is billed as ordinary Latin (160 chars / SMS).
+# Billing class is evaluated on the ORIGINAL text, before GSM normalization
+# strips accents (see normalize_sms_text / build_sms_message).
 
 _CJK_RE = _re.compile(r'[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF]')
 _SPANISH_ACCENT_RE = _re.compile(
     '[áéíóúüñ¿¡ÁÉÍÓÚÜÑ]'
 )
-_WORD_RE = _re.compile(r"[a-zñ]+")
-# Latin accented vowels folded to plain letters for keyword matching after the
-# web UI transliterates Spanish text to ASCII.
-_ACCENT_FOLD = str.maketrans({
-    'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ü': 'u', 'ñ': 'n',
-    'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U', 'Ü': 'U', 'Ñ': 'N',
-})
-
 
 def sms_billing_class(content):
-    """Return 'cjk' (70), 'spanish' (70), or 'latin' (160) for billing."""
+    """Return 'cjk' (70), 'spanish' (70), or 'latin' (160) for billing.
+
+    'spanish' is assigned solely from Spanish-specific symbols (accented
+    vowels, u-diaeresis, n-tilde, inverted ?/!); ordinary Latin text without
+    those marks, including ASCII-only Spanish, is billed at the 160-char
+    Latin rate. Detection is NFC-composed to also catch decomposed (NFD)
+    combining accents produced by some mobile keyboards."""
     if not content:
         return 'latin'
-    if _CJK_RE.search(content):
+    text = unicodedata.normalize('NFC', content)
+    if _CJK_RE.search(text):
         return 'cjk'
-    if _SPANISH_ACCENT_RE.search(content):
-        return 'spanish'
-    folded = content.translate(_ACCENT_FOLD).lower()
-    words = set(_WORD_RE.findall(folded))
-    if words & _SPANISH_WORDS:
+    if _SPANISH_ACCENT_RE.search(text):
         return 'spanish'
     return 'latin'
 
@@ -2772,6 +2747,15 @@ def build_sms_message(text, phone, contact_names=None, contact_cache=None, short
     return normalize_sms_text(msg)
 
 
+def build_sms_message_raw(text, phone, contact_names=None, contact_cache=None):
+    """Resolve template variables for one recipient WITHOUT GSM normalization
+    and WITHOUT shortening links. Used only to rate billing segments: the
+    commercial rule classifies the original (pre-transliteration) text, so a
+    message with real Spanish marks stays on the 70-char rate even though the
+    delivered body is ASCII."""
+    return apply_template_vars(text, phone, contact_names, contact_cache, shorten_links=False)
+
+
 # ---------------------------------------------------------------------------
 # Short links
 # ---------------------------------------------------------------------------
@@ -5213,7 +5197,13 @@ def send_sms():
     # Spanish symbols to ASCII (and drop any other non-ASCII) so requests that
     # bypass the web textarea cannot deliver UCS-2 content. Done before the
     # length check because the provider receives the normalized text.
-    content = normalize_sms_text(data.get('content', '')).strip()
+    #
+    # Billing, however, is rated on the ORIGINAL text (before transliteration):
+    # a message that actually contained Spanish marks (accents, n-tilde) is
+    # billed at the 70-char Spanish rate even though accents are stripped on the
+    # wire; plain-ASCII Spanish stays on the 160-char Latin rate.
+    raw_content = (data.get('content', '') or '')
+    content = normalize_sms_text(raw_content).strip()
     contact_names = data.get('contact_names', {})
     if not phones or not content:
         return jsonify({'error': 'Numero(s) y contenido son requeridos'}), 400
@@ -5247,6 +5237,10 @@ def send_sms():
         phone = normalize_phone(raw_phone)
         name = contact_names.get(raw_phone, '') or contact_names.get(phone, '')
         msg = build_sms_message(content, raw_phone, contact_names, contact_cache, shorten_links=True)
+        # Billing rated on the ORIGINAL pre-normalization message (Spanish marks
+        # stripped on the wire must still bill at the 70-char Spanish rate).
+        bill_segments = sms_billing_segments(
+            build_sms_message_raw(raw_content, raw_phone, contact_names, contact_cache))
         result = sms_api_send_single(phone, msg, sms_config)
         api_code = result.get('code', -1)
         api_msg = result.get('msg', '')
@@ -5256,14 +5250,14 @@ def send_sms():
                 msgid = result['data'].get('msgid', '')
             db.execute(
                 "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, api_config_id, billed_segments, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, ?, ?, ?, ?, datetime('now'), ?)",
-                (phone, name, msg, msgid, api_code, api_msg, api_config_id, sms_billing_segments(msg), g.user['id'])
+                (phone, name, msg, msgid, api_code, api_msg, api_config_id, bill_segments, g.user['id'])
             )
             records.append({'phone': phone, 'status': 'sent', 'msgid': msgid})
         else:
             status_text = SMS_STATUS_CODES.get(api_code, api_msg)
             db.execute(
                 "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, api_config_id, billed_segments, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, ?, ?, datetime('now'), ?)",
-                (phone, name, msg, api_code, f"Code {api_code}: {status_text}", api_config_id, sms_billing_segments(msg), g.user['id'])
+                (phone, name, msg, api_code, f"Code {api_code}: {status_text}", api_config_id, bill_segments, g.user['id'])
             )
             records.append({'phone': phone, 'status': 'failed', 'error': status_text})
             errors.append(f"{phone}: {status_text}")
@@ -5272,6 +5266,7 @@ def send_sms():
         # Multiple SMS - use /sms/rsend endpoint (max 200 per batch)
         phone_content_pairs = []
         phone_name_map = {}
+        phone_bill_segments = {}
         for raw in phones:
             raw = (raw or '').strip()
             if not raw:
@@ -5281,6 +5276,9 @@ def send_sms():
             msg = build_sms_message(content, raw, contact_names, contact_cache, shorten_links=True)
             phone_content_pairs.append((phone, msg))
             phone_name_map[phone] = (name, msg)
+            # Billing on the ORIGINAL (pre-normalization) per-recipient text.
+            phone_bill_segments[phone] = sms_billing_segments(
+                build_sms_message_raw(raw_content, raw, contact_names, contact_cache))
 
         # Split into batches of 200
         for batch_start in range(0, len(phone_content_pairs), 200):
@@ -5311,7 +5309,7 @@ def send_sms():
                         status = 'failed'
                     db.execute(
                         "INSERT INTO sms_records (phone, contact_name, content, status, msgid, api_code, api_msg, api_config_id, billed_segments, sent_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)",
-                        (phone, name, msg, status, msgid, item_code, api_msg, api_config_id, sms_billing_segments(msg), g.user['id'])
+                        (phone, name, msg, status, msgid, item_code, api_msg, api_config_id, phone_bill_segments.get(phone, 1), g.user['id'])
                     )
                     records.append({'phone': phone, 'status': status, 'msgid': msgid})
                     if status == 'failed':
@@ -5323,7 +5321,7 @@ def send_sms():
                     name = phone_name_map[phone][0]
                     db.execute(
                         "INSERT INTO sms_records (phone, contact_name, content, status, api_code, api_msg, api_config_id, billed_segments, sent_at, created_by) VALUES (?, ?, ?, 'failed', ?, ?, ?, ?, datetime('now'), ?)",
-                        (phone, name, msg, api_code, f"Code {api_code}: {status_text}", api_config_id, sms_billing_segments(msg), g.user['id'])
+                        (phone, name, msg, api_code, f"Code {api_code}: {status_text}", api_config_id, phone_bill_segments.get(phone, 1), g.user['id'])
                     )
                     records.append({'phone': phone, 'status': 'failed', 'error': status_text})
                     errors.append(f"{phone}: {status_text}")
@@ -5335,9 +5333,11 @@ def send_sms():
                 continue
             name = contact_names.get(phone, '')
             msg = build_sms_message(content, phone, contact_names, contact_cache, shorten_links=True)
+            bill_segments = sms_billing_segments(
+                build_sms_message_raw(raw_content, phone, contact_names, contact_cache))
             db.execute(
                 "INSERT INTO sms_records (phone, contact_name, content, status, api_msg, billed_segments, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, ?, datetime('now'), ?)",
-                (phone, name, msg, 'API no configurada - envio simulado', sms_billing_segments(msg), g.user['id'])
+                (phone, name, msg, 'API no configurada - envio simulado', bill_segments, g.user['id'])
             )
             records.append({'phone': phone, 'status': 'sent', 'simulated': True})
 
@@ -6956,11 +6956,10 @@ def check_sms_charset():
 
     if not is_sms_api_configured():
         # Local estimation using the commercial language billing rule:
-        # Chinese / Spanish -> 70 chars single (67 concat); English/Indonesian
-        # and other Latin text -> 160 single (153 concat).
-        # Billing class is detected on the ORIGINAL text (accents mark Spanish);
-        # the message that actually goes out is GSM-normalized, so length/parts
-        # are computed on that normalized text to match delivery.
+        # Chinese, or Spanish that CONTAINS Spanish marks (accents, n-tilde),
+        # -> 70 chars single (67 concat); plain Latin / ASCII-only Spanish ->
+        # 160 single (153 concat). Billing class is rated on the ORIGINAL text;
+        # length/parts use the GSM-normalized text to match delivery.
         billing_class = sms_billing_class(content)
         normalized = normalize_sms_text(content)
         char_count = len(normalized)
@@ -6971,9 +6970,9 @@ def check_sms_charset():
         if billing_class == 'cjk':
             charset, single, lang = 'UCS2', 70, 'Chino / mixto (70 caracteres)'
         elif billing_class == 'spanish':
-            charset, single, lang = 'GSM', 70, 'Espanol (70 caracteres)'
+            charset, single, lang = 'GSM', 70, 'Espanol con acentos/n (70 caracteres)'
         else:
-            charset, single, lang = 'GSM', 160, 'Ingles / Indonesio (160 caracteres)'
+            charset, single, lang = 'GSM', 160, 'Latin / ingles (160 caracteres)'
         return jsonify({
             'charset': charset,
             'parts': parts,
