@@ -442,11 +442,11 @@ function showMainApp() {
         state.user.permsConfigured !== true) {
         if (role === 'team_admin') {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'calls', 'content-search', 'users', 'my-account',
-                     'my-team', 'all-teams', 'retention'];
+                     'records', 'calls', 'email', 'email-records', 'content-search',
+                     'users', 'my-account', 'my-team', 'all-teams', 'retention'];
         } else {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'calls', 'my-account'];
+                     'records', 'calls', 'email', 'email-records', 'my-account'];
         }
     }
     document.querySelectorAll('.nav-item').forEach(function(el) {
@@ -534,10 +534,8 @@ function navigateTo(page) {
         case 'records': renderRecords(content); break;
         case 'calls': renderCalls(content); break;
         case 'email':
-            if (state.user.role !== 'admin') { renderDashboard(content); break; }
             renderEmailSend(content); break;
         case 'email-records':
-            if (state.user.role !== 'admin') { renderDashboard(content); break; }
             renderEmailRecords(content); break;
         case 'email-config':
             if (state.user.role !== 'admin') { renderDashboard(content); break; }

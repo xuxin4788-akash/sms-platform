@@ -2976,6 +2976,13 @@ def get_me():
         permissions = []
         perms_configured = False
 
+    # Auto-grant newly rolled-out pages (e.g. email) to all non-admin roles,
+    # even when an explicit/older permission set is stored. Admin pages excluded.
+    if g.user.get('role') != 'admin':
+        for p in AUTO_GRANT_PAGES:
+            if p not in permissions:
+                permissions.append(p)
+
     # Get team country code
     team_country = ''
     try:
@@ -4200,14 +4207,20 @@ DEFAULT_ROLE_PERMISSIONS = {
     'admin': [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions'],
     'team_admin': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams',
-        'retention',
+        'calls', 'email', 'email-records', 'content-search', 'users',
+        'my-account', 'my-team', 'all-teams', 'retention',
     ],
     'team_member': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'my-account',
+        'calls', 'email', 'email-records', 'my-account',
     ],
 }
+
+# Pages that are auto-granted to every non-admin role even when the role has
+# an explicit (possibly older) permission set stored. Used to roll out new
+# features without forcing an admin to re-check permissions for existing teams.
+# Admin-only pages (e.g. email-config) must never be added here.
+AUTO_GRANT_PAGES = {'email', 'email-records'}
 
 @app.route('/api/role-permissions', methods=['GET'])
 @admin_required
@@ -9155,7 +9168,7 @@ def _email_scope_where(user, alias='r'):
 
 
 @app.route('/api/email/send', methods=['POST'])
-@admin_required
+@login_required
 def send_email():
     data = request.get_json(silent=True) or {}
     mode = data.get('mode', 'contacts')
@@ -9242,19 +9255,23 @@ def send_email():
 
 
 @app.route('/api/email/records', methods=['GET'])
-@admin_required
+@login_required
 def email_records_api():
     db = get_db()
     user = g.user
     page = max(1, int(request.args.get('page', 1)))
     per_page = min(200, max(1, int(request.args.get('per_page', 20))))
     search = request.args.get('search', '').strip()
+    status = request.args.get('status', '').strip()
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
     where, params = _email_scope_where(user)
     if search:
         where += " AND (r.recipient_email LIKE ? OR r.contact_name LIKE ? OR r.subject LIKE ?)"
         params += [f'%{search}%'] * 3
+    if status in ('sent', 'simulated', 'failed', 'pending'):
+        where += " AND r.status = ?"
+        params.append(status)
     if date_from:
         where += " AND DATE(r.created_at) >= ?"
         params.append(date_from)
@@ -9276,7 +9293,7 @@ def email_records_api():
 
 
 @app.route('/api/email/statistics', methods=['GET'])
-@admin_required
+@login_required
 @stats_cache_namespace('email_stats')
 def email_statistics_api():
     db = get_db()
@@ -9285,25 +9302,25 @@ def email_statistics_api():
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
     if date_from:
-        where += " AND DATE(created_at) >= ?"; params.append(date_from)
+        where += " AND DATE(r.created_at) >= ?"; params.append(date_from)
     if date_to:
-        where += " AND DATE(created_at) <= ?"; params.append(date_to)
+        where += " AND DATE(r.created_at) <= ?"; params.append(date_to)
     row = db.execute(
         f"SELECT COUNT(*) AS total, "
-        f"SUM(CASE WHEN status IN ('sent','simulated') THEN 1 ELSE 0 END) AS sent, "
-        f"SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed "
-        f"FROM email_records WHERE {where}", params
+        f"SUM(CASE WHEN r.status IN ('sent','simulated') THEN 1 ELSE 0 END) AS sent, "
+        f"SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END) AS failed "
+        f"FROM email_records r WHERE {where}", params
     ).fetchone()
     total = int(row['total'] or 0)
     sent = int(row['sent'] or 0)
     failed = int(row['failed'] or 0)
     # last 7 days (date filter reused for the windowed query)
     cutoff = (datetime.now() - timedelta(days=6)).strftime('%Y-%m-%d')
-    chart_where = where + " AND DATE(created_at) >= ?"
+    chart_where = where + " AND DATE(r.created_at) >= ?"
     chart_params = params + [cutoff]
     chart = db.execute(
-        f"SELECT DATE(created_at) AS d, COUNT(*) AS n FROM email_records "
-        f"WHERE {chart_where} GROUP BY DATE(created_at)", chart_params
+        f"SELECT DATE(r.created_at) AS d, COUNT(*) AS n FROM email_records r "
+        f"WHERE {chart_where} GROUP BY DATE(r.created_at)", chart_params
     ).fetchall()
     return jsonify({
         'total': total, 'sent': sent, 'failed': failed,
