@@ -666,7 +666,7 @@ async function renderDashboard(container) {
                 '<h2 style="margin:0;">Conciliacion con operador</h2>' +
                 '<div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;">' + tzSelect + syncBtn + '</div>' +
             '</div><div class="card-body">' +
-              '<p style="font-size:12px;color:#64748B;margin:0 0 14px;">Cuenta real con el proveedor (excluye envios simulados). El corte de dia usa la zona horaria seleccionada; para cuadrar con el Excel de Rileci elige "Operador (UTC+8)". "Aceptados" = recibidos por el operador; "Entregados" = confirmacion de entrega final; "En proceso" aun sin reporte; "Rechazados" no se facturan. Los segmentos ya aplican la regla GSM 03.38 / UCS2 del operador.</p>' +
+              '<p style="font-size:12px;color:#64748B;margin:0 0 14px;">Cuenta real con el proveedor (excluye envios simulados). El corte de dia usa la zona horaria seleccionada; para cuadrar con el Excel de Rileci elige "Operador (UTC+8)". "Aceptados" = recibidos por el operador; "Entregados" = confirmacion de entrega final; "En proceso" aun sin reporte; "Rechazados" no se facturan. Los segmentos usan la regla de facturacion por idioma (70 car. espanol/chino, 160 ingles/indonesio).</p>' +
               '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">' +
                 '<div class="stat-card"><div class="stat-label">Aceptados</div><div class="stat-value" style="font-size:22px;">' + (rc.submitted || 0) + '</div></div>' +
                 '<div class="stat-card"><div class="stat-label">Entregados</div><div class="stat-value" style="font-size:22px;color:var(--success);">' + (rc.delivered || 0) + '</div></div>' +
@@ -2577,25 +2577,29 @@ async function renderMyTeam(container) {
                 miniStat('SMS Enviados', myTeam.sent || 0, '#10B981') +
                 miniStat('SMS Fallidos', myTeam.failed || 0, '#EF4444') +
                 miniStat('SMS Pendientes', myTeam.pending || 0, '#F59E0B') +
+                miniStat('SMS Facturados', myTeam.billed_segments != null ? myTeam.billed_segments : (myTeam.total || 0), '#0F766E') +
                 miniStat('Llamadas', myTeam.calls || 0, '#2563EB') +
                 miniStat('Conectadas', myTeam.answered || 0, '#10B981') +
                 miniStat('Tiempo Llamada', myTeam.talk_time ? formatDuration(myTeam.talk_time) : '0s') +
                 miniStat('Ultima Actividad', myTeam.last_activity ? timeAgo(myTeam.last_activity) : 'Sin actividad') +
                 '</div>';
             var footItems = [
-                '<span>Facturacion: cada SMS enviado se factura (exito o fallo)</span>',
+                '<span>Facturacion por segmento: 70 car. espanol/chino, 160 ingles/indonesio (exito o fallo)</span>',
                 '<span>Costo por SMS: se configura por pais en Configuracion API SMS</span>',
                 '<span>Limite diario: ' + (myTeam.daily_limit > 0 ? myTeam.daily_limit + ' SMS/usuario' : 'Sin limite') + '</span>'
             ].join('');
             var statFoot = '<div style="margin-top:14px;padding-top:12px;border-top:1px dashed #E2E8F0;display:flex;flex-wrap:wrap;gap:6px 24px;font-size:12px;color:#64748B;">' + footItems + '</div>';
 
-            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen del Equipo</h3><span class="badge badge-success header-badge">' + escapeHtml(myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard(sentLabel, myTeam.today || 0, 'var(--success)') + statCard('Costo Total', formatMoney(myTeam.total || 0, data.unit_price), 'var(--primary)') + statCard('Tasa de Exito', teamRate + '%') + '</div>' + statStrip + statFoot + '</div></div>';
+            var teamCostVal = myTeam.total_cost != null
+                ? Number(myTeam.total_cost)
+                : (Number(myTeam.total) || 0) * Number(data.unit_price || 0);
+            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><span style="font-size:20px;"></span><h3 style="margin:0;">Resumen del Equipo</h3><span class="badge badge-success header-badge">' + escapeHtml(myTeam.team_name || '-') + '</span></div><div class="card-body"><div class="stats-grid stats-grid-5">' + statCard('Miembros', myTeam.member_count || 0) + statCard('Total SMS', myTeam.total || 0) + statCard(sentLabel, myTeam.today || 0, 'var(--success)') + statCard('Costo Total', formatCost(teamCostVal), 'var(--primary)') + statCard('Tasa de Exito', teamRate + '%') + '</div>' + statStrip + statFoot + '</div></div>';
 
             // Per-account breakdown, ordered by total SMS (backend) then username.
             var members = myTeam.members || [];
             var roleLabels = { admin: 'Administrador', team_admin: 'Admin. de Equipo', team_member: 'Miembro' };
             var memberRows = members.length === 0
-                ? '<tr><td colspan="11" class="text-center text-secondary" style="padding:24px;">Sin cuentas</td></tr>'
+                ? '<tr><td colspan="12" class="text-center text-secondary" style="padding:24px;">Sin cuentas</td></tr>'
                 : members.map(function(mem) {
                     var rate = Number(mem.rate) || 0;
                     var rateBadge = rate >= 90 ? 'badge-green' : (rate >= 70 ? 'badge-orange' : 'badge-red');
@@ -2605,9 +2609,10 @@ async function renderMyTeam(container) {
                         '<td>' + nameCell + '</td>' +
                         '<td><span class="badge badge-blue">' + (roleLabels[mem.role] || mem.role) + '</span></td>' +
                         '<td style="text-align:right;font-weight:600;">' + (mem.total || 0) + '</td>' +
+                        '<td style="text-align:right;font-weight:600;color:#0F766E;" title="SMS facturados por segmento">' + (mem.billed_segments != null ? mem.billed_segments : (mem.total || 0)) + '</td>' +
                         '<td style="text-align:right;color:var(--success);">' + (mem.sent || 0) + '</td>' +
                         '<td style="text-align:right;color:var(--danger);">' + (mem.failed || 0) + '</td>' +
-                        '<td style="text-align:right;color:var(--primary);font-weight:600;">' + formatMoney(mem.cost || 0, 1) + '</td>' +
+                        '<td style="text-align:right;color:var(--primary);font-weight:600;">' + formatCost(Number(mem.cost) || 0) + '</td>' +
                         '<td style="text-align:right;">' + (mem.calls || 0) + '</td>' +
                         '<td style="text-align:right;color:var(--success);">' + (mem.answered || 0) + '</td>' +
                         '<td style="text-align:right;" class="text-secondary text-sm">' + (mem.talk_time ? formatDuration(mem.talk_time) : '0s') + '</td>' +
@@ -2615,7 +2620,7 @@ async function renderMyTeam(container) {
                         '<td class="text-secondary text-sm">' + (mem.last_activity ? timeAgo(mem.last_activity) : 'Sin actividad') + '</td>' +
                         '</tr>';
                 }).join('');
-            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Datos por Cuenta</h3><span class="badge badge-blue header-badge">' + members.length + ' cuentas</span></div><div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Llamadas</th><th style="text-align:right;">Conectadas</th><th style="text-align:right;">Tiempo</th><th style="text-align:right;">Exito</th><th>Ultima Actividad</th></tr></thead><tbody>' + memberRows + '</tbody></table></div></div>';
+            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Datos por Cuenta</h3><span class="badge badge-blue header-badge">' + members.length + ' cuentas</span></div><div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;" title="SMS facturados por segmento">SMS Fact.</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Llamadas</th><th style="text-align:right;">Conectadas</th><th style="text-align:right;">Tiempo</th><th style="text-align:right;">Exito</th><th>Ultima Actividad</th></tr></thead><tbody>' + memberRows + '</tbody></table></div></div>';
         } else {
             html += '<div class="card mb-4"><div class="card-body"><div class="empty-state"><h3>Sin datos de equipo</h3><p>No tienes acceso a datos de equipo.</p></div></div></div>';
         }
@@ -3063,13 +3068,13 @@ async function renderConfig(container) {
                 var isCfg = c.domain && c.spid && c.api_pwd;
                 return '<div class="card mb-3"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><h3 style="margin:0;">' + escapeHtml(c.name) + ' <span class="badge ' + (c.country === 'MX' ? 'badge-green' : 'badge-blue') + '">' + escapeHtml(c.country) + '</span></h3><span class="badge ' + (c.is_active ? 'badge-green' : 'badge-gray') + '" style="margin-left:auto;">' + (c.is_active ? 'Activa' : 'Inactiva') + '</span></div><div class="card-body"><form onsubmit="handleSaveApiConfig(event, ' + c.id + ')"><div class="form-grid"><div class="form-group"><label>Dominio del Servidor</label><input type="text" name="domain" value="' + escapeHtml(c.domain || '') + '" placeholder="api.infin8linx.com"></div><div class="form-group"><label>Cuenta de Interfaz (SPID)</label><input type="text" name="spid" value="' + escapeHtml(c.spid || '') + '" placeholder="Su cuenta de interfaz"></div><div class="form-group"><label>Contrasena API</label><input type="password" name="api_pwd" value="' + escapeHtml(c.api_pwd || '') + '" placeholder="Contrasena de la API"></div><div class="form-group"><label>Nombre del Remitente</label><input type="text" name="sender_name" value="' + escapeHtml(c.sender_name || '') + '" placeholder="MiEmpresa"></div><div class="form-group"><label>Costo por SMS (' + escapeHtml(c.country || 'pais') + ')</label><input type="number" name="unit_price" value="' + (c.unit_price != null ? c.unit_price : 0) + '" min="0" step="0.0001" placeholder="0.0000"></div></div><div class="flex gap-2 mt-3"><button type="submit" class="btn btn-primary">Guardar</button><button type="button" class="btn btn-secondary" onclick="testApiConfig(' + c.id + ')">Probar</button><button type="button" class="btn btn-danger btn-sm" onclick="deleteApiConfig(' + c.id + ')">Eliminar</button></div></form>' + (isCfg ? '<div class="mt-3"><span class="badge badge-green">API Configurada</span></div>' : '<div class="mt-3"><span class="badge badge-yellow">API No Configurada - Modo Simulacion</span></div>') + '</div></div>';
             }).join('') +
-            '<div class="card mb-4"><div class="card-body"><div style="padding:12px;background:#EFF6FF;border-radius:8px;font-size:13px;color:#1E293B;"><strong>Nota sobre codificacion:</strong> El espanol usa codificacion UCS2. Cada SMS individual admite hasta 70 caracteres. SMS largos se dividen en partes de 67 caracteres cada una.</div></div></div>';
+            '<div class="card mb-4"><div class="card-body"><div style="padding:12px;background:#EFF6FF;border-radius:8px;font-size:13px;color:#1E293B;"><strong>Nota de facturacion:</strong> Los SMS se cobran por segmento segun el idioma: <strong>espanol/chino 70 caracteres por SMS</strong> (partes largas de 67) e <strong>ingles/indonesio 160 por SMS</strong> (partes largas de 153); un texto mezclado se tarifica como espanol/chino. El editor convierte automaticamente los acentos a caracteres ASCII para la transmision, pero la tarifa sigue la regla por idioma.</div></div></div>';
 
         var html = initialHtml;
 
         if (state.user.role === 'admin') {
             var price = (results.billing && results.billing.sms_unit_price != null) ? results.billing.sms_unit_price : 0;
-            html += '<div class="card mb-4"><div class="card-header"><h2 style="margin:0;">Facturacion por SMS</h2></div><div class="card-body"><p class="text-secondary" style="margin-bottom:16px">El costo se calcula por <strong>SMS enviado</strong> (cada intento, exitoso o fallido). Se usa primero el <strong>precio configurado en el pais de cada cuenta</strong> (campo "Costo por SMS" en cada configuracion de arriba); si el pais no tiene precio, se aplica este <strong>costo global por defecto</strong>. Se refleja en Mi Cuenta, Mi Equipo y Todos los Equipos.</p><div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;"><div style="flex:1;min-width:200px"><label class="form-label">Costo global por defecto</label><input type="number" id="sms-unit-price" class="form-input" value="' + price + '" min="0" step="0.0001" placeholder="0.0000"></div><button class="btn btn-primary" onclick="saveBillingPrice()">Guardar Costo</button></div></div></div>';
+            html += '<div class="card mb-4"><div class="card-header"><h2 style="margin:0;">Facturacion por SMS</h2></div><div class="card-body"><p class="text-secondary" style="margin-bottom:16px">El costo se cobra por <strong>SMS facturado (segmento)</strong>: cada intento cuenta, exitoso o fallido, y los mensajes largos ocupan varios segmentos (<strong>70 caracteres por SMS en espanol/chino, 160 en ingles/indonesio</strong>; partes concatenadas 67/153). Se usa primero el <strong>precio configurado en el pais de cada cuenta</strong> (campo "Costo por SMS" en cada configuracion de arriba); si el pais no tiene precio, se aplica este <strong>costo global por defecto</strong>. Los segmentos se recalculan desde el contenido, asi que los datos historicos se revalorizan solos. Se refleja en Mi Cuenta, Mi Equipo y Todos los Equipos.</p><div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;"><div style="flex:1;min-width:200px"><label class="form-label">Costo global por defecto (por SMS facturado)</label><input type="number" id="sms-unit-price" class="form-input" value="' + price + '" min="0" step="0.0001" placeholder="0.0000"></div><button class="btn btn-primary" onclick="saveBillingPrice()">Guardar Costo</button></div></div></div>';
         }
 
         var ac = results[2] || {};
