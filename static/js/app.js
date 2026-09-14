@@ -20,7 +20,7 @@ const DEFAULT_LIST_DATE = todayLocalStr();
 const state = {
     user: null,
     currentPage: 'dashboard',
-    dashboard: { dateFrom: '', dateTo: '', userId: '', users: null },
+    dashboard: { dateFrom: '', dateTo: '', userId: '', users: null, reportTz: 'carrier' },
     myTeam: { dateFrom: '', dateTo: '', userId: '' },
     allTeams: { dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE },
     userUsage: { dateFrom: '', dateTo: '' },
@@ -596,6 +596,7 @@ async function renderDashboard(container) {
         if (state.dashboard.dateFrom) params.set('date_from', state.dashboard.dateFrom);
         if (state.dashboard.dateTo) params.set('date_to', state.dashboard.dateTo);
         if (state.dashboard.userId) params.set('user_id', state.dashboard.userId);
+        params.set('report_tz', state.dashboard.reportTz || 'carrier');
         var qs = params.toString();
         var stats = await api('/api/sms/statistics' + (qs ? '?' + qs : ''));
 
@@ -652,11 +653,20 @@ async function renderDashboard(container) {
         var syncBtn = state.user && state.user.role === 'admin'
             ? '<button class="btn btn-secondary btn-sm" id="dr-sync-btn" onclick="runDrSync()">Sincronizar estados</button>'
             : '';
+        var curTz = state.dashboard.reportTz || 'carrier';
+        var tzSelect =
+            '<label style="font-size:12px;font-weight:600;color:#64748B;display:flex;flex-direction:column;gap:4px;">Zona horaria del reporte' +
+            '<select id="rc-tz" onchange="handleReportTz(this.value)" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-size:13px;">' +
+                '<option value="carrier"' + (curTz === 'carrier' ? ' selected' : '') + '>Operador (UTC+8, como el Excel)</option>' +
+                '<option value="local"' + (curTz === 'local' ? ' selected' : '') + '>Mexico (UTC-6)</option>' +
+                '<option value="utc"' + (curTz === 'utc' ? ' selected' : '') + '>UTC</option>' +
+            '</select></label>';
         var reconHtml =
             '<div class="card mt-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-                '<h2 style="margin:0;">Conciliacion con operador</h2>' + syncBtn +
+                '<h2 style="margin:0;">Conciliacion con operador</h2>' +
+                '<div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;">' + tzSelect + syncBtn + '</div>' +
             '</div><div class="card-body">' +
-              '<p style="font-size:12px;color:#64748B;margin:0 0 14px;">Cuenta real con el proveedor (excluye envios simulados). "Aceptados" = recibidos por el operador; "Entregados" = confirmacion de entrega final; "En proceso" aun sin reporte; "Rechazados" no se facturan.</p>' +
+              '<p style="font-size:12px;color:#64748B;margin:0 0 14px;">Cuenta real con el proveedor (excluye envios simulados). El corte de dia usa la zona horaria seleccionada; para cuadrar con el Excel de Rileci elige "Operador (UTC+8)". "Aceptados" = recibidos por el operador; "Entregados" = confirmacion de entrega final; "En proceso" aun sin reporte; "Rechazados" no se facturan. Los segmentos ya aplican la regla GSM 03.38 / UCS2 del operador.</p>' +
               '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">' +
                 '<div class="stat-card"><div class="stat-label">Aceptados</div><div class="stat-value" style="font-size:22px;">' + (rc.submitted || 0) + '</div></div>' +
                 '<div class="stat-card"><div class="stat-label">Entregados</div><div class="stat-value" style="font-size:22px;color:var(--success);">' + (rc.delivered || 0) + '</div></div>' +
@@ -738,6 +748,12 @@ async function runDrSync() {
         var content = document.getElementById('page-content');
         if (content) renderDashboard(content);
     }
+}
+
+function handleReportTz(value) {
+    state.dashboard.reportTz = value;
+    var content = document.getElementById('page-content');
+    if (content) renderDashboard(content);
 }
 
 // ============================================================

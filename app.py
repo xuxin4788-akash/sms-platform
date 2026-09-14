@@ -79,13 +79,31 @@ def get_db_type():
 REPORT_TZ = 'America/Mexico_City'
 
 
-def tz_date_expr(col):
-    """SQL expression returning the local (business-tz) calendar date of a
-    stored UTC timestamp, for both PostgreSQL and SQLite."""
+def tz_date_expr(col, offset_hours=None):
+    """SQL expression returning the local calendar date of a stored UTC
+    timestamp, for both PostgreSQL and SQLite.
+
+    offset_hours: fixed integer hours offset from UTC (e.g. 8 for the
+    carrier's Beijing-time export, -6 for Mexico). When None, uses the
+    business timezone (REPORT_TZ) with proper named-zone handling.
+    Stored columns are naive UTC (TIMESTAMP / ISO strings)."""
+    if offset_hours is not None:
+        if get_db_type() == 'postgres':
+            return f"({col} AT TIME ZONE 'UTC' + INTERVAL '{int(offset_hours)} hours')::date"
+        mod = f"{int(offset_hours):+d} hours"
+        return f"date({col}, '{mod}')"
     if get_db_type() == 'postgres':
         return f"({col} AT TIME ZONE 'UTC' AT TIME ZONE '{REPORT_TZ}')::date"
     # SQLite stores ISO UTC strings; Mexico is UTC-6 (no DST since 2023).
     return f"date({col}, '-6 hours')"
+
+
+# Reconciliation report bases the carrier dashboard can export in.
+REPORT_TZ_CHOICES = {
+    'carrier': 8,    # Rileci export uses Beijing time (UTC+8)
+    'local': None,   # business local time (America/Mexico_City)
+    'utc': 0,
+}
 
 
 def sms_billing_segments(content):
@@ -4905,6 +4923,11 @@ def sms_statistics():
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
     user_id = request.args.get('user_id', '').strip()
+    # Reconciliation day boundary: 'carrier' (UTC+8, matches Rileci export),
+    # 'local' (Mexico), or 'utc'. Defaults to carrier so numbers match the
+    # operator's daily report exactly.
+    report_tz = request.args.get('report_tz', 'carrier').strip() or 'carrier'
+    rtz_offset = REPORT_TZ_CHOICES.get(report_tz, 8)
 
     # Normalize dates to YYYY-MM-DD when possible
     def _norm_date(v):
@@ -5067,10 +5090,10 @@ def sms_statistics():
     rwhere = ["coalesce(r.api_msg,'') NOT LIKE '%simulado%'"]
     rparams = []
     if date_from:
-        rwhere.append(f"{tz_date_expr('r.sent_at')} >= ?")
+        rwhere.append(f"{tz_date_expr('r.sent_at', rtz_offset)} >= ?")
         rparams.append(date_from)
     if date_to:
-        rwhere.append(f"{tz_date_expr('r.sent_at')} <= ?")
+        rwhere.append(f"{tz_date_expr('r.sent_at', rtz_offset)} <= ?")
         rparams.append(date_to)
     scope_r_params = []
     if g.user['role'] == 'team_admin':
@@ -5101,7 +5124,7 @@ def sms_statistics():
     # rule (validated 0 mismatch against the operator detail export), so PG and
     # SQLite agree. Fetch the contents + local day for the matched rows.
     content_rows = db.execute(
-        f"""SELECT r.content AS content, {tz_date_expr('r.sent_at')} AS dia
+        f"""SELECT r.content AS content, {tz_date_expr('r.sent_at', rtz_offset)} AS dia
             FROM sms_records r
             WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}""",
         rparams + scope_r_params + acct_r_params
@@ -5125,10 +5148,10 @@ def sms_statistics():
     # Carrier-style success rate = delivered / submitted
     recon['delivery_rate'] = round(recon['delivered'] / recon['submitted'] * 100, 1) if recon['submitted'] else 0.0
 
-    # Per-local-day reconciliation series (for charts / export alignment)
+    # Per-report-day reconciliation series (for charts / export alignment)
     recon_series = db.execute(
         f"""
-        SELECT {tz_date_expr('r.sent_at')} AS dia,
+        SELECT {tz_date_expr('r.sent_at', rtz_offset)} AS dia,
           count(*) AS total,
           coalesce(sum(CASE WHEN r.api_code=0 THEN 1 ELSE 0 END),0) AS submitted,
           coalesce(sum(CASE WHEN r.status='delivered' THEN 1 ELSE 0 END),0) AS delivered,
@@ -5147,7 +5170,9 @@ def sms_statistics():
         for x in recon_series
     ]
 
-    return jsonify({
+    recon['report_tz'] = report_tz
+    return jsonify(
+        {
         'today_sent': today_sent,
         'today_total': today_total,
         'total_sent': total_sent,
