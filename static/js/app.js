@@ -274,7 +274,13 @@ const SMS_ASCII_MAP = {
 // specific symbols to ASCII and drop any other non-GSM glyphs. Returns the
 // cleaned string (length is enforced separately via maxlength / backend).
 function normalizeSmsText(text) {
-  var out = String(text == null ? '' : text).replace(/[^\x00-\x7F]/g, function(ch) {
+  // NFC-compose first so decomposed accents (e.g. "i" + U+0301, common after
+  // paste from some keyboards/phones) fold into the single char the map
+  // understands; otherwise the combining mark would be dropped but leave a
+  // misleading plain vowel, and non-GSM glyphs could slip through on others.
+  var src = String(text == null ? '' : text);
+  try { src = src.normalize('NFC'); } catch (e) { /* String.prototype.normalize unavailable */ }
+  var out = src.replace(/[^\x00-\x7F]/g, function(ch) {
     if (Object.prototype.hasOwnProperty.call(SMS_ASCII_MAP, ch)) return SMS_ASCII_MAP[ch];
     return '';
   });

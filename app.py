@@ -9,6 +9,7 @@ import io
 import json
 import time
 import threading
+import unicodedata
 import uuid
 import requests as http_requests
 import urllib.request
@@ -183,6 +184,46 @@ def sms_billing_segments(content):
     if sms_billing_class(content) == 'latin':
         return 1 if n <= 160 else -(-n // 153)
     return 1 if n <= 70 else -(-n // 67)
+
+
+# Authoritative GSM-only normalization (single source of truth on the server).
+# Mirrors the web textarea mapping (static/js/app.js SMS_ASCII_MAP): accented
+# vowels and Spanish-specific glyphs are transliterated to plain ASCII; any
+# other non-ASCII char that cannot be mapped is dropped. Applied again at send
+# time so requests that bypass the web UI (mobile app, direct API) cannot push
+# accented/UCS-2 content to the provider.
+_SMS_ASCII_MAP = {
+    'á': 'a', 'à': 'a', 'ä': 'a', 'â': 'a', 'ã': 'a', 'å': 'a', 'ª': 'a',
+    'é': 'e', 'è': 'e', 'ë': 'e', 'ê': 'e',
+    'í': 'i', 'ì': 'i', 'ï': 'i', 'î': 'i',
+    'ó': 'o', 'ò': 'o', 'ö': 'o', 'ô': 'o', 'õ': 'o', 'º': 'o',
+    'ú': 'u', 'ù': 'u', 'ü': 'u', 'û': 'u',
+    'Á': 'A', 'À': 'A', 'Ä': 'A', 'Â': 'A', 'Ã': 'A', 'Å': 'A',
+    'É': 'E', 'È': 'E', 'Ë': 'E', 'Ê': 'E',
+    'Í': 'I', 'Ì': 'I', 'Ï': 'I', 'Î': 'I',
+    'Ó': 'O', 'Ò': 'O', 'Ö': 'O', 'Ô': 'O', 'Õ': 'O',
+    'Ú': 'U', 'Ù': 'U', 'Ü': 'U', 'Û': 'U',
+    'ñ': 'n', 'Ñ': 'N', 'ç': 'c', 'Ç': 'C',
+    '¿': '?', '¡': '!',
+    '«': '"', '»': '"', '“': '"', '”': '"', '‘': "'", '’': "'",
+    '–': '-', '—': '-', '…': '...', '\u00a0': ' ',
+}
+_NON_ASCII_RE = _re.compile(r'[^\x00-\x7F]')
+
+
+def normalize_sms_text(content):
+    """NFC-compose (folds e + combining accent), transliterate Spanish/accented
+    glyphs to ASCII, drop any remaining non-ASCII. Server-side enforcement of
+    the GSM-only rule used by the web UI."""
+    if content is None:
+        return ''
+    text = unicodedata.normalize('NFC', str(content))
+
+    def _sub(m):
+        return _SMS_ASCII_MAP.get(m.group(0), '')
+
+    return _NON_ASCII_RE.sub(_sub, text)
+
 
 
 # ---------------------------------------------------------------------------
@@ -2716,6 +2757,14 @@ def apply_template_vars(text, phone, contact_names=None, contact_cache=None, sho
     return msg
 
 
+def build_sms_message(text, phone, contact_names=None, contact_cache=None, shorten_links=True):
+    """Resolve template variables for one recipient and THEN enforce GSM-only
+    normalization. Variable values ({nombre}/{app_name} from contacts) can
+    reintroduce accented characters even when the base template was clean."""
+    msg = apply_template_vars(text, phone, contact_names, contact_cache, shorten_links=shorten_links)
+    return normalize_sms_text(msg)
+
+
 # ---------------------------------------------------------------------------
 # Short links
 # ---------------------------------------------------------------------------
@@ -5153,7 +5202,11 @@ def send_sms():
     # ---- Limites de envio (reactivados) ----
     # Tope de numeros por envio (batch).
     SMS_BATCH_CAP = 500
-    content = data.get('content', '').strip()
+    # Server-side enforcement of the GSM-only rule: transliterate accents /
+    # Spanish symbols to ASCII (and drop any other non-ASCII) so requests that
+    # bypass the web textarea cannot deliver UCS-2 content. Done before the
+    # length check because the provider receives the normalized text.
+    content = normalize_sms_text(data.get('content', '')).strip()
     contact_names = data.get('contact_names', {})
     if not phones or not content:
         return jsonify({'error': 'Numero(s) y contenido son requeridos'}), 400
@@ -5186,7 +5239,7 @@ def send_sms():
         raw_phone = phones[0].strip()
         phone = normalize_phone(raw_phone)
         name = contact_names.get(raw_phone, '') or contact_names.get(phone, '')
-        msg = apply_template_vars(content, raw_phone, contact_names, contact_cache, shorten_links=True)
+        msg = build_sms_message(content, raw_phone, contact_names, contact_cache, shorten_links=True)
         result = sms_api_send_single(phone, msg, sms_config)
         api_code = result.get('code', -1)
         api_msg = result.get('msg', '')
@@ -5218,7 +5271,7 @@ def send_sms():
                 continue
             phone = normalize_phone(raw)
             name = contact_names.get(raw, '') or contact_names.get(phone, '')
-            msg = apply_template_vars(content, raw, contact_names, contact_cache, shorten_links=True)
+            msg = build_sms_message(content, raw, contact_names, contact_cache, shorten_links=True)
             phone_content_pairs.append((phone, msg))
             phone_name_map[phone] = (name, msg)
 
@@ -5274,7 +5327,7 @@ def send_sms():
             if not phone:
                 continue
             name = contact_names.get(phone, '')
-            msg = apply_template_vars(content, phone, contact_names, contact_cache, shorten_links=True)
+            msg = build_sms_message(content, phone, contact_names, contact_cache, shorten_links=True)
             db.execute(
                 "INSERT INTO sms_records (phone, contact_name, content, status, api_msg, billed_segments, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, ?, datetime('now'), ?)",
                 (phone, name, msg, 'API no configurada - envio simulado', sms_billing_segments(msg), g.user['id'])
@@ -6898,13 +6951,20 @@ def check_sms_charset():
         # Local estimation using the commercial language billing rule:
         # Chinese / Spanish -> 70 chars single (67 concat); English/Indonesian
         # and other Latin text -> 160 single (153 concat).
-        char_count = len(content)
-        parts = sms_billing_segments(content)
+        # Billing class is detected on the ORIGINAL text (accents mark Spanish);
+        # the message that actually goes out is GSM-normalized, so length/parts
+        # are computed on that normalized text to match delivery.
         billing_class = sms_billing_class(content)
+        normalized = normalize_sms_text(content)
+        char_count = len(normalized)
+        parts = 1 if (billing_class == 'latin' and char_count <= 160) \
+            or (billing_class != 'latin' and char_count <= 70) \
+            else (sms_billing_segments(normalized) if billing_class == 'latin'
+                  else -(-char_count // 67))
         if billing_class == 'cjk':
             charset, single, lang = 'UCS2', 70, 'Chino / mixto (70 caracteres)'
         elif billing_class == 'spanish':
-            charset, single, lang = 'UCS2', 70, 'Espanol (70 caracteres)'
+            charset, single, lang = 'GSM', 70, 'Espanol (70 caracteres)'
         else:
             charset, single, lang = 'GSM', 160, 'Ingles / Indonesio (160 caracteres)'
         return jsonify({
