@@ -1741,26 +1741,93 @@ def get_sms_unit_price_for(user_id, db=None):
         return price
     return get_sms_unit_price(db=db)
 
-def sms_cost_for_scope(where, params, db=None):
-    """Coste total de los SMS de un conjunto (se cobra por intento).
-    Suma por cuenta: cantidad * precio unitario segun el pais de cada cuenta."""
+def sms_segments_for_scope(where, params, db=None, group=False):
+    """Total billable SMS segments for a scope, computed on the fly from each
+    message content with the commercial language rule (Chinese/Spanish 70-67,
+    English/Indonesian 160-153). When group=True returns {created_by: segments}.
+    Works for both SQLite and PostgreSQL so historical data is re-rated without
+    any data migration."""
     own = db is None
     if own:
         db = get_db()
-    total = 0.0
     rows = db.execute(
-        f"SELECT created_by, COUNT(*) as c FROM sms_records WHERE {where} GROUP BY created_by",
+        f"SELECT created_by, content FROM sms_records WHERE {where}",
         params
     ).fetchall()
-    for r in rows:
-        uid = r['created_by']
-        n = int(r['c']) if 'c' in r.keys() else int(r[1])
+    if group:
+        totals = {}
+        for r in rows:
+            totals[r['created_by']] = totals.get(r['created_by'], 0) + sms_billing_segments(r['content'])
+        return totals
+    return sum(sms_billing_segments(r['content']) for r in rows)
+
+
+def sms_cost_for_scope(where, params, db=None):
+    """Coste de los SMS de un conjunto segun la tarifa comercial: se factura por
+    SEGMENTO (long SMS cuenta como varios SMS), aplicando el precio del pais de
+    cada cuenta. Suma por cuenta: segmentos * precio unitario."""
+    own = db is None
+    if own:
+        db = get_db()
+    seg_by_uid = sms_segments_for_scope(where, params, db=db, group=True)
+    total = 0.0
+    for uid, segs in seg_by_uid.items():
         try:
             price = get_sms_unit_price_for(uid, db=db) if uid else get_sms_unit_price(db=db)
         except Exception:
             price = get_sms_unit_price(db=db)
-        total += n * float(price)
+        total += int(segs) * float(price)
     return round(total, 2)
+
+def sms_segment_breakdown(user_ids, date_filter_sql, date_params, db=None):
+    """Return (total_segments, sent_segments, failed_segments) for the given set
+    of user ids within the optional single-table date filter."""
+    own = db is None
+    if own:
+        db = get_db()
+    if not user_ids:
+        return 0, 0, 0
+    ph = ','.join('?' * len(user_ids))
+    rows = db.execute(
+        f"SELECT status, content FROM sms_records "
+        f"WHERE created_by IN ({ph}) {date_filter_sql}",
+        list(user_ids) + list(date_params)
+    ).fetchall()
+    total = sent = failed = 0
+    for r in rows:
+        p = sms_billing_segments(r['content'])
+        total += p
+        if r['status'] in ('sent', 'delivered'):
+            sent += p
+        elif r['status'] == 'failed':
+            failed += p
+    return total, sent, failed
+
+
+def sms_segment_breakdown_grouped(user_ids, date_filter_sql, date_params, db=None):
+    """Return {uid: {'total':n,'sent':n,'failed':n}} billable segments per user."""
+    own = db is None
+    if own:
+        db = get_db()
+    result = {}
+    if not user_ids:
+        return result
+    ph = ','.join('?' * len(user_ids))
+    rows = db.execute(
+        f"SELECT created_by, status, content FROM sms_records "
+        f"WHERE created_by IN ({ph}) {date_filter_sql}",
+        list(user_ids) + list(date_params)
+    ).fetchall()
+    for r in rows:
+        d = result.setdefault(r['created_by'], {'total': 0, 'sent': 0, 'failed': 0})
+        p = sms_billing_segments(r['content'])
+        d['total'] += p
+        if r['status'] in ('sent', 'delivered'):
+            d['sent'] += p
+        elif r['status'] == 'failed':
+            d['failed'] += p
+    return result
+
 
 def set_sms_unit_price(price, db=None):
     own = db is None
@@ -5449,12 +5516,27 @@ def get_user_usage():
         user_map[u['id']] = {'username': u['username'], 'full_name': u['full_name']}
 
     rows = db.execute(query, params).fetchall()
+    # Billable segments per user (commercial language rule), respecting the same
+    # date window, so cost is charged per segment and historical data re-rates.
+    _uu_seg_scope = {}
+    _uu_ids = [r['user_id'] for r in rows]
+    if _uu_ids:
+        _uu_seg_date = ''
+        _uu_seg_params = []
+        if date_from:
+            _uu_seg_date += ' AND date(created_at) >= ?'
+            _uu_seg_params.append(date_from)
+        if date_to:
+            _uu_seg_date += ' AND date(created_at) <= ?'
+            _uu_seg_params.append(date_to)
+        _uu_seg_scope = sms_segment_breakdown_grouped(_uu_ids, _uu_seg_date, _uu_seg_params, db=db)
     users = []
     for row in rows:
         total = row['total']
         sent = row['sent']
         rate = round((sent / total * 100), 1) if total > 0 else 0
         u_price = get_sms_unit_price_for(row['user_id'], db=db)
+        _seg = _uu_seg_scope.get(row['user_id'], {'total': 0, 'sent': 0, 'failed': 0})
         # Team affiliation
         team_affiliation = '-'
         if row['role'] == 'team_member' and row['team_creator_id']:
@@ -5473,8 +5555,11 @@ def get_user_usage():
             'failed': row['failed'],
             'pending': row['pending'],
             'total': total,
+            'billed_segments': _seg['total'],
+            'sent_segments': _seg['sent'],
+            'failed_segments': _seg['failed'],
             'unit_price': u_price,
-            'total_cost': round(total * u_price, 2),
+            'total_cost': round(_seg['total'] * u_price, 2),
             'success_rate': rate,
             'last_activity': row['last_activity'] or ''
         })
@@ -5634,13 +5719,17 @@ def get_unified_stats():
     """, [account_user_id] + date_params).fetchone()
 
     my_account_price = get_sms_unit_price_for(account_user_id, db=db)
+    _acct_seg = sms_segment_breakdown_grouped([account_user_id], date_filter, date_params, db=db).get(account_user_id, {'total': 0, 'sent': 0, 'failed': 0})
     my_account_data = {
         'total': my_account['total'] if my_account else 0,
         'sent': my_account['sent'] if my_account else 0,
         'failed': my_account['failed'] if my_account else 0,
         'pending': my_account['pending'] if my_account else 0,
+        'billed_segments': _acct_seg['total'],
+        'sent_segments': _acct_seg['sent'],
+        'failed_segments': _acct_seg['failed'],
         'unit_price': my_account_price,
-        'total_cost': round((my_account['total'] if my_account else 0) * my_account_price, 2),
+        'total_cost': round(_acct_seg['total'] * my_account_price, 2),
         'rate': round((my_account['sent'] / my_account['total'] * 100), 1) if my_account and my_account['total'] > 0 else 0
     }
 
@@ -5767,10 +5856,12 @@ def get_unified_stats():
             team_talk = sum((r['talk'] or 0) for r in voice_member_rows)
 
             members = []
+            seg_by_uid = sms_segment_breakdown_grouped(agg_ids, date_filter, date_params, db=db)
             for m in member_rows:
                 m_total = m['total'] or 0
                 m_sent = m['sent'] or 0
                 m_price = get_sms_unit_price_for(m['id'], db=db)
+                m_seg = seg_by_uid.get(m['id'], {'total': 0, 'sent': 0, 'failed': 0})
                 v = voice_by_uid.get(m['id'])
                 m_calls = (v['calls'] if v else 0) or 0
                 m_answered = (v['answered'] if v else 0) or 0
@@ -5786,15 +5877,21 @@ def get_unified_stats():
                     'sent': m_sent,
                     'failed': m['failed'] or 0,
                     'pending': m['pending'] or 0,
+                    'billed_segments': m_seg['total'],
+                    'sent_segments': m_seg['sent'],
+                    'failed_segments': m_seg['failed'],
                     'today': m_total,
                     'unit_price': m_price,
                     'rate': round((m_sent / m_total * 100), 1) if m_total > 0 else 0,
-                    'cost': round(m_total * m_price, 2),
+                    'cost': round(m_seg['total'] * m_price, 2),
                     'calls': m_calls,
                     'answered': m_answered,
                     'talk_time': int(m_talk or 0),
                     'last_activity': m['last_activity'],
                 })
+
+            # Team billed segments (sum of each account's segments) for the card.
+            team_billed = sum(mm['billed_segments'] for mm in members)
 
             # Team card cost = sum of each account's per-country cost (scope+period).
             team_cost = round(sum(mm['cost'] for mm in members), 2)
@@ -5811,6 +5908,7 @@ def get_unified_stats():
                 'last_activity': last_activity,
                 'filtered': bool(date_from or date_to or filter_uid is not None),
                 'members': members,
+                'billed_segments': team_billed,
                 'total_cost': team_cost,
                 'calls': team_calls,
                 'answered': team_answered,
@@ -5838,6 +5936,7 @@ def get_unified_stats():
                     'team_name': name, 'admin_name': name, 'team_admin': label,
                     'admin_username': label, 'team_admin_username': label,
                     'member_count': 0, 'total': 0, 'sent': 0, 'failed': 0,
+                    'billed_segments': 0, 'sent_segments': 0, 'failed_segments': 0,
                     'today': 0, 'rate': 0,
                     'total_cost': 0, 'sent_cost': 0, 'failed_cost': 0,
                     'cost_total': 0, 'cost_sent': 0, 'cost_failed': 0,
@@ -5866,8 +5965,9 @@ def get_unified_stats():
                 wwhere = f"{status_filter} {date_filter} AND created_by IN ({placeholders})"
                 return sms_cost_for_scope(wwhere, list(date_params) + user_ids, db=db)
             t_cost = _scope_cost("1=1")
-            s_cost = _scope_cost("status='sent'")
+            s_cost = _scope_cost("status='sent' OR status='delivered'")
             f_cost = _scope_cost("status='failed'")
+            _seg_total, _seg_sent, _seg_failed = sms_segment_breakdown(user_ids, date_filter, date_params, db=db)
             return {
                 'unit_role': unit_role,
                 'team_name': name,
@@ -5879,6 +5979,9 @@ def get_unified_stats():
                 'total': t_total,
                 'sent': t_sent,
                 'failed': t_failed,
+                'billed_segments': _seg_total,
+                'sent_segments': _seg_sent,
+                'failed_segments': _seg_failed,
                 'today': t_today,
                 'rate': t_rate,
                 'total_cost': t_cost,
@@ -5921,6 +6024,9 @@ def get_unified_stats():
             'total': sum(t['total'] for t in all_teams_list),
             'sent': sum(t['sent'] for t in all_teams_list),
             'failed': sum(t['failed'] for t in all_teams_list),
+            'billed_segments': sum(t.get('billed_segments', 0) for t in all_teams_list),
+            'sent_segments': sum(t.get('sent_segments', 0) for t in all_teams_list),
+            'failed_segments': sum(t.get('failed_segments', 0) for t in all_teams_list),
             'today': sum(t['today'] for t in all_teams_list),
             'unit_price': unit_price,
             'total_cost': round(sum(t['total_cost'] for t in all_teams_list), 4),
@@ -5947,19 +6053,19 @@ def get_unified_stats():
     # Precio global por defecto (usado solo cuando un pais no tiene precio propio).
     unit_price = get_sms_unit_price(db)
 
-    # Costes a nivel de cuenta personal (precio segun el pais de la cuenta).
+    # Costes a nivel de cuenta personal (se factura por segmento, no por fila).
     my_acct_price = my_account_data.get('unit_price', get_sms_unit_price_for(account_user_id, db=db))
-    my_account_data['total_cost'] = round(my_account_data.get('total', 0) * my_acct_price, 2)
-    my_account_data['sent_cost'] = round(my_account_data.get('sent', 0) * my_acct_price, 2)
-    my_account_data['failed_cost'] = round(my_account_data.get('failed', 0) * my_acct_price, 2)
+    my_account_data['total_cost'] = round(my_account_data.get('billed_segments', 0) * my_acct_price, 2)
+    my_account_data['sent_cost'] = round(my_account_data.get('sent_segments', 0) * my_acct_price, 2)
+    my_account_data['failed_cost'] = round(my_account_data.get('failed_segments', 0) * my_acct_price, 2)
 
     # Costes del equipo: suma de los costos por pais de cada cuenta (ya calculados).
     if my_team_data:
         team_members = my_team_data.get('members') or []
         if team_members:
             my_team_data['total_cost'] = round(sum(mm.get('cost', 0) for mm in team_members), 2)
-            my_team_data['sent_cost'] = round(sum(mm.get('sent', 0) * mm.get('unit_price', 0) for mm in team_members), 2)
-            my_team_data['failed_cost'] = round(sum(mm.get('failed', 0) * mm.get('unit_price', 0) for mm in team_members), 2)
+            my_team_data['sent_cost'] = round(sum(mm.get('sent_segments', 0) * mm.get('unit_price', 0) for mm in team_members), 2)
+            my_team_data['failed_cost'] = round(sum(mm.get('failed_segments', 0) * mm.get('unit_price', 0) for mm in team_members), 2)
 
     # Cost fields are computed inside _build_unit_row for all_teams_list and
     # all_teams_data already includes the summed total_cost. Nothing extra to do.
@@ -6023,7 +6129,7 @@ def export_teams_stats():
 
     headers = [
         "Equipo", "Administrador", "Miembros", "Total SMS",
-        "Enviados", "Fallidos", "Costo", "Hoy", "Exito %",
+        "SMS facturados (segmentos)", "Enviados", "Fallidos", "Costo", "Hoy", "Exito %",
         "Costo enviados", "Costo fallidos", "Precio unitario"
     ]
     ws.append(headers)
@@ -6043,6 +6149,21 @@ def export_teams_stats():
         team_failed = tr['failed'] or 0
         team_rate = round((team_sent / team_total * 100), 1) if team_total > 0 else 0
         unit_id = tr['unit_id']
+        unit_ids = [r['id'] for r in db.execute(
+            "SELECT id FROM users WHERE id = ? UNION SELECT id FROM users WHERE team_creator_id = ?",
+            (unit_id, unit_id)
+        ).fetchall()]
+        _seg_total, _seg_sent, _seg_failed = sms_segment_breakdown(
+            unit_ids, date_filter_r.replace('r.created_at', 'created_at'), date_params, db=db
+        )
+        # Cost per account country (segment based) via the scope helper.
+        ph = ','.join('?' * len(unit_ids))
+        seg_cost = sms_cost_for_scope(
+            f"created_by IN ({ph})" + date_filter_r.replace('r.created_at', 'created_at'),
+            unit_ids + date_params, db=db
+        )
+        seg_sent_cost = calc_cost(_seg_sent, unit_price)
+        seg_failed_cost = calc_cost(_seg_failed, unit_price)
         today_row = db.execute(f"""
             SELECT COUNT(*) as cnt FROM sms_records
             WHERE created_by IN (
@@ -6061,10 +6182,10 @@ def export_teams_stats():
             label = tr['unit_username']
         ws.append([
             display_name, label, tr['member_count'], team_total,
-            team_sent, team_failed, calc_cost(team_total, unit_price),
+            _seg_total, team_sent, team_failed, seg_cost,
             team_today, f"{team_rate}%",
-            calc_cost(team_sent, unit_price),
-            calc_cost(team_failed, unit_price), unit_price
+            seg_sent_cost,
+            seg_failed_cost, unit_price
         ])
 
     widths = [22, 20, 12, 12, 12, 12, 12, 10, 10, 14, 14, 14]
