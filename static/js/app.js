@@ -651,7 +651,8 @@ async function renderDashboard(container, opts) {
         // Provider reconciliation view (carrier-style accounting)
         var rc = stats.reconciliation || {};
         var syncBtn = state.user && state.user.role === 'admin'
-            ? '<button class="btn btn-secondary btn-sm" id="dr-sync-btn" onclick="runDrSync()">Sincronizar estados</button>'
+            ? '<button class="btn btn-secondary btn-sm" id="dr-sync-btn" onclick="runDrSync(false)" title="Consultar estados pendientes recientes (ultimas 72h)">Sincronizar estados</button>' +
+              '<button class="btn btn-warning btn-sm" id="dr-backfill-btn" onclick="confirmDrBackfill()" title="Reconciliar historico: consulta TODOS los envios pendientes, no solo las ultimas 72h">Reconciliar historico</button>'
             : '';
         var cacheNote = '<span style="font-size:12px;color:#64748B;display:inline-flex;align-items:center;gap:6px;" title="Los paneles se actualizan automaticamente cada 15 minutos. Contactos y gestion siempre en tiempo real.">' +
             '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>' +
@@ -741,19 +742,31 @@ function resetDashboardFilters() {
     if (content) renderDashboard(content);
 }
 
-async function runDrSync() {
+async function runDrSync(backfill) {
     var btn = document.getElementById('dr-sync-btn');
+    var label = btn && btn.textContent;
     if (btn) { btn.disabled = true; btn.textContent = 'Sincronizando...'; }
     try {
-        var res = await api('/api/sms/dr-sync', { method: 'POST' });
-        showToast('Sincronizacion: ' + (res.checked || 0) + ' consultados, ' +
-            (res.delivered || 0) + ' entregados, ' + (res.failed || 0) + ' fallidos', 'success');
+        var body = {};
+        if (backfill) body = { backfill: true, max_records: 20000 };
+        var res = await api('/api/sms/dr-sync', { method: 'POST', body: body });
+        var msg = 'Sincronizacion: ' + (res.checked || 0) + ' consultados, ' +
+            (res.delivered || 0) + ' entregados, ' + (res.failed || 0) + ' fallidos';
+        if (res.skipped) msg = 'Otro proceso esta sincronizando, reintentare pronto.';
+        else if (res.pending != null) msg += ' (quedan ' + res.pending + ' en cola)';
+        showToast(msg, res.skipped ? 'info' : 'success');
     } catch (err) {
         showToast('Error al sincronizar: ' + err.message, 'error');
     } finally {
+        if (btn) { btn.disabled = false; btn.textContent = label; }
         var content = document.getElementById('page-content');
         if (content) renderDashboard(content, { forceRefresh: true });
     }
+}
+
+async function confirmDrBackfill() {
+    if (!window.confirm('Reconciliar TODO el historico?\n\nConsultara al operador el estado final de todos los envios pendientes (no solo las ultimas 72h) para corregir la conciliacion en el panel. Si hay una gran cantidad, se procesan lotes de 20.000 por clic; vuelve a pulsar el boton para continuar hasta vaciar la cola.')) return;
+    await runDrSync(true);
 }
 
 async function refreshDashboard() {

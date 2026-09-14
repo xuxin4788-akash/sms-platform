@@ -7217,8 +7217,8 @@ def api_auto_clear_run_now():
 
 # How long after submission we keep polling /sms/state before giving up.
 DR_POLL_WINDOW_HOURS = 72
-# Cap messages synced per tick per channel (provider API limits).
-DR_BATCH_LIMIT = 200
+# Per-channel default cap for a windowed sync pass (backfill caps via max_records).
+DR_BATCH_LIMIT = 100
 # Advisory lock id so only one Gunicorn worker runs a DR sync per tick.
 DR_LOCK_ID = 82347110
 
@@ -7268,34 +7268,51 @@ def apply_delivery_reports(db, items):
     return changed
 
 
-def _sms_dr_sync_impl(triggered_by='scheduler'):
+def _sms_dr_sync_impl(triggered_by='scheduler', backfill=False, max_records=None):
     """Poll /sms/state for recently submitted, not-yet-final messages.
 
     Groups pending records by api_config_id (channel) so the right
     credentials are used. Best-effort; never raises to the caller.
     Returns a summary dict. Caller (run_sms_dr_sync) holds the cross-worker
     advisory lock so this body runs in a single Gunicorn worker per tick.
+
+    backfill=True: ignore the 72h window and reconcile every record still in
+    'sent' (old records never polled). max_records caps how many rows a single
+    run processes so an admin can drain the backlog in bounded chunks.
     """
     db = get_db()
-    summary = {'checked': 0, 'delivered': 0, 'failed': 0, 'channels': 0, 'errors': []}
+    summary = {'checked': 0, 'delivered': 0, 'failed': 0, 'channels': 0, 'backfill': bool(backfill), 'errors': []}
     try:
         _setting_set('sms_dr_last_sync', datetime.now().isoformat(timespec='seconds'))
         db.commit()
     except Exception:
         pass
     try:
-        rows = db.execute(
-            """
-            SELECT id, msgid, api_config_id FROM sms_records
-            WHERE status='sent' AND coalesce(msgid,'')<>''
-              AND sent_at >= ?
-            ORDER BY sent_at DESC LIMIT ?
-            """,
-            ((datetime.now() - timedelta(hours=DR_POLL_WINDOW_HOURS)).strftime('%Y-%m-%d %H:%M:%S'),
-             DR_BATCH_LIMIT * 4)
-        ).fetchall()
+        limit = int(max_records or 0) or (DR_BATCH_LIMIT * 4)
+        limit = max(1, min(limit, 100000))
+        if backfill:
+            rows = db.execute(
+                """
+                SELECT id, msgid, api_config_id FROM sms_records
+                WHERE status='sent' AND coalesce(msgid,'')<>''
+                ORDER BY sent_at DESC LIMIT ?
+                """,
+                (limit,)
+            ).fetchall()
+        else:
+            rows = db.execute(
+                """
+                SELECT id, msgid, api_config_id FROM sms_records
+                WHERE status='sent' AND coalesce(msgid,'')<>''
+                  AND sent_at >= ?
+                ORDER BY sent_at DESC LIMIT ?
+                """,
+                ((datetime.now() - timedelta(hours=DR_POLL_WINDOW_HOURS)).strftime('%Y-%m-%d %H:%M:%S'),
+                 limit)
+            ).fetchall()
         if not rows:
             return summary
+        summary['pending'] = len(rows)
 
         # Group by channel; records without a stored channel fall back to
         # the team/global default config.
@@ -7310,9 +7327,9 @@ def _sms_dr_sync_impl(triggered_by='scheduler'):
             if not config or not config.get('domain'):
                 summary['errors'].append('no_config')
                 continue
-            # Query in chunks of DR_BATCH_LIMIT
-            for i in range(0, len(recs), DR_BATCH_LIMIT):
-                chunk = recs[i:i + DR_BATCH_LIMIT]
+            # Query in chunks of 100 (provider /sms/state single-call cap).
+            for i in range(0, len(recs), 100):
+                chunk = recs[i:i + 100]
                 msgids = [c['msgid'] for c in chunk]
                 try:
                     result = sms_api_query_status(msgids, config)
@@ -7348,7 +7365,7 @@ def _sms_dr_sync_impl(triggered_by='scheduler'):
     return summary
 
 
-def run_sms_dr_sync(triggered_by='scheduler'):
+def run_sms_dr_sync(triggered_by='scheduler', backfill=False, max_records=None):
     """Acquire a cross-worker advisory lock, then run one DR sync pass.
 
     Guarantees only ONE Gunicorn worker polls the provider / updates rows per
@@ -7383,7 +7400,7 @@ def run_sms_dr_sync(triggered_by='scheduler'):
         if not lock_acquired:
             return {'skipped': 'lock'}
 
-        return _sms_dr_sync_impl(triggered_by)
+        return _sms_dr_sync_impl(triggered_by, backfill=backfill, max_records=max_records)
     finally:
         if lock_acquired:
             try:
@@ -7400,9 +7417,24 @@ def run_sms_dr_sync(triggered_by='scheduler'):
 @login_required
 @admin_required
 def api_sms_dr_sync():
-    """Admin: force a delivery-report reconciliation right now."""
+    """Admin: force a delivery-report reconciliation right now.
+
+    body.backfill=true reconciles every lingering 'sent' record regardless of
+    the 72h window (one-time historical backfill); body.max_records caps how
+    many records a single run drains so the backlog can be cleared in chunks.
+    """
     try:
-        result = run_sms_dr_sync(triggered_by=f'admin:{session.get("user_id")}')
+        data = request.get_json(silent=True) or {}
+        backfill = bool(data.get('backfill'))
+        try:
+            max_records = int(data.get('max_records') or 0)
+        except (TypeError, ValueError):
+            max_records = 0
+        result = run_sms_dr_sync(
+            triggered_by=f'admin:{session.get("user_id")}',
+            backfill=backfill,
+            max_records=max_records or None
+        )
         invalidate_stats_cache()
         return jsonify(result)
     except Exception as exc:
