@@ -618,11 +618,11 @@ async function renderDashboard(container, opts) {
             '<div class="card mb-4"><div class="card-body" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;">' +
                 '<div style="display:flex;flex-direction:column;gap:4px;">' +
                     '<label style="font-size:12px;font-weight:600;color:#64748B;">Desde</label>' +
-                    '<input type="date" id="dash-from" value="' + escapeHtml(state.dashboard.dateFrom) + '" max="' + todayStr + '" onchange="handleDashboardDate(\'from\', this.value)" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;">' +
+                    '<input type="date" lang="es" id="dash-from" value="' + escapeHtml(state.dashboard.dateFrom) + '" max="' + todayStr + '" onchange="handleDashboardDate(\'from\', this.value)" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;">' +
                 '</div>' +
                 '<div style="display:flex;flex-direction:column;gap:4px;">' +
                     '<label style="font-size:12px;font-weight:600;color:#64748B;">Hasta</label>' +
-                    '<input type="date" id="dash-to" value="' + escapeHtml(state.dashboard.dateTo) + '" max="' + todayStr + '" onchange="handleDashboardDate(\'to\', this.value)" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;">' +
+                    '<input type="date" lang="es" id="dash-to" value="' + escapeHtml(state.dashboard.dateTo) + '" max="' + todayStr + '" onchange="handleDashboardDate(\'to\', this.value)" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;">' +
                 '</div>' +
                 (isManager ? '<div style="display:flex;flex-direction:column;gap:4px;"><label style="font-size:12px;font-weight:600;color:#64748B;">Cuenta</label>' + accountSelect + '</div>' : '') +
                 '<div style="display:flex;gap:8px;">' +
@@ -2527,7 +2527,7 @@ async function renderMyAccount(container) {
             return '<div class="stat-card"><div class="stat-value" style="' + (color ? 'color:' + color : '') + '">' + value + '</div><div class="stat-label">' + label + '</div></div>';
         }
 
-        var filterHtml = '<div class="page-header page-filter mb-4"><h1 style="font-size:22px;font-weight:700;">Mi Cuenta</h1><div class="filter-row"><input type="date" id="stats-date-from" class="form-control" value="' + dateFrom + '"><span class="text-secondary filter-sep">a</span><input type="date" id="stats-date-to" class="form-control" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderMyAccount(document.getElementById(\'page-content\'))">Filtrar</button></div></div>';
+        var filterHtml = '<div class="page-header page-filter mb-4"><h1 style="font-size:22px;font-weight:700;">Mi Cuenta</h1><div class="filter-row"><input type="date" lang="es" id="stats-date-from" class="form-control" value="' + dateFrom + '"><span class="text-secondary filter-sep">a</span><input type="date" lang="es" id="stats-date-to" class="form-control" value="' + dateTo + '"><button class="btn btn-primary btn-sm" onclick="renderMyAccount(document.getElementById(\'page-content\'))">Filtrar</button></div></div>';
 
         var myRate = myAcct.total > 0 ? (myAcct.sent / myAcct.total * 100).toFixed(1) : '0.0';
         var myBilled = myAcct.billed_segments != null ? myAcct.billed_segments : (myAcct.total || 0);
@@ -2577,15 +2577,14 @@ async function renderMyTeam(container) {
         var userOptions = (data.users || []).map(function(u) {
             return '<option value="' + u.id + '"' + (filterUserId == u.id ? ' selected' : '') + '>' + escapeHtml(u.username) + (u.full_name ? ' - ' + escapeHtml(u.full_name) : '') + '</option>';
         }).join('');
-        var todayStr = new Date().toISOString().slice(0, 10);
         var filterHtml = '<div class="page-header page-filter mb-4"><h1 style="font-size:22px;font-weight:700;">Mi Equipo</h1><div class="filter-row filter-row-multi">' +
-            '<input type="date" id="stats-date-from" class="form-control" value="' + escapeHtml(dateFrom || '') + '" max="' + todayStr + '" onchange="renderMyTeam(document.getElementById(\'page-content\'))">' +
+            '<input type="date" lang="es" id="stats-date-from" class="form-control" value="' + escapeHtml(dateFrom || '') + '" onchange="handleMyTeamDateFrom(this.value)">' +
             '<span class="text-secondary filter-sep">a</span>' +
-            '<input type="date" id="stats-date-to" class="form-control" value="' + escapeHtml(dateTo || '') + '" max="' + todayStr + '" onchange="renderMyTeam(document.getElementById(\'page-content\'))">' +
-            '<select id="stats-user-filter" class="form-control" onchange="renderMyTeam(document.getElementById(\'page-content\'))"><option value="">Todos los usuarios</option>' + userOptions + '</select>' +
+            '<input type="date" lang="es" id="stats-date-to" class="form-control" value="' + escapeHtml(dateTo || '') + '" onchange="handleMyTeamDateTo(this.value)">' +
+            '<select id="stats-user-filter" class="form-control" onchange="applyMyTeamFilter()"><option value="">Todos los usuarios</option>' + userOptions + '</select>' +
+            '<button class="btn btn-primary btn-sm" onclick="applyMyTeamFilter()">Filtrar</button>' +
             '<button class="btn btn-secondary btn-sm" onclick="setMyTeamToday()">Hoy</button>' +
             '<button class="btn btn-ghost btn-sm" onclick="resetMyTeamFilters()">Limpiar</button>' +
-            '<button class="btn btn-primary btn-sm" onclick="renderMyTeam(document.getElementById(\'page-content\'))">Filtrar</button>' +
             '</div></div>';
 
         var html = filterHtml;
@@ -2656,11 +2655,14 @@ async function renderMyTeam(container) {
 }
 
 function setMyTeamToday() {
-    var t = new Date().toISOString().slice(0, 10);
-    state.myTeam.dateFrom = t;
-    state.myTeam.dateTo = t;
+    state.myTeam.dateFrom = todayLocalStr();
+    state.myTeam.dateTo = todayLocalStr();
     renderMyTeam(document.getElementById('page-content'));
 }
+
+function handleMyTeamDateFrom(v) { state.myTeam.dateFrom = v; }
+function handleMyTeamDateTo(v) { state.myTeam.dateTo = v; }
+function applyMyTeamFilter() { renderMyTeam(document.getElementById('page-content')); }
 
 function resetMyTeamFilters() {
     state.myTeam.dateFrom = '';
