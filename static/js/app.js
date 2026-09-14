@@ -631,21 +631,21 @@ async function renderDashboard(container, opts) {
                 '</div>' +
             '</div></div>';
 
-        var sentLabel = filtering ? 'Enviados (filtro)' : 'Enviados Hoy';
+        var sentLabel = filtering ? 'Aceptados (filtro)' : 'Aceptados Hoy';
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Panel Principal</h1>' +
             filterBar +
             '<div class="stats-grid">' +
                 '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg></div><div class="stat-label">' + sentLabel + '</div><div class="stat-value">' + stats.today_sent + '</div></div>' +
-                '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg></div><div class="stat-label">Tasa de Exito</div><div class="stat-value">' + stats.success_rate + '%</div></div>' +
-                '<div class="stat-card"><div class="stat-icon yellow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></div><div class="stat-label">Pendientes</div><div class="stat-value">' + stats.total_pending + '</div></div>' +
-                '<div class="stat-card"><div class="stat-icon red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg></div><div class="stat-label">Fallidos</div><div class="stat-value">' + stats.total_failed + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg></div><div class="stat-label">Tasa de Entrega</div><div class="stat-value">' + stats.success_rate + '%</div></div>' +
+                '<div class="stat-card"><div class="stat-icon yellow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></div><div class="stat-label">En Proceso</div><div class="stat-value">' + stats.total_pending + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg></div><div class="stat-label">Rechazados</div><div class="stat-value">' + stats.total_failed + '</div></div>' +
             '</div>' +
             '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">' +
                 '<div class="stat-card"><div class="stat-label">Total Contactos</div><div class="stat-value" style="font-size:22px;">' + stats.total_contacts + '</div></div>' +
                 '<div class="stat-card"><div class="stat-label">Total Plantillas</div><div class="stat-value" style="font-size:22px;">' + stats.total_templates + '</div></div>' +
-                '<div class="stat-card"><div class="stat-label">' + (filtering ? 'Enviados (filtro)' : 'Total Enviados') + '</div><div class="stat-value" style="font-size:22px;">' + stats.total_sent + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">' + (filtering ? 'Aceptados (filtro)' : 'Total Aceptados') + '</div><div class="stat-value" style="font-size:22px;">' + stats.total_sent + '</div></div>' +
             '</div>';
 
         // Provider reconciliation view (carrier-style accounting)
@@ -690,14 +690,14 @@ async function renderDashboard(container, opts) {
             filterBar +
             '<div class="stats-grid">' +
                 '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg></div><div class="stat-label">' + sentLabel + '</div><div class="stat-value">' + stats.today_sent + '</div></div>' +
-                '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg></div><div class="stat-label">Tasa de Exito</div><div class="stat-value">' + stats.success_rate + '%</div></div>' +
-                '<div class="stat-card"><div class="stat-icon yellow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></div><div class="stat-label">Pendientes</div><div class="stat-value">' + stats.total_pending + '</div></div>' +
-                '<div class="stat-card"><div class="stat-icon red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg></div><div class="stat-label">Fallidos</div><div class="stat-value">' + stats.total_failed + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg></div><div class="stat-label">Tasa de Entrega</div><div class="stat-value">' + stats.success_rate + '%</div></div>' +
+                '<div class="stat-card"><div class="stat-icon yellow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></div><div class="stat-label">En Proceso</div><div class="stat-value">' + stats.total_pending + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg></div><div class="stat-label">Rechazados</div><div class="stat-value">' + stats.total_failed + '</div></div>' +
             '</div>' +
             '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">' +
                 '<div class="stat-card"><div class="stat-label">Total Contactos</div><div class="stat-value" style="font-size:22px;">' + stats.total_contacts + '</div></div>' +
                 '<div class="stat-card"><div class="stat-label">Total Plantillas</div><div class="stat-value" style="font-size:22px;">' + stats.total_templates + '</div></div>' +
-                '<div class="stat-card"><div class="stat-label">' + (filtering ? 'Enviados (filtro)' : 'Total Enviados') + '</div><div class="stat-value" style="font-size:22px;">' + stats.total_sent + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">' + (filtering ? 'Aceptados (filtro)' : 'Total Aceptados') + '</div><div class="stat-value" style="font-size:22px;">' + stats.total_sent + '</div></div>' +
             '</div>' +
             reconHtml +
             '<div class="card mt-4"><div class="card-header"><h2>' + (filtering ? 'Envios en el Periodo' : 'Envios de los Ultimos 7 Dias') + '</h2></div><div class="chart-container"><div class="bar-chart" id="weekly-chart"></div></div></div>';
