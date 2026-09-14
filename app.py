@@ -3120,10 +3120,11 @@ def get_me():
     country_codes = {'MX': '+52', 'CO': '+57', 'US': '+1', 'BR': '+55'}
     team_country_code = country_codes.get(team_country, '+52')
 
-    # Categoria del empleado (define retencion de contactos)
+    # Categoria del empleado (define retencion de contactos). Un usuario SIN
+    # categoria retiene sus contactos UNCATEGORIZED_RETENTION_DAYS dias (1).
     category_id = None
     category_name = None
-    category_retention_days = 0
+    category_retention_days = UNCATEGORIZED_RETENTION_DAYS
     try:
         if 'category_id' in g.user.keys():
             category_id = g.user['category_id']
@@ -6960,6 +6961,11 @@ def check_sms_charset():
 # ============================================================
 AUTO_CLEAR_LOCK_ID = 82347109
 
+# Contacts created by users with NO employee category are retained for this
+# many days, then deleted by the daily job. (Finite category windows always
+# win; a category with retention_days=0 still means "retain forever".)
+UNCATEGORIZED_RETENTION_DAYS = 1
+
 
 def _parse_hhmm(value):
     if not value or not isinstance(value, str):
@@ -7028,11 +7034,14 @@ def set_auto_clear_config(enabled=None, time_str=None):
 
 
 def run_auto_clear_contacts(triggered_by='scheduler'):
-    """Delete contacts older than the retention window defined by the owning
-    user's category (user_categories.retention_days). retention_days=0 or NULL
-    means 'retain forever'. Contacts without a creator or whose creator has no
-    category are retained. Groups are NEVER deleted (replaces the previous
-    full-wipe behavior). SMS/voice records are always retained."""
+    """Delete contacts older than the retention window of the owning user.
+
+    - User with a category whose retention_days > 0: delete after those days.
+    - User with NO category (category_id NULL): delete after
+      UNCATEGORIZED_RETENTION_DAYS (1 day).
+    - Category with retention_days = 0: retain forever.
+    - Contacts without a creator (created_by NULL) are retained.
+    Groups are NEVER deleted. SMS/voice records are always retained."""
     db = get_db()
     lock_acquired = False
     try:
@@ -7055,24 +7064,36 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
             return 0, 'Ya se esta ejecutando una limpieza'
 
         is_pg = get_db_type() == 'postgres'
+        uncat_days = str(UNCATEGORIZED_RETENTION_DAYS)
         if is_pg:
-            # Delete contacts whose owning user belongs to a category with a
-            # finite retention window and whose created_at is older than that
-            # window. NOW() - (days || ' days')::interval handles the cutoff.
+            # COUNT: a LEFT JOIN lets us express both retention rules clearly.
             count_cur = db.execute(
                 """
                 SELECT COUNT(*) AS c FROM contacts ct
-                WHERE EXISTS (
-                    SELECT 1 FROM users u
-                    JOIN user_categories cat ON u.category_id = cat.id
-                    WHERE u.id = ct.created_by
-                      AND cat.retention_days > 0
-                      AND ct.created_at < NOW() - (cat.retention_days::text || ' days')::interval
-                )
-                """
+                LEFT JOIN users u ON u.id = ct.created_by
+                LEFT JOIN user_categories cat ON cat.id = u.category_id
+                WHERE
+                    (cat.retention_days IS NOT NULL AND cat.retention_days > 0
+                        AND ct.created_at < NOW() - (cat.retention_days::text || ' days')::interval)
+                 OR (u.category_id IS NULL AND ct.created_by IS NOT NULL
+                        AND ct.created_at < NOW() - (? || ' days')::interval)
+                """,
+                (uncat_days,)
             )
             count_row = count_cur.fetchone()
             count = int((count_row['c'] if isinstance(count_row, dict) else count_row[0]) if count_row else 0)
+            # DELETE (uncategorised owners, 1-day window)
+            db.execute(
+                """
+                DELETE FROM contacts ct
+                WHERE EXISTS (
+                    SELECT 1 FROM users u
+                    WHERE u.id = ct.created_by AND u.category_id IS NULL
+                ) AND ct.created_at < NOW() - (? || ' days')::interval
+                """,
+                (uncat_days,)
+            )
+            # DELETE (categorised owners with a finite retention window)
             db.execute(
                 """
                 DELETE FROM contacts ct
@@ -7086,31 +7107,33 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
                 """
             )
         else:
-            # SQLite: datetime('now', '-N days') per row via the joined days.
-            # Note: SQLite does NOT allow an alias on the DELETE target table.
+            # SQLite (no alias on the DELETE target table; use id IN subquery).
             count_cur = db.execute(
-                """
-                SELECT COUNT(*) AS c FROM contacts
-                WHERE EXISTS (
-                    SELECT 1 FROM users u
-                    JOIN user_categories cat ON u.category_id = cat.id
-                    WHERE u.id = contacts.created_by
-                      AND cat.retention_days > 0
-                      AND contacts.created_at < datetime('now', '-' || cat.retention_days || ' days')
-                )
+                f"""
+                SELECT COUNT(*) AS c FROM contacts ct
+                LEFT JOIN users u ON u.id = ct.created_by
+                LEFT JOIN user_categories cat ON cat.id = u.category_id
+                WHERE
+                    (cat.retention_days IS NOT NULL AND cat.retention_days > 0
+                        AND ct.created_at < datetime('now', '-' || cat.retention_days || ' days'))
+                 OR (u.category_id IS NULL AND ct.created_by IS NOT NULL
+                        AND ct.created_at < datetime('now', '-{UNCATEGORIZED_RETENTION_DAYS} days'))
                 """
             )
             count_row = count_cur.fetchone()
             count = int((count_row['c'] if isinstance(count_row, dict) else count_row[0]) if count_row else 0)
             db.execute(
-                """
+                f"""
                 DELETE FROM contacts
-                WHERE EXISTS (
-                    SELECT 1 FROM users u
-                    JOIN user_categories cat ON u.category_id = cat.id
-                    WHERE u.id = contacts.created_by
-                      AND cat.retention_days > 0
-                      AND contacts.created_at < datetime('now', '-' || cat.retention_days || ' days')
+                WHERE id IN (
+                    SELECT ct.id FROM contacts ct
+                    LEFT JOIN users u ON u.id = ct.created_by
+                    LEFT JOIN user_categories cat ON cat.id = u.category_id
+                    WHERE
+                        (cat.retention_days IS NOT NULL AND cat.retention_days > 0
+                            AND ct.created_at < datetime('now', '-' || cat.retention_days || ' days'))
+                     OR (u.category_id IS NULL AND ct.created_by IS NOT NULL
+                            AND ct.created_at < datetime('now', '-{UNCATEGORIZED_RETENTION_DAYS} days'))
                 )
                 """
             )

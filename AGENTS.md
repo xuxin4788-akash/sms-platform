@@ -169,7 +169,7 @@ Tables: users (with `category_id` FK to user_categories, `extnumber` for per-age
 
 ### Contact retention (replaces the old full daily wipe)
 - Employees are classified via `user_categories`; each category has `retention_days` (0 = keep forever).
-- The daily background job (`run_auto_clear_contacts`, scheduled at `auto_clear_time`, default 03:00) deletes ONLY contacts whose owning user belongs to a category with a finite window AND whose `created_at` is older than `now - retention_days`. Contacts without a creator or whose creator has no category are never deleted, and groups are never deleted. This replaces the previous behavior that deleted ALL contacts and groups every day.
+- The daily background job (`run_auto_clear_contacts`, scheduled at `auto_clear_time`, default 03:00) deletes expired contacts. Rules: (a) owning user belongs to a category with `retention_days > 0` → delete when `created_at < now - retention_days`; (b) owning user has NO category (`category_id` NULL) → delete when older than `UNCATEGORIZED_RETENTION_DAYS` (= 1 day); (c) a category with `retention_days = 0` means keep forever; (d) contacts without a creator (`created_by` NULL) are never deleted. Groups are never deleted. Implemented in PG with two `EXISTS` deletes and in SQLite via an `id IN (SELECT ...)` subquery (SQLite forbids an alias on the DELETE target). This replaces the previous behavior that deleted ALL contacts and groups every day.
 - The same rule runs on-demand via POST /api/config/auto-clear/run-now and is configured on the "Retencion de Contactos" admin page.
 - `users.category_id` is set on create/update (admin-managed); if omitted it defaults to the default category. Users without a category retain contacts permanently.
 

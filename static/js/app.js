@@ -3104,7 +3104,7 @@ async function renderConfig(container) {
         }
 
         var ac = results[2] || {};
-        html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;"><div><h2 style="margin:0;">Retencion de contactos</h2><p class="text-secondary" style="margin:4px 0 0;font-size:13px;">La limpieza diaria ahora elimina solo los contactos vencidos segun la categoria de cada empleado (ya no borra todos los contactos).</p></div><a class="btn btn-primary btn-sm" href="#/retention">Configurar categorias</a></div><div class="card-body"><div class="mt-1 text-sm" style="display:grid;gap:6px;"><span>Ultima ejecucion: <strong>' + (ac.last_run_at ? escapeHtml(ac.last_run_at) : 'Nunca') + '</strong></span><span>Contactos eliminados la ultima vez: <strong>' + (ac.last_run_count || 0) + '</strong></span><span>Estado: <strong>' + escapeHtml(ac.last_run_status || 'pendiente') + '</strong></span></div></div></div>';
+        html += '<div class="card mb-4"><div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;"><div><h2 style="margin:0;">Retencion de contactos</h2><p class="text-secondary" style="margin:4px 0 0;font-size:13px;">La limpieza diaria elimina los contactos vencidos segun la categoria de cada empleado; los empleados sin categoria conservan sus contactos solo 1 dia.</p></div><a class="btn btn-primary btn-sm" href="#/retention">Configurar categorias</a></div><div class="card-body"><div class="mt-1 text-sm" style="display:grid;gap:6px;"><span>Ultima ejecucion: <strong>' + (ac.last_run_at ? escapeHtml(ac.last_run_at) : 'Nunca') + '</strong></span><span>Contactos eliminados la ultima vez: <strong>' + (ac.last_run_count || 0) + '</strong></span><span>Estado: <strong>' + escapeHtml(ac.last_run_status || 'pendiente') + '</strong></span></div></div></div>';
 
         html += '<div class="card"><div class="card-header"><h2>Registros de Actividad</h2></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Accion</th><th>Detalles</th><th>Estado</th></tr></thead><tbody>' + logRows + '</tbody></table></div></div>';
         container.innerHTML = html;
@@ -4500,7 +4500,7 @@ function renderRetentionCategories() {
             '<thead><tr><th>Categoria</th><th>Retencion de contactos</th><th>Empleados</th><th style="text-align:right;">Acciones</th></tr></thead>' +
             '<tbody>' + rows + '</tbody>' +
         '</table></div>' +
-        '<p style="padding:12px 16px 0;color:var(--text-secondary);font-size:12px;">0 dias = los contactos se conservan permanentemente. Los contactos sin propietario o sin categoria nunca se eliminan.</p>';
+        '<p style="padding:12px 16px 0;color:var(--text-secondary);font-size:12px;">Una categoria con 0 dias conserva sus contactos para siempre. Los empleados que se quedan SIN categoria pasan a retencion de 1 dia (sus contactos se eliminan al dia siguiente). Los contactos sin propietario nunca se eliminan.</p>';
 }
 
 function renderRetentionAutoClear() {
@@ -4586,7 +4586,7 @@ async function saveCategory(event, id) {
 }
 
 function deleteCategory(id) {
-    if (!confirm('Eliminar esta categoria? Los empleados de esta categoria quedaran sin categoria (contactos permanentes).')) return;
+    if (!confirm('Eliminar esta categoria? Los empleados de esta categoria quedaran SIN categoria y sus contactos pasaran a retencion de 1 dia.')) return;
     api('/api/user-categories/' + id, { method: 'DELETE' }).then(function() {
         showToast('Categoria eliminada', 'success');
         loadCategoriesForRetention();
