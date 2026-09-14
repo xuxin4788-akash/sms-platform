@@ -11,6 +11,7 @@ import time
 import threading
 import uuid
 import requests as http_requests
+import urllib.request
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from functools import wraps
@@ -573,9 +574,11 @@ def init_db():
                 contact_name VARCHAR(255) DEFAULT '',
                 subject VARCHAR(500) DEFAULT '',
                 body TEXT DEFAULT '',
-                status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'simulated')),
+                status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'simulated', 'suppressed')),
                 error_msg TEXT DEFAULT '',
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                job_id VARCHAR(40) DEFAULT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 sent_at TIMESTAMP
             );
@@ -784,6 +787,43 @@ def init_db():
             """)
         if not pg_column_exists('users', 'category_id'):
             cur.execute("ALTER TABLE users ADD COLUMN category_id INTEGER REFERENCES user_categories(id) ON DELETE SET NULL")
+
+        # email queue: job linkage + attempt counter; queue/jobs/suppression tables
+        if not pg_column_exists('email_records', 'job_id'):
+            cur.execute("ALTER TABLE email_records ADD COLUMN job_id VARCHAR(40) DEFAULT NULL")
+        if not pg_column_exists('email_records', 'attempts'):
+            cur.execute("ALTER TABLE email_records ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_job ON email_records(job_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_status ON email_records(status)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_creator ON email_records(created_by, created_at)")
+        cur.execute("""CREATE TABLE IF NOT EXISTS email_jobs (
+                job_id VARCHAR(40) PRIMARY KEY,
+                status VARCHAR(20) NOT NULL DEFAULT 'queued',
+                total INTEGER NOT NULL DEFAULT 0,
+                sent INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                suppressed INTEGER NOT NULL DEFAULT 0,
+                simulated BOOLEAN NOT NULL DEFAULT FALSE,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                error_msg TEXT DEFAULT '',
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP
+            )""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_email_jobs_creator ON email_jobs(created_by, created_at)")
+        cur.execute("""CREATE TABLE IF NOT EXISTS email_suppressions (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                reason VARCHAR(20) NOT NULL DEFAULT 'bounce',
+                detail TEXT DEFAULT '',
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )""")
+        # Broaden the status check constraint to include pending/suppressed on pre-existing tables.
+        cur.execute("""DO $$ BEGIN
+                ALTER TABLE email_records DROP CONSTRAINT IF EXISTS email_records_status_check;
+                ALTER TABLE email_records ADD CONSTRAINT email_records_status_check
+                    CHECK (status IN ('pending','sent','failed','simulated','suppressed'));
+            EXCEPTION WHEN OTHERS THEN NULL; END $$;""")
 
         # sms_api_configs: per-country SMS unit price (facturacion por pais).
         if not pg_column_exists('sms_api_configs', 'unit_price'):
@@ -1162,9 +1202,11 @@ def init_db():
                 contact_name TEXT DEFAULT '',
                 subject TEXT DEFAULT '',
                 body TEXT DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'simulated')),
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'simulated', 'suppressed')),
                 error_msg TEXT DEFAULT '',
                 created_by INTEGER,
+                job_id TEXT DEFAULT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 sent_at TEXT,
                 FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
@@ -1798,6 +1840,79 @@ def init_db():
                 db.commit()
         except Exception as e:
             print(f"Migration billed_segments error: {e}")
+
+        # Migration: email queue (job linkage + attempts) and queue/suppression tables.
+        # The pre-existing email_records table has a CHECK(status) that does not
+        # include 'pending'/'suppressed', so when columns/constraint are missing we
+        # rebuild the table (same approach as sms_records). Queue tables/indexes are
+        # created here (not in the bootstrap executescript) so they are added AFTER
+        # job_id exists on pre-existing databases.
+        try:
+            er_cols = [row[1] for row in db.execute("PRAGMA table_info(email_records)").fetchall()]
+            need_cols = ('job_id' not in er_cols) or ('attempts' not in er_cols)
+            sql_text = ''
+            if er_cols:
+                ddl = db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='email_records'").fetchone()
+                sql_text = (ddl[0] or '') if ddl else ''
+            rebuild = need_cols or ("'suppressed'" not in sql_text)
+            if rebuild and er_cols:
+                db.execute("PRAGMA foreign_keys=OFF")
+                db.execute('''
+                    CREATE TABLE email_records_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        recipient_email TEXT NOT NULL,
+                        contact_name TEXT DEFAULT '',
+                        subject TEXT DEFAULT '',
+                        body TEXT DEFAULT '',
+                        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent','failed','simulated','suppressed')),
+                        error_msg TEXT DEFAULT '',
+                        created_by INTEGER,
+                        job_id TEXT DEFAULT NULL,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        sent_at TEXT,
+                        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+                    )''')
+                common = ['id','recipient_email','contact_name','subject','body','status','error_msg','created_by','created_at','sent_at']
+                sel = common + (['job_id'] if 'job_id' in er_cols else ["NULL"]) + (['attempts'] if 'attempts' in er_cols else ['0'])
+                db.execute(
+                    "INSERT INTO email_records_new (id,recipient_email,contact_name,subject,body,status,error_msg,created_by,created_at,sent_at,job_id,attempts) "
+                    "SELECT " + ','.join(sel) + " FROM email_records")
+                db.execute("DROP TABLE email_records")
+                db.execute("ALTER TABLE email_records_new RENAME TO email_records")
+                db.execute("PRAGMA foreign_keys=ON")
+            db.execute('''
+                CREATE TABLE IF NOT EXISTS email_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    total INTEGER NOT NULL DEFAULT 0,
+                    sent INTEGER NOT NULL DEFAULT 0,
+                    failed INTEGER NOT NULL DEFAULT 0,
+                    suppressed INTEGER NOT NULL DEFAULT 0,
+                    simulated INTEGER NOT NULL DEFAULT 0,
+                    created_by INTEGER,
+                    error_msg TEXT DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    started_at TEXT,
+                    finished_at TEXT,
+                    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+                )''')
+            db.execute('''
+                CREATE TABLE IF NOT EXISTS email_suppressions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL UNIQUE,
+                    reason TEXT NOT NULL DEFAULT 'bounce',
+                    detail TEXT DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )''')
+            db.execute("CREATE INDEX IF NOT EXISTS idx_email_records_job ON email_records(job_id)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_email_records_status ON email_records(status)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_email_records_creator ON email_records(created_by, created_at)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_email_jobs_creator ON email_jobs(created_by, created_at)")
+            db.commit()
+        except Exception as e:
+            print(f"Migration email queue error: {e}")
 
         # Migration: add last_login_ip and last_login_at to users
         try:
@@ -9170,6 +9285,9 @@ def _email_scope_where(user, alias='r'):
 @app.route('/api/email/send', methods=['POST'])
 @login_required
 def send_email():
+    """Enqueue a bulk email job. The actual SMTP delivery happens in the
+    background worker (email_queue_loop) so the HTTP request returns at once
+    even for tens of thousands of recipients."""
     data = request.get_json(silent=True) or {}
     mode = data.get('mode', 'contacts')
     contact_ids = data.get('contact_ids') or []
@@ -9211,6 +9329,10 @@ def send_email():
     if not targets:
         return jsonify({'error': 'Ningun contacto valido con correo electronico'}), 400
 
+    # Suppression list (SES bounces/complaints + manual) is skipped, not failed.
+    suppressed_set = {row[0].lower() for row in db.execute(
+        "SELECT LOWER(email) FROM email_suppressions").fetchall()}
+
     cfg = get_email_config()
     simulated = not (cfg and is_email_configured())
 
@@ -9223,35 +9345,409 @@ def send_email():
         msg = msg.replace('{payment_link}', c.get('payment_link') or '')
         return msg
 
-    results = []
-    sent = failed = 0
+    job_id = uuid.uuid4().hex
     uid = user['id']
     now = datetime.now()
+    queued = suppressed_count = 0
     for c, email in targets:
         subj = render(subject_tpl, c)
         html = _email_html_body(render(body_tpl, c))
-        status, err = 'sent', ''
+        if email.lower() in suppressed_set:
+            db.execute(
+                "INSERT INTO email_records (recipient_email, contact_name, subject, body, status, error_msg, created_by, job_id, attempts, created_at, sent_at) "
+                "VALUES (?,?,?,?,'suppressed','En lista de supresion (bounce/queja)',?,?,0,?,?)",
+                (email, c.get('name') or '', subj, html, uid, job_id, now, now)
+            )
+            suppressed_count += 1
+            continue
         if simulated:
-            status = 'simulated'
-            sent += 1
+            db.execute(
+                "INSERT INTO email_records (recipient_email, contact_name, subject, body, status, error_msg, created_by, job_id, attempts, created_at, sent_at) "
+                "VALUES (?,?,?,?,'simulated','Modo simulacion (SMTP no configurado)',?,?,0,?,?)",
+                (email, c.get('name') or '', subj, html, uid, job_id, now, now)
+            )
         else:
-            try:
-                send_email_via_smtp(cfg, email, subj, html)
-                sent += 1
-            except Exception as e:
-                status, err = 'failed', str(e)[:500]
-                failed += 1
-        db.execute(
-            "INSERT INTO email_records (recipient_email, contact_name, subject, body, status, error_msg, created_by, created_at, sent_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (email, c.get('name') or '', subj, html, status, err, uid, now, now)
-        )
-        results.append({'email': email, 'name': c.get('name') or '', 'status': status, 'error': err})
+            db.execute(
+                "INSERT INTO email_records (recipient_email, contact_name, subject, body, status, error_msg, created_by, job_id, attempts, created_at, sent_at) "
+                "VALUES (?,?,?,?,'pending','',?,?,0,?,NULL)",
+                (email, c.get('name') or '', subj, html, uid, job_id, now)
+            )
+        queued += 1
+
+    total = len(targets)
+    db.execute(
+        "INSERT INTO email_jobs (job_id, status, total, sent, failed, suppressed, simulated, created_by, created_at, started_at, finished_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (job_id, 'completed' if (simulated or queued == 0) else 'queued',
+         total, queued if simulated else 0, 0, suppressed_count, 1 if simulated else 0,
+         uid, now, now if simulated else None, now if simulated else None)
+    )
     db.commit()
+    msg = (f'{queued} correo(s) encolado(s)' if not simulated
+           else f'{queued} correo(s) simulado(s) (SMTP no configurado)')
     return jsonify({
-        'message': f'{sent} correo(s) enviado(s)' + (' (modo simulacion - SMTP no configurado)' if simulated else ''),
-        'sent': sent, 'failed': failed, 'simulated': simulated, 'results': results,
+        'message': msg + (f'; {suppressed_count} omitido(s) por lista de supresion' if suppressed_count else ''),
+        'job_id': job_id, 'queued': queued, 'suppressed': suppressed_count,
+        'total': total, 'simulated': simulated,
     })
+
+
+def _email_job_dict(row):
+    d = dict(row)
+    d['processed'] = (d['sent'] or 0) + (d['failed'] or 0) + (d['suppressed'] or 0)
+    deliverable = max(0, (d['total'] or 0) - (d['suppressed'] or 0))
+    d['progress'] = round(100.0 * ((d['sent'] or 0) + (d['failed'] or 0)) / deliverable, 1) if deliverable else 100.0
+    d['simulated'] = bool(d['simulated'])
+    return d
+
+
+@app.route('/api/email/jobs/<job_id>', methods=['GET'])
+@login_required
+def email_job_status(job_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM email_jobs WHERE job_id=?", (job_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Trabajo no encontrado'}), 404
+    user = g.user
+    if user['role'] != 'admin' and row['created_by'] != user['id'] \
+            and not (user['role'] == 'team_admin' and db.execute(
+                "SELECT 1 FROM users WHERE id=? AND team_creator_id=?",
+                (row['created_by'], user['id'])).fetchone()):
+        return jsonify({'error': 'No autorizado'}), 403
+    return jsonify({'job': _email_job_dict(row)})
+
+
+# ----- Background email queue worker ---------------------------------------
+EMAIL_QUEUE_LOCK_ID = 73190452
+EMAIL_QUEUE_POLL_SECONDS = int(os.environ.get('EMAIL_QUEUE_POLL_SECONDS', '10') or 10)
+EMAIL_WORKERS = max(1, int(os.environ.get('EMAIL_WORKERS', '4') or 4))
+EMAIL_MAX_ATTEMPTS = max(1, int(os.environ.get('EMAIL_MAX_ATTEMPTS', '3') or 3))
+# Conservative global send rate (emails/second) shared across the thread pool.
+EMAIL_RATE_PER_SEC = max(1, int(os.environ.get('EMAIL_RATE_PER_SEC', '12') or 12))
+
+
+def _suppressed_emails_lower():
+    db = get_db()
+    return {row[0].lower() for row in db.execute("SELECT LOWER(email) FROM email_suppressions").fetchall()}
+
+
+class _PersistentSmtp:
+    """One authenticated SMTP connection reused across many messages, with
+    transparent reconnect after a dropped socket."""
+    def __init__(self, cfg):
+        import smtplib
+        self._smtplib = smtplib
+        self.cfg = cfg
+        self.server = None
+
+    def _connect(self):
+        cfg = self.cfg
+        if cfg.get('use_ssl'):
+            server = self._smtplib.SMTP_SSL(cfg['host'].strip(), int(cfg.get('port') or 465), timeout=30)
+        else:
+            server = self._smtplib.SMTP(cfg['host'].strip(), int(cfg.get('port') or 587), timeout=30)
+        server.ehlo()
+        if cfg.get('use_tls') and not cfg.get('use_ssl'):
+            server.starttls()
+            server.ehlo()
+        server.login(cfg['username'].strip(), cfg.get('password') or '')
+        self.server = server
+
+    def send(self, msg):
+        last = None
+        for _ in range(2):
+            try:
+                if self.server is None:
+                    self._connect()
+                self.server.send_message(msg)
+                return
+            except Exception as e:  # reconnect once on a stale connection
+                last = e
+                self.close()
+        raise last
+
+    def close(self):
+        if self.server is not None:
+            try:
+                self.server.quit()
+            except Exception:
+                pass
+            self.server = None
+
+
+def _build_email_message(cfg, to_email, subject, body_html):
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    from_name = (cfg.get('from_name') or '').strip()
+    from_email = cfg['from_email'].strip()
+    msg['From'] = f'{from_name} <{from_email}>' if from_name else from_email
+    msg['To'] = to_email
+    msg['Subject'] = subject
+    # SES VERP-style envelope for bounce attribution via the From address;
+    # plain = minimal text fallback.
+    plain = re.sub(r'<br\s*/?>', '\n', body_html or '')
+    plain = re.sub(r'</p\s*>', '\n', plain, flags=re.I)
+    plain = re.sub(r'<[^>]+>', '', plain)
+    msg.set_content(plain.strip() or body_html or '')
+    msg.add_alternative(body_html or '', subtype='html')
+    return msg
+
+
+def _process_email_queue_once():
+    """Send one batch of pending emails under the cross-worker advisory lock.
+    Uses a small thread pool, each thread holds its own persistent SMTP
+    connection. Returns number of records processed."""
+    db = get_db()
+    if get_db_type() == 'postgres':
+        raw = db.conn.cursor()
+        raw.execute("SELECT pg_try_advisory_lock(%s)", (EMAIL_QUEUE_LOCK_ID,))
+        got = raw.fetchone()[0]
+    else:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS maintenance_locks "
+            "(lock_name TEXT PRIMARY KEY, locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        # Reclaim a stale lock (worker crash) after 10 minutes.
+        db.execute(
+            "DELETE FROM maintenance_locks WHERE lock_name='email_queue' "
+            "AND locked_at < datetime('now','-10 minutes')"
+        )
+        try:
+            db.execute("INSERT INTO maintenance_locks(lock_name) VALUES('email_queue')")
+            db.commit()
+            got = True
+        except Exception:
+            got = False
+    if not got:
+        return 0
+    try:
+        cfg = get_email_config()
+        if not cfg or not is_email_configured():
+            return 0
+        pending = db.execute(
+            "SELECT id, recipient_email, subject, body, attempts FROM email_records "
+            "WHERE status='pending' ORDER BY id LIMIT 200"
+        ).fetchall()
+        if not pending:
+            return 0
+        # Mark job as processing.
+        db.execute("UPDATE email_jobs SET status='processing', started_at=COALESCE(started_at, ?) "
+                   "WHERE status='queued'", (datetime.now(),))
+        db.commit()
+
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        rate_interval = 1.0 / EMAIL_RATE_PER_SEC
+        gate = threading.Lock()
+        next_slot = [time.time()]
+        local = threading.local()
+
+        def get_smtp():
+            if not hasattr(local, 'smtp'):
+                local.smtp = _PersistentSmtp(cfg)
+            return local.smtp
+
+        def deliver(rec):
+            rid, to_email, subject, html, attempts = rec[0], rec[1], rec[2], rec[3], (rec[4] or 0)
+            # Simple global rate limiter (token start-time spacing).
+            with gate:
+                now = time.time()
+                wait = next_slot[0] - now
+                if wait > 0:
+                    time.sleep(wait)
+                next_slot[0] = max(now, next_slot[0]) + rate_interval
+            err = ''
+            try:
+                msg = _build_email_message(cfg, to_email, subject, html)
+                get_smtp().send(msg)
+                return rid, 'sent', '', attempts + 1
+            except Exception as e:
+                err = str(e)[:500]
+                nxt = attempts + 1
+                status = 'failed' if nxt >= EMAIL_MAX_ATTEMPTS else 'pending'
+                return rid, status, err, nxt
+
+        results = []
+        try:
+            with ThreadPoolExecutor(max_workers=EMAIL_WORKERS) as ex:
+                for r in ex.map(deliver, pending):
+                    results.append(r)
+        finally:
+            # Best-effort close of this thread's connection; pool threads die here.
+            pass
+
+        now = datetime.now()
+        sent = failed = 0
+        for rid, status, err, att in results:
+            if status == 'sent':
+                db.execute("UPDATE email_records SET status='sent', error_msg='', attempts=?, sent_at=? WHERE id=?",
+                           (att, now, rid))
+                sent += 1
+            elif status == 'failed':
+                db.execute("UPDATE email_records SET status='failed', error_msg=?, attempts=? WHERE id=?",
+                           (err, att, rid))
+                failed += 1
+            else:  # retry later, exponential-ish backoff via attempts; remains pending
+                db.execute("UPDATE email_records SET error_msg=?, attempts=? WHERE id=?", (err, att, rid))
+        # Roll up counters for every affected job (native ? placeholders are
+        # translated to %s for PostgreSQL by the wrapper).
+        job_rows = db.execute(
+            "SELECT DISTINCT job_id FROM email_records WHERE id IN (%s)" %
+            ','.join(['?'] * len(pending)), [r[0] for r in pending]
+        ).fetchall()
+        for jr in job_rows:
+            jid = jr[0]
+            agg = db.execute(
+                "SELECT COUNT(*) total, "
+                "COALESCE(SUM(CASE WHEN status='sent' OR status='simulated' THEN 1 ELSE 0 END),0) sent, "
+                "COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) failed, "
+                "COALESCE(SUM(CASE WHEN status='suppressed' THEN 1 ELSE 0 END),0) suppressed, "
+                "COALESCE(SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),0) pending "
+                "FROM email_records WHERE job_id=?", (jid,)).fetchone()
+            total, jsent, jfail, jsup, jpend = agg[0], agg[1], agg[2], agg[3], agg[4]
+            if jpend > 0:
+                jstatus = 'processing'
+            elif jfail > 0:
+                jstatus = 'completed_with_errors'
+            else:
+                jstatus = 'completed'
+            db.execute("UPDATE email_jobs SET total=?, sent=?, failed=?, suppressed=?, status=?, finished_at=? "
+                       "WHERE job_id=?", (total, jsent, jfail, jsup, jstatus,
+                                          now if jstatus != 'processing' else None, jid))
+        db.commit()
+        return len(results)
+    finally:
+        if get_db_type() == 'postgres':
+            raw.execute("SELECT pg_advisory_unlock(%s)", (EMAIL_QUEUE_LOCK_ID,))
+            db.conn.commit()
+        else:
+            db.execute("DELETE FROM maintenance_locks WHERE lock_name='email_queue'")
+            db.commit()
+
+
+def email_queue_loop():
+    """Background tick: drain the pending email queue. Only one gunicorn
+    worker runs it at a time via the EMAIL_QUEUE_LOCK advisory lock."""
+    while True:
+        time.sleep(EMAIL_QUEUE_POLL_SECONDS)
+        try:
+            with app.app_context():
+                _process_email_queue_once()
+        except Exception as e:
+            app.logger.warning(f"[email-queue] loop error: {e}")
+
+
+# ----- Suppression list (SES bounces/complaints) + SNS webhook -------------
+def _add_suppression(email, reason, detail=''):
+    email = (email or '').strip().lower()
+    if not email or not EMAIL_RE.match(email):
+        return False
+    db = get_db()
+    try:
+        db.execute(
+            "INSERT INTO email_suppressions (email, reason, detail, created_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(email) DO UPDATE SET reason=EXCLUDED.reason, detail=EXCLUDED.detail",
+            (email, reason, (detail or '')[:500], datetime.now())
+        ) if get_db_type() == 'postgres' else db.execute(
+            "INSERT OR IGNORE INTO email_suppressions (email, reason, detail, created_at) VALUES (?,?,?,?)",
+            (email, reason, (detail or '')[:500], datetime.now()))
+        db.commit()
+        return True
+    except Exception:
+        return False
+
+
+@app.route('/api/email/suppressions', methods=['GET'])
+@admin_required
+def email_suppressions_list():
+    db = get_db()
+    q = (request.args.get('q') or '').strip()
+    page = max(1, int(request.args.get('page', 1)))
+    per_page = min(200, max(1, int(request.args.get('per_page', 50))))
+    where, params = "1=1", []
+    if q:
+        where += " AND email LIKE ?"
+        params.append(f'%{q}%')
+    total = db.execute(f"SELECT COUNT(*) AS n FROM email_suppressions WHERE {where}", params).fetchone()[0]
+    rows = db.execute(
+        f"SELECT id, email, reason, detail, created_at FROM email_suppressions WHERE {where} "
+        f"ORDER BY id DESC LIMIT ? OFFSET ?", params + [per_page, (page - 1) * per_page]).fetchall()
+    return jsonify({'total': total, 'page': page, 'per_page': per_page,
+                    'suppressions': [dict(r) for r in rows]})
+
+
+@app.route('/api/email/suppressions', methods=['POST'])
+@admin_required
+def email_suppressions_add():
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').strip().lower()
+    if not EMAIL_RE.match(email or ''):
+        return jsonify({'error': 'Correo invalido'}), 400
+    reason = data.get('reason') if data.get('reason') in ('bounce', 'complaint', 'manual') else 'manual'
+    _add_suppression(email, reason, data.get('detail') or 'Alta manual')
+    return jsonify({'message': 'Correo agregado a la lista de supresion'})
+
+
+@app.route('/api/email/suppressions/<int:sid>', methods=['DELETE'])
+@admin_required
+def email_suppressions_delete(sid):
+    db = get_db()
+    db.execute("DELETE FROM email_suppressions WHERE id=?", (sid,))
+    db.commit()
+    return jsonify({'message': 'Correo retirado de la lista de supresion'})
+
+
+@app.route('/api/email/sns/callback', methods=['POST'])
+def email_sns_callback():
+    """Amazon SES SNS webhook: subscription confirmation + bounce/complaint
+    notifications. Public (SNS signs messages; we validate shape, not the
+    AWS signature). Addresses are added to the suppression list and their
+    most recent in-flight email record is marked failed."""
+    import json as _json
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        return jsonify({'error': 'bad payload'}), 400
+    mtype = payload.get('Type')
+    if mtype == 'SubscriptionConfirmation':
+        url = payload.get('SubscribeURL')
+        if url and url.startswith('https://'):
+            try:
+                urllib.request.urlopen(url, timeout=10).read()
+            except Exception:
+                pass
+        return jsonify({'message': 'subscribed'})
+    if mtype != 'Notification':
+        return jsonify({'message': 'ignored'})
+    try:
+        msg = _json.loads(payload.get('Message') or '{}')
+    except Exception:
+        return jsonify({'error': 'bad message'}), 400
+    ntype = msg.get('notificationType')
+    recipients = []
+    reason = 'bounce'
+    detail = ntype or ''
+    if ntype == 'Bounce':
+        reason = 'bounce'
+        recipients = [b.get('emailAddress') for b in
+                      (msg.get('bounce') or {}).get('bouncedRecipients', [])]
+        detail = (msg.get('bounce') or {}).get('bounceType', 'Bounce')
+    elif ntype == 'Complaint':
+        reason = 'complaint'
+        recipients = [c.get('emailAddress') for c in
+                      (msg.get('complaint') or {}).get('complainedRecipients', [])]
+        detail = 'Complaint'
+    if recipients:
+        with app.app_context():
+            db = get_db()
+            for addr in recipients:
+                if _add_suppression(addr, reason, detail):
+                    db.execute(
+                        "UPDATE email_records SET status='failed', "
+                        "error_msg=COALESCE(NULLIF(error_msg,''), ?) WHERE recipient_email=? AND status='sent'",
+                        (f'SES {detail}', addr.strip().lower()))
+            db.commit()
+    return jsonify({'message': 'ok'})
 
 
 @app.route('/api/email/records', methods=['GET'])
@@ -9269,7 +9765,7 @@ def email_records_api():
     if search:
         where += " AND (r.recipient_email LIKE ? OR r.contact_name LIKE ? OR r.subject LIKE ?)"
         params += [f'%{search}%'] * 3
-    if status in ('sent', 'simulated', 'failed', 'pending'):
+    if status in ('sent', 'simulated', 'failed', 'pending', 'suppressed'):
         where += " AND r.status = ?"
         params.append(status)
     if date_from:
@@ -9308,12 +9804,16 @@ def email_statistics_api():
     row = db.execute(
         f"SELECT COUNT(*) AS total, "
         f"SUM(CASE WHEN r.status IN ('sent','simulated') THEN 1 ELSE 0 END) AS sent, "
-        f"SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END) AS failed "
+        f"SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END) AS failed, "
+        f"SUM(CASE WHEN r.status='pending' THEN 1 ELSE 0 END) AS pending, "
+        f"SUM(CASE WHEN r.status='suppressed' THEN 1 ELSE 0 END) AS suppressed "
         f"FROM email_records r WHERE {where}", params
     ).fetchone()
     total = int(row['total'] or 0)
     sent = int(row['sent'] or 0)
     failed = int(row['failed'] or 0)
+    pending = int(row['pending'] or 0)
+    suppressed = int(row['suppressed'] or 0)
     # last 7 days (date filter reused for the windowed query)
     cutoff = (datetime.now() - timedelta(days=6)).strftime('%Y-%m-%d')
     chart_where = where + " AND DATE(r.created_at) >= ?"
@@ -9324,6 +9824,7 @@ def email_statistics_api():
     ).fetchall()
     return jsonify({
         'total': total, 'sent': sent, 'failed': failed,
+        'pending': pending, 'suppressed': suppressed,
         'success_rate': round(sent * 100.0 / total, 1) if total else 0.0,
         'configured': is_email_configured(),
         'last_7_days': [{'date': r['d'], 'count': int(r['n'] or 0)} for r in chart],
@@ -9343,6 +9844,13 @@ app.logger.info('Daily auto-clear contacts worker thread started')
 _dr_thread = threading.Thread(target=sms_dr_loop, name='sms-dr-sync', daemon=True)
 _dr_thread.start()
 app.logger.info('SMS delivery-report worker thread started')
+
+# Background bulk-email queue worker (persistent SMTP connections + small
+# thread pool). The advisory lock guarantees a single gunicorn worker drains
+# the queue at a time.
+_email_queue_thread = threading.Thread(target=email_queue_loop, name='email-queue', daemon=True)
+_email_queue_thread.start()
+app.logger.info('Email queue worker thread started')
 
 if __name__ == '__main__':
     port = int(os.environ.get('DEPLOY_RUN_PORT', 5000))

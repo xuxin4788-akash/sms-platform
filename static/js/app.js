@@ -4732,14 +4732,19 @@ async function handleSendEmail() {
     var btn = document.getElementById('email-send-btn');
     var n = payload.mode === 'group' ? 'del grupo' : (payload.contact_ids.length + ' contacto(s)');
     if (!confirm('Enviar correo a ' + n + '?')) return;
-    btn.disabled = true; var originalHTML = btn.innerHTML; btn.innerHTML = 'Enviando...';
+    btn.disabled = true; var originalHTML = btn.innerHTML; btn.innerHTML = 'Encolando...';
     try {
         var res = await api('/api/email/send', { method: 'POST', body: payload });
-        showToast(res.message || 'Correos enviados', res.failed ? 'error' : 'success');
         state.emailSend.selected.clear();
         document.getElementById('email-subject').value = '';
         document.getElementById('email-body').value = '';
         renderEmailContactList();
+        if (res.job_id && !res.simulated) {
+            showToast((res.message || 'Correos encolados') + ' El envio continua en segundo plano.', 'success');
+            pollEmailJob(res.job_id);
+        } else {
+            showToast(res.message || 'Correos enviados', 'success');
+        }
     } catch (e) {
         errEl.textContent = e.message || 'Error al enviar';
         errEl.style.display = 'block';
@@ -4748,13 +4753,41 @@ async function handleSendEmail() {
     }
 }
 
+// Poll a queued bulk-email job and surface its live progress in a toast.
+var emailJobTimers = {};
+function pollEmailJob(jobId) {
+    if (emailJobTimers[jobId]) return;
+    var tick = async function () {
+        try {
+            var data = await api('/api/email/jobs/' + jobId);
+            var j = data.job || {};
+            var done = (j.sent || 0) + (j.failed || 0);
+            var pct = j.progress != null ? j.progress : 0;
+            var label = 'Enviando correos: ' + done + '/' + j.total + ' (' + pct + '%)';
+            showToast(label + (j.failed ? '  · fallidos: ' + j.failed : ''), j.failed ? 'warning' : 'info');
+            if (j.status === 'completed' || j.status === 'completed_with_errors' || j.status === 'failed') {
+                clearInterval(emailJobTimers[jobId]); delete emailJobTimers[jobId];
+                showToast((j.status === 'completed' ? 'Envio completado: ' : 'Envio terminado con errores: ') +
+                    (j.sent || 0) + ' enviados, ' + (j.failed || 0) + ' fallidos' +
+                    (j.suppressed ? ', ' + j.suppressed + ' suprimidos' : ''),
+                    j.failed ? 'warning' : 'success');
+                if (state.currentPage === 'email-records') loadEmailRecords();
+            }
+        } catch (e) {
+            clearInterval(emailJobTimers[jobId]); delete emailJobTimers[jobId];
+        }
+    };
+    tick();
+    emailJobTimers[jobId] = setInterval(tick, 4000);
+}
+
 async function renderEmailRecords(container) {
     container.innerHTML =
         '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Correo</h1>' +
         '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;">' +
             '<input type="text" class="search-input" placeholder="Buscar correo, nombre o asunto..." value="' + escapeHtml(state.emailRecords.search) + '" onkeydown="if(event.key===\'Enter\')triggerEmailRecordSearch()" style="flex:1;min-width:200px;">' +
             '<button class="btn btn-primary btn-sm" onclick="triggerEmailRecordSearch()">Buscar</button>' +
-            '<select onchange="handleEmailRecordStatus(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.emailRecords.status === 'sent' ? ' selected' : '') + '>Enviado</option><option value="simulated"' + (state.emailRecords.status === 'simulated' ? ' selected' : '') + '>Simulado</option><option value="failed"' + (state.emailRecords.status === 'failed' ? ' selected' : '') + '>Fallido</option></select>' +
+            '<select onchange="handleEmailRecordStatus(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.emailRecords.status === 'sent' ? ' selected' : '') + '>Enviado</option><option value="pending"' + (state.emailRecords.status === 'pending' ? ' selected' : '') + '>Pendiente</option><option value="simulated"' + (state.emailRecords.status === 'simulated' ? ' selected' : '') + '>Simulado</option><option value="failed"' + (state.emailRecords.status === 'failed' ? ' selected' : '') + '>Fallido</option><option value="suppressed"' + (state.emailRecords.status === 'suppressed' ? ' selected' : '') + '>Suprimido</option></select>' +
             '<input type="date" lang="es" value="' + state.emailRecords.dateFrom + '" onchange="handleEmailRecordDateFrom(this.value)">' +
             '<input type="date" lang="es" value="' + state.emailRecords.dateTo + '" onchange="handleEmailRecordDateTo(this.value)">' +
             '<button class="btn btn-primary btn-sm" onclick="setEmailRecordsToday()">Hoy</button>' +
@@ -4779,7 +4812,7 @@ async function loadEmailRecords() {
     if (!body) return;
     try {
         var data = await api('/api/email/records?' + emailRecordQuery());
-        var labels = { sent: ['Enviado', 'badge-green'], simulated: ['Simulado', 'badge-blue'], failed: ['Fallido', 'badge-red'], pending: ['Pendiente', 'badge-yellow'] };
+        var labels = { sent: ['Enviado', 'badge-green'], simulated: ['Simulado', 'badge-blue'], failed: ['Fallido', 'badge-red'], pending: ['Pendiente', 'badge-yellow'], suppressed: ['Suprimido', 'badge-gray'] };
         var rows = (data.records || []).map(function(r) {
             var lb = labels[r.status] || [r.status, 'badge-gray'];
             var dt = r.created_at ? new Date(r.created_at.replace(' ', 'T')).toLocaleString() : '-';
