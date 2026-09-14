@@ -194,8 +194,15 @@ class DBWrapper:
         if params is None:
             params = ()
         if self.db_type == 'postgres':
-            # Convert SQLite placeholders to PostgreSQL
-            pg_query = query.replace('?', '%s')
+            # Convert SQLite placeholders to PostgreSQL.
+            # IMPORTANT: psycopg2 treats '%' as a format character whenever params
+            # are passed. Any literal '%' already present in the SQL (e.g. an
+            # inline LIKE '%simulado%') must be doubled to '%%' FIRST, otherwise a
+            # sequence like '%s' is mistaken for an extra placeholder ->
+            # "IndexError: tuple index out of range" (PG only; SQLite ignores it).
+            import re
+            pg_query = query.replace('%', '%%')
+            pg_query = pg_query.replace('?', '%s')
             pg_query = pg_query.replace("datetime('now')", "NOW()")
             # PostgreSQL BOOLEAN columns: SQLite uses 1/0 integers, PG needs TRUE/FALSE
             import re
@@ -270,6 +277,15 @@ class CursorWrapper:
     def fetchall(self):
         rows = self.cursor.fetchall()
         return rows
+
+    @property
+    def rowcount(self):
+        # Both psycopg2 and sqlite3 cursors report affected rows for
+        # UPDATE/DELETE/INSERT. Expose it so callers can count bulk changes.
+        try:
+            return self.cursor.rowcount
+        except Exception:
+            return -1
 
 # Per-process PostgreSQL connection pool. Each gunicorn worker is its own
 # process, so a module-level pool is safe and avoids opening a fresh TCP
@@ -1837,7 +1853,7 @@ def set_sms_unit_price(price, db=None):
     ts = "CURRENT_TIMESTAMP" if is_pg else "datetime('now')"
     if is_pg:
         db.execute(
-            "INSERT INTO system_settings(key, value, updated_at) VALUES(%s, %s, CURRENT_TIMESTAMP) "
+            "INSERT INTO system_settings(key, value, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP) "
             "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP",
             (BILLING_PRICE_KEY, str(price))
         )
@@ -2941,7 +2957,7 @@ def update_user_category(cat_id):
         return jsonify({'error': 'Ya existe una categoria con ese nombre'}), 409
     if get_db_type() == 'postgres':
         db.execute(
-            "UPDATE user_categories SET name=%s, retention_days=%s, updated_at=NOW() WHERE id=%s",
+            "UPDATE user_categories SET name=?, retention_days=?, updated_at=NOW() WHERE id=?",
             (name, retention_days, cat_id)
         )
     else:
@@ -6658,7 +6674,7 @@ def _setting_set(key, value):
         db.execute(
             """
             INSERT INTO system_settings (key, value, updated_at)
-            VALUES (%s, %s, NOW())
+            VALUES (?, ?, NOW())
             ON CONFLICT (key) DO UPDATE
             SET value=EXCLUDED.value, updated_at=NOW()
             """,
@@ -6707,7 +6723,7 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
     lock_acquired = False
     try:
         if get_db_type() == 'postgres':
-            cur = db.execute("SELECT pg_try_advisory_lock(%s) AS got", (AUTO_CLEAR_LOCK_ID,))
+            cur = db.execute("SELECT pg_try_advisory_lock(?) AS got", (AUTO_CLEAR_LOCK_ID,))
             row = cur.fetchone()
             got = row['got'] if isinstance(row, dict) else row[0]
             lock_acquired = bool(got)
@@ -6815,7 +6831,7 @@ def run_auto_clear_contacts(triggered_by='scheduler'):
     finally:
         try:
             if get_db_type() == 'postgres' and lock_acquired:
-                db.execute("SELECT pg_advisory_unlock(%s)", (AUTO_CLEAR_LOCK_ID,))
+                db.execute("SELECT pg_advisory_unlock(?)", (AUTO_CLEAR_LOCK_ID,))
                 db.commit()
             elif lock_acquired:
                 db.execute("DELETE FROM maintenance_locks WHERE lock_name='auto_clear_contacts'")
