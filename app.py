@@ -106,29 +106,81 @@ REPORT_TZ_CHOICES = {
 }
 
 
+import re as _re
+
+# Commercial billing rule (reseller/end-customer), independent of the carrier's
+# low-level charset:
+#   * English / Indonesian (Latin, no CJK and not Spanish) -> 160 chars / SMS,
+#     long messages split every 153.
+#   * Chinese (any CJK char) and Spanish                    ->  70 chars / SMS,
+#     long messages split every 67.
+#   * Any Chinese+Latin mixed content is billed at the 70-char (CJK) rate.
+# Spanish is detected from language markers (accented Latin letters or common,
+# unambiguous Spanish words) so it works even after accent-stripping to ASCII.
+_SPANISH_WORDS = {
+    'hola', 'buenos', 'buenas', 'dias', 'tardes', 'noches', 'gracias', 'muchas',
+    'favor', 'saludos', 'cordial', 'atentamente', 'estimado',
+    'estimada', 'estimados', 'estimadas', 'cliente', 'clientes', 'cuenta',
+    'cuentas', 'pago', 'pagos', 'pagar', 'pendiente', 'pendientes', 'adeuda',
+    'adeudan', 'vencido', 'vencida', 'vencidos', 'vencidas', 'monto', 'saldo',
+    'deuda', 'credito', 'prestamo', 'prestamos', 'banco', 'transferencia',
+    'deposito', 'fecha', 'limite', 'plazo', 'mensaje', 'responder',
+    'comunicarse', 'contacto', 'telefono', 'whatsapp', 'correo', 'direccion',
+    'numero', 'recibo', 'recargos', 'interes', 'intereses', 'promocion',
+    'descuento', 'oferta', 'compra', 'venta', 'ventas', 'dinero', 'pesos',
+    'enviamos', 'recordatorio', 'recordarle', 'invitamos', 'usted', 'ustedes',
+    'para', 'como', 'donde', 'porque', 'cuando', 'ahora', 'antes', 'despues',
+    'descuentos', 'beneficio', 'beneficios', 'adicional', 'adicionales',
+    'verificar', 'confirmar', 'cancelar', 'siguiente', 'informacion',
+    'servicio', 'servicios', 'atencion', 'horario', 'oficina', 'sucursal',
+    'tarjeta', 'efectivo', 'linea', 'plan', 'planes', 'debe', 'deben',
+    'realice', 'realizar', 'evite', 'suspension', 'corte', 'inmediato',
+    'importante', 'urgente', 'aprovecha', 'aproveche', 'solo', 'valido',
+    'hasta', 'cada', 'todo', 'toda', 'todos', 'todas', 'nuestro', 'nuestra',
+    'nuestros', 'nuestras', 'empresa', 'negocio', 'equipo', 'mensual',
+    'semanal', 'anual', 'minimo', 'maximo', 'total', 'parcial', 'abono',
+    'abonar', 'liquidar', 'prorroga', 'reestructura', 'cartera', 'cobranza',
+}
+
+_CJK_RE = _re.compile(r'[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF]')
+_SPANISH_ACCENT_RE = _re.compile(
+    '[áéíóúüñ¿¡ÁÉÍÓÚÜÑ]'
+)
+_WORD_RE = _re.compile(r"[a-zñ]+")
+# Latin accented vowels folded to plain letters for keyword matching after the
+# web UI transliterates Spanish text to ASCII.
+_ACCENT_FOLD = str.maketrans({
+    'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ü': 'u', 'ñ': 'n',
+    'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U', 'Ü': 'U', 'Ñ': 'N',
+})
+
+
+def sms_billing_class(content):
+    """Return 'cjk' (70), 'spanish' (70), or 'latin' (160) for billing."""
+    if not content:
+        return 'latin'
+    if _CJK_RE.search(content):
+        return 'cjk'
+    if _SPANISH_ACCENT_RE.search(content):
+        return 'spanish'
+    folded = content.translate(_ACCENT_FOLD).lower()
+    words = set(_WORD_RE.findall(folded))
+    if words & _SPANISH_WORDS:
+        return 'spanish'
+    return 'latin'
+
+
 def sms_billing_segments(content):
-    """Number of billable SMS parts for a string, using the carrier's exact
-    GSM 03.38 rule (validated against the operator's detail export, 0 mismatch):
-    content fully in the GSM default/extension alphabet -> 160 single / 153
-    concat (extension chars cost 2 septets); any non-GSM char (Spanish accents
-    like a/e/i/o/u with tilde, n-tilde uppercase forms outside the set, emoji)
-    -> UCS2: 70 single / 67 concat."""
+    """Number of billable SMS parts under the commercial billing rule:
+    Chinese/Spanish (and Chinese-mixed) 70 chars single / 67 concat;
+    English/Indonesian 160 single / 153 concat."""
     if content is None:
         return 0
-    # GSM 03.38 default alphabet (single septet). Note: only 'ñ'/'Ñ' are in it;
-    # accented vowels are NOT. Inverted ! / ? ARE.
-    gsm_basic = set(
-        "@\u00a3$\u00a5\u00e8\u00e9\u00f9\u00ec\u00f2\u00c7\n\u00d8\u00f8\r\u00c5\u00e5"
-        "\u0394_\u03a6\u0393\u039b\u03a9\u03a0\u03a8\u03a3\u0398\u039e\u00c6\u00e6\u00df\u00c9"
-        " !\"#\u00a4%&'()*+,-./0123456789:;<=>?\u00a1"
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00c4\u00d6\u00d1\u00dc\u00a7\u00bf"
-        "abcdefghijklmnopqrstuvwxyz\u00e4\u00f6\u00f1\u00fc\u00e0"
-    )
-    gsm_ext = set("^{}\\[~]|\u20ac")
     n = len(content)
-    if all(ch in gsm_basic or ch in gsm_ext for ch in content):
-        units = sum(2 if ch in gsm_ext else 1 for ch in content)
-        return 1 if units <= 160 else -(-units // 153)
+    if n == 0:
+        return 0
+    if sms_billing_class(content) == 'latin':
+        return 1 if n <= 160 else -(-n // 153)
     return 1 if n <= 70 else -(-n // 67)
 
 
@@ -5082,7 +5134,8 @@ def sms_statistics():
     #  - delivered = status 'delivered' (final DR state=1)
     #  - in_flight = status 'sent' (accepted, DR not yet final)
     #  - rejected  = api_code<>0 (provider refused at submit time)
-    #  - billing_parts = GSM segment count (160 single / 153 concat)
+    #  - billing_parts = commercial language rule (Chinese/Spanish 70/67;
+    #    English/Indonesian Latin 160/153)
     # Bucketed by business-timezone local day.
     # ---------------------------------------------------------------
     recon_scope = ''
@@ -5120,9 +5173,9 @@ def sms_statistics():
         WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}
     """
     recon_row = db.execute(recon_sql, rparams + scope_r_params + acct_r_params).fetchone()
-    # Billable segments are computed in Python with the carrier-exact GSM 03.38
-    # rule (validated 0 mismatch against the operator detail export), so PG and
-    # SQLite agree. Fetch the contents + local day for the matched rows.
+    # Billable segments are computed in Python with the commercial language
+    # rule (Chinese/Spanish 70/67; English/Indonesian 160/153), so PG and
+    # SQLite agree and historical data is re-derived from message content.
     content_rows = db.execute(
         f"""SELECT r.content AS content, {tz_date_expr('r.sent_at', rtz_offset)} AS dia
             FROM sms_records r
@@ -6406,27 +6459,26 @@ def check_sms_charset():
         return jsonify({'error': 'Contenido es requerido'}), 400
 
     if not is_sms_api_configured():
-        # Local estimation using the carrier-exact GSM 03.38 / UCS2 rule.
+        # Local estimation using the commercial language billing rule:
+        # Chinese / Spanish -> 70 chars single (67 concat); English/Indonesian
+        # and other Latin text -> 160 single (153 concat).
         char_count = len(content)
         parts = sms_billing_segments(content)
-        # Determine charset for display
-        gsm_basic = set(
-            "@\u00a3$\u00a5\u00e8\u00e9\u00f9\u00ec\u00f2\u00c7\n\u00d8\u00f8\r\u00c5\u00e5"
-            "\u0394_\u03a6\u0393\u039b\u03a9\u03a0\u03a8\u03a3\u0398\u039e\u00c6\u00e6\u00df\u00c9"
-            " !\"#\u00a4%&'()*+,-./0123456789:;<=>?\u00a1"
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00c4\u00d6\u00d1\u00dc\u00a7\u00bf"
-            "abcdefghijklmnopqrstuvwxyz\u00e4\u00f6\u00f1\u00fc\u00e0"
-        )
-        gsm_ext = set("^{}\\[~]|\u20ac")
-        is_gsm = all(ch in gsm_basic or ch in gsm_ext for ch in content)
-        charset = 'GSM' if is_gsm else 'UCS2'
-        single = 160 if is_gsm else 70
+        billing_class = sms_billing_class(content)
+        if billing_class == 'cjk':
+            charset, single, lang = 'UCS2', 70, 'Chino / mixto (70 caracteres)'
+        elif billing_class == 'spanish':
+            charset, single, lang = 'UCS2', 70, 'Espanol (70 caracteres)'
+        else:
+            charset, single, lang = 'GSM', 160, 'Ingles / Indonesio (160 caracteres)'
         return jsonify({
             'charset': charset,
             'parts': parts,
             'single': single,
             'char_count': char_count,
-            'detail': f'Contenido con {char_count} caracteres. Codificacion {charset}. Se factura como {parts} SMS.',
+            'billing_class': billing_class,
+            'billing_rule': lang,
+            'detail': f'Contenido con {char_count} caracteres. {lang}. Se factura como {parts} SMS.',
             'api_configured': False
         })
 
