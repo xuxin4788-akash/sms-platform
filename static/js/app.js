@@ -206,6 +206,19 @@ function getStatusBadge(status) {
     return map[status] || '<span class="badge badge-gray">' + escapeHtml(status) + '</span>';
 }
 
+// Billed segment count for one SMS record. Multi-part (>1) is highlighted so
+// overlong Spanish messages that bill as 2 segments stand out; simulated
+// sends never reached the provider and are marked as non-billable.
+function smsSegmentsCell(r) {
+    var isSim = r && r.api_msg && /simulado/i.test(r.api_msg);
+    var parts = (r && (r.billed_segments !== undefined && r.billed_segments !== null))
+        ? parseInt(r.billed_segments, 10) : NaN;
+    if (isSim) return '<span class="text-secondary" style="font-size:11px;" title="Envio simulado, no se factura">sim.</span>';
+    if (!isFin(parts) || parts < 1) return '<span class="text-secondary">-</span>';
+    if (parts > 1) return '<span style="display:inline-block;min-width:22px;padding:2px 8px;border-radius:999px;background:#FEF3C7;color:#B45309;font-weight:600;font-size:12px;" title="Mensaje concatenado: ' + parts + ' segmentos facturados">' + parts + '</span>';
+    return '<span style="font-weight:600;color:#1E293B;">' + parts + '</span>';
+}
+
 function renderPagination(data, type) {
     if (data.total_pages <= 1) return '';
     const info = `Mostrando ${((data.page - 1) * data.per_page) + 1}-${Math.min(data.page * data.per_page, data.total)} de ${data.total}`;
@@ -1678,7 +1691,7 @@ async function renderRecords(container) {
         state.records.totalPages = data.total_pages;
 
         var rows = data.records.length === 0
-            ? '<tr><td colspan="7" class="text-center text-secondary" style="padding:32px;">No hay registros</td></tr>'
+            ? '<tr><td colspan="8" class="text-center text-secondary" style="padding:32px;">No hay registros</td></tr>'
             : data.records.map(function(r) {
                 var apiInfo = '';
                 if (r.msgid) apiInfo += '<span class="text-secondary" style="font-size:11px;">ID: ' + escapeHtml(r.msgid) + '</span>';
@@ -1687,12 +1700,12 @@ async function renderRecords(container) {
                 var senderBadge = r.sender_role === 'admin'
                     ? '<span style="display:inline-block;background:#EFF6FF;color:#1D4ED8;font-size:11px;padding:2px 8px;border-radius:999px;">' + senderName + '</span>'
                     : senderName;
-                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:250px;"><div style="display:flex;align-items:center;gap:6px;"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.content) + '">' + escapeHtml(r.content) + '</span>' + smsCopyButton(r.content) + '</div></td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (apiInfo || '<span class="text-secondary">-</span>') + '</td></tr>';
+                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:250px;"><div style="display:flex;align-items:center;gap:6px;"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.content) + '">' + escapeHtml(r.content) + '</span>' + smsCopyButton(r.content) + '</div></td><td>' + getStatusBadge(r.status) + '</td><td style="text-align:center;white-space:nowrap;">' + smsSegmentsCell(r) + '</td><td class="text-sm">' + (apiInfo || '<span class="text-secondary">-</span>') + '</td></tr>';
             }).join('');
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Envio</h1>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><div style="display:flex;gap:8px;flex:1;"><input type="text" class="search-input" placeholder="Buscar por numero, nombre, usuario o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)" style="flex:1;"><button onclick="triggerRecordSearch()" style="padding:8px 16px;background:#2563EB;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Buscar</button></div><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="delivered"' + (state.records.status==='delivered'?' selected':'') + '>Entregado</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Aceptado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" lang="es" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setRecordsToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearRecordsFilters()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><div style="display:flex;gap:8px;flex:1;"><input type="text" class="search-input" placeholder="Buscar por numero, nombre, usuario o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)" style="flex:1;"><button onclick="triggerRecordSearch()" style="padding:8px 16px;background:#2563EB;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Buscar</button></div><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="delivered"' + (state.records.status==='delivered'?' selected':'') + '>Entregado</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Aceptado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" lang="es" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setRecordsToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearRecordsFilters()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th title="Segmentos de facturacion (regla por idioma: 70 car. espanol/chino, 160 ingles/indonesio)">Segm.</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
@@ -1735,19 +1748,19 @@ async function renderContentSearch(container) {
         state.contentSearch.totalPages = data.total_pages;
 
         var rows = data.records.length === 0
-            ? '<tr><td colspan="7" class="text-center text-secondary" style="padding:32px;">No se encontraron mensajes con ese contenido</td></tr>'
+            ? '<tr><td colspan="8" class="text-center text-secondary" style="padding:32px;">No se encontraron mensajes con ese contenido</td></tr>'
             : data.records.map(function(r) {
                 var highlightContent = state.contentSearch.keyword ? highlightText(r.content, state.contentSearch.keyword) : escapeHtml(r.content);
                 var senderName = escapeHtml(r.sender_full_name || r.sender_username || '-');
                 var senderBadge = r.sender_role === 'admin'
                     ? '<span style="display:inline-block;background:#EFF6FF;color:#1D4ED8;font-size:11px;padding:2px 8px;border-radius:999px;">' + senderName + '</span>'
                     : senderName;
-                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:300px;"><div style="display:flex;align-items:center;gap:6px;"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.content) + '">' + highlightContent + '</span>' + smsCopyButton(r.content) + '</div></td><td>' + getStatusBadge(r.status) + '</td><td class="text-sm">' + (r.api_msg ? '<span class="text-secondary" style="font-size:11px;">' + escapeHtml(r.api_msg) + '</span>' : '<span class="text-secondary">-</span>') + '</td></tr>';
+                return '<tr><td class="text-sm text-secondary">' + formatDate(r.created_at) + '</td><td class="text-sm" style="white-space:nowrap;">' + senderBadge + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td class="text-sm" style="max-width:300px;"><div style="display:flex;align-items:center;gap:6px;"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(r.content) + '">' + highlightContent + '</span>' + smsCopyButton(r.content) + '</div></td><td>' + getStatusBadge(r.status) + '</td><td style="text-align:center;white-space:nowrap;">' + smsSegmentsCell(r) + '</td><td class="text-sm">' + (r.api_msg ? '<span class="text-secondary" style="font-size:11px;">' + escapeHtml(r.api_msg) + '</span>' : '<span class="text-secondary">-</span>') + '</td></tr>';
             }).join('');
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Buscar por Contenido</h1>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Ingrese palabra clave del mensaje o nombre de usuario..." value="' + escapeHtml(state.contentSearch.keyword) + '" onkeyup="handleContentSearch(event)" style="flex:2;"><input type="date" lang="es" value="' + state.contentSearch.dateFrom + '" onchange="handleContentDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.contentSearch.dateTo + '" onchange="handleContentDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setContentToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearContentSearch()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th>Detalles</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contentSearch') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Ingrese palabra clave del mensaje o nombre de usuario..." value="' + escapeHtml(state.contentSearch.keyword) + '" onkeyup="handleContentSearch(event)" style="flex:2;"><input type="date" lang="es" value="' + state.contentSearch.dateFrom + '" onchange="handleContentDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.contentSearch.dateTo + '" onchange="handleContentDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setContentToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearContentSearch()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th title="Segmentos de facturacion">Segm.</th><th>Detalles</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contentSearch') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
