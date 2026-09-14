@@ -676,6 +676,7 @@ async function renderDashboard(container) {
                 '<div class="stat-card"><div class="stat-label">Tasa de entrega</div><div class="stat-value" style="font-size:22px;">' + (rc.delivery_rate || 0) + '%</div></div>' +
               '</div>' +
               ((rc.simulated || 0) > 0 ? '<p style="font-size:12px;color:var(--warning);margin:12px 0 0;">' + rc.simulated + ' envio(s) simulados excluidos de esta conciliacion.</p>' : '') +
+              (rc.error ? '<p style="font-size:12px;color:var(--danger);margin:12px 0 0;">No se pudo calcular la conciliacion: ' + escapeHtml(rc.error) + '</p>' : '') +
             '</div></div>';
 
         container.innerHTML =

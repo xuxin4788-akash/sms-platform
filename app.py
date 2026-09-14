@@ -5205,6 +5205,35 @@ def sms_statistics():
     #    English/Indonesian Latin 160/153)
     # Bucketed by business-timezone local day.
     # ---------------------------------------------------------------
+    recon = None
+    try:
+        recon = _sms_reconciliation_block(db, g.user, date_from, date_to, account_filter, account_params, rtz_offset, report_tz)
+    except Exception as e:
+        app.logger.exception("reconciliation block failed (degraded dashboard): %s", e)
+        recon = {'total': 0, 'submitted': 0, 'delivered': 0, 'in_flight': 0, 'rejected': 0,
+                 'failed': 0, 'simulated': 0, 'billing_parts': 0, 'delivery_rate': 0.0,
+                 'by_day': [], 'report_tz': report_tz, 'error': str(e)}
+
+    return jsonify(
+        {
+        'today_sent': today_sent,
+        'today_total': today_total,
+        'total_sent': total_sent,
+        'total_failed': total_failed,
+        'total_pending': total_pending,
+        'total_all': total_all,
+        'success_rate': round(success_rate, 1),
+        'last_7_days': last_7_days,
+        'reconciliation': recon,
+        'filters': {'date_from': date_from, 'date_to': date_to, 'user_id': user_id if account_filter else ''},
+        'total_contacts': db.execute("SELECT COUNT(*) as count FROM contacts").fetchone()['count'],
+        'total_templates': db.execute("SELECT COUNT(*) as count FROM templates").fetchone()['count']
+    })
+
+
+def _sms_reconciliation_block(db, user, date_from, date_to, account_filter, account_params, rtz_offset, report_tz):
+    """Provider-style reconciliation aggregate. Isolated so a failure here
+    degrades only this card and never the whole dashboard response."""
     recon_scope = ''
     recon_acct = ''
     rwhere = ["coalesce(r.api_msg,'') NOT LIKE '%simulado%'"]
@@ -5216,12 +5245,12 @@ def sms_statistics():
         rwhere.append(f"{tz_date_expr('r.sent_at', rtz_offset)} <= ?")
         rparams.append(date_to)
     scope_r_params = []
-    if g.user['role'] == 'team_admin':
+    if user['role'] == 'team_admin':
         recon_scope = ' AND (r.created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?))'
-        scope_r_params = [g.user['id'], g.user['id']]
-    elif g.user['role'] == 'team_member':
+        scope_r_params = [user['id'], user['id']]
+    elif user['role'] == 'team_member':
         recon_scope = ' AND r.created_by = ?'
-        scope_r_params = [g.user['id']]
+        scope_r_params = [user['id']]
     acct_r_params = list(account_params)
     if account_filter:
         recon_acct = ' AND r.created_by = ?'
@@ -5234,7 +5263,6 @@ def sms_statistics():
           coalesce(sum(CASE WHEN r.status='sent' THEN 1 ELSE 0 END),0) AS in_flight,
           coalesce(sum(CASE WHEN r.api_code<>0 THEN 1 ELSE 0 END),0) AS rejected,
           coalesce(sum(CASE WHEN r.status='failed' THEN 1 ELSE 0 END),0) AS failed,
-          coalesce(sum(0),0) AS billing_parts,
           coalesce(sum(CASE WHEN coalesce(r.api_msg,'') LIKE '%simulado%' THEN 1 ELSE 0 END),0) AS simulated
         FROM sms_records r
         WHERE {' AND '.join(rwhere)} {recon_scope}{recon_acct}
@@ -5268,7 +5296,6 @@ def sms_statistics():
     # Carrier-style success rate = delivered / submitted
     recon['delivery_rate'] = round(recon['delivered'] / recon['submitted'] * 100, 1) if recon['submitted'] else 0.0
 
-    # Per-report-day reconciliation series (for charts / export alignment)
     recon_series = db.execute(
         f"""
         SELECT {tz_date_expr('r.sent_at', rtz_offset)} AS dia,
@@ -5289,23 +5316,8 @@ def sms_statistics():
          'rejected': x['rejected'], 'billing_parts': billing_by_day.get(str(x['dia']), 0)}
         for x in recon_series
     ]
-
     recon['report_tz'] = report_tz
-    return jsonify(
-        {
-        'today_sent': today_sent,
-        'today_total': today_total,
-        'total_sent': total_sent,
-        'total_failed': total_failed,
-        'total_pending': total_pending,
-        'total_all': total_all,
-        'success_rate': round(success_rate, 1),
-        'last_7_days': last_7_days,
-        'reconciliation': recon,
-        'filters': {'date_from': date_from, 'date_to': date_to, 'user_id': user_id if account_filter else ''},
-        'total_contacts': db.execute("SELECT COUNT(*) as count FROM contacts").fetchone()['count'],
-        'total_templates': db.execute("SELECT COUNT(*) as count FROM templates").fetchone()['count']
-    })
+    return recon
 
 # ============================================================
 # SMS Config API (admin)
