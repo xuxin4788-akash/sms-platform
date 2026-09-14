@@ -214,7 +214,7 @@ function smsSegmentsCell(r) {
     var parts = (r && (r.billed_segments !== undefined && r.billed_segments !== null))
         ? parseInt(r.billed_segments, 10) : NaN;
     if (isSim) return '<span class="text-secondary" style="font-size:11px;" title="Envio simulado, no se factura">sim.</span>';
-    if (!isFin(parts) || parts < 1) return '<span class="text-secondary">-</span>';
+    if (!isFinite(parts) || parts < 1) return '<span class="text-secondary">-</span>';
     if (parts > 1) return '<span style="display:inline-block;min-width:22px;padding:2px 8px;border-radius:999px;background:#FEF3C7;color:#B45309;font-weight:600;font-size:12px;" title="Mensaje concatenado: ' + parts + ' segmentos facturados">' + parts + '</span>';
     return '<span style="font-weight:600;color:#1E293B;">' + parts + '</span>';
 }
