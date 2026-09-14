@@ -7502,6 +7502,112 @@ def api_sms_dr_sync():
         return jsonify({'error': str(exc)}), 500
 
 
+def recompute_billed_segments_batch(max_records=50000, last_id=0):
+    """Re-rate historical sms_records.billed_segments under the CURRENT billing
+    rule (Spanish 70-char class only when the text carries Spanish-specific
+    glyphs; otherwise plain-Latin/English/Indonesian 160; CJK 70).
+
+    Rows were already GSM-normalized at send time (accent/CJK folded to ASCII),
+    so re-rating the stored content moves the old ASCII-Spanish text that the
+    former keyword rule had billed at 70 into the 160 class — exactly the
+    product decision to "make history follow the new rule".
+
+    Keyset-paginated and idempotent: each call processes up to `max_records`
+    rows with id > `last_id`, updates only rows whose stored segments change,
+    and returns counters plus the next cursor. The admin endpoint/frontend loop
+    drains the whole table in chunks so one HTTP request never blocks for long.
+    """
+    is_pg = get_db_type() == 'postgres'
+    # Raw native cursor: bulk SELECT + executemany bypass the ? -> %s translation
+    # and per-row overhead of the Flask wrapper. Placeholders are dialect-native.
+    conn = get_db().conn
+    conn.rollback()
+    cur = conn.cursor()
+    ph = '%s' if is_pg else '?'
+    try:
+        cur.execute(
+            f"SELECT id, content, COALESCE(billed_segments,1) AS old_seg "
+            f"FROM sms_records WHERE id > {ph} ORDER BY id ASC LIMIT {ph}",
+            (last_id, int(max_records))
+        )
+        rows = cur.fetchall()
+        scanned = len(rows)
+        changes = []
+        changed = 0
+        old_total = 0
+        new_total = 0
+        max_id = last_id
+        for r in rows:
+            rid, content, old_seg = r[0], r[1] or '', r[2] or 1
+            new_seg = sms_billing_segments(content)
+            max_id = rid
+            old_total += old_seg
+            new_total += new_seg
+            if int(new_seg) != int(old_seg):
+                changes.append((new_seg, rid))
+                changed += 1
+        if changes:
+            cur.executemany(
+                "UPDATE sms_records SET billed_segments=%s WHERE id=%s"
+                if is_pg else
+                "UPDATE sms_records SET billed_segments=? WHERE id=?",
+                changes
+            )
+        conn.commit()
+
+        # Remaining rows strictly after the current cursor.
+        cur.execute(f"SELECT COUNT(*) FROM sms_records WHERE id > {ph}", (max_id,))
+        remaining = int(cur.fetchone()[0])
+        cur.execute("SELECT COUNT(*) FROM sms_records")
+        total_rows = int(cur.fetchone()[0])
+        return {
+            'scanned': scanned,
+            'changed': changed,
+            'old_segments_sum': old_total,
+            'new_segments_sum': new_total,
+            'segments_delta_in_batch': new_total - old_total,
+            'next_last_id': max_id if rows else last_id,
+            'remaining': remaining,
+            'total_rows': total_rows,
+            'done': remaining == 0,
+        }
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+@app.route('/api/sms/recompute-billing', methods=['POST'])
+@login_required
+@admin_required
+def api_sms_recompute_billing():
+    """Admin: re-rate historical billed_segments under the current language rule.
+
+    Body: {max_records: int (default 50000, clamped 1..100000), last_id: int}.
+    Drain a large table by calling repeatedly with the returned next_last_id
+    until done=true. Stats cache is invalidated on every chunk so panels move
+    toward the corrected totals as the backfill progresses.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        try:
+            max_records = int(data.get('max_records') or 50000)
+        except (TypeError, ValueError):
+            max_records = 50000
+        max_records = max(1, min(100000, max_records))
+        try:
+            last_id = int(data.get('last_id') or 0)
+        except (TypeError, ValueError):
+            last_id = 0
+        result = recompute_billed_segments_batch(max_records=max_records, last_id=last_id)
+        invalidate_stats_cache()
+        return jsonify(result)
+    except Exception as exc:
+        get_db().rollback()
+        return jsonify({'error': str(exc)}), 500
+
+
 def sms_dr_loop():
     """Background worker: reconcile delivery reports every 5 minutes."""
     time.sleep(20)

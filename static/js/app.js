@@ -671,7 +671,8 @@ async function renderDashboard(container, opts) {
         var rc = stats.reconciliation || {};
         var syncBtn = state.user && state.user.role === 'admin'
             ? '<button class="btn btn-secondary btn-sm" id="dr-sync-btn" onclick="runDrSync(false)" title="Consultar estados pendientes recientes (ultimas 72h)">Sincronizar estados</button>' +
-              '<button class="btn btn-warning btn-sm" id="dr-backfill-btn" onclick="confirmDrBackfill()" title="Reconciliar historico: consulta TODOS los envios pendientes, no solo las ultimas 72h">Reconciliar historico</button>'
+              '<button class="btn btn-warning btn-sm" id="dr-backfill-btn" onclick="confirmDrBackfill()" title="Reconciliar historico: consulta TODOS los envios pendientes, no solo las ultimas 72h">Reconciliar historico</button>' +
+              '<button class="btn btn-ghost btn-sm" id="rebill-btn" onclick="confirmRebillHistory()" title="Recalcula los segmentos facturados de TODO el historico con la regla actual (espanol 70 solo si hay acentos/n; resto 160)">Recalcular facturacion</button>'
             : '';
         var cacheNote = '<span style="font-size:12px;color:#64748B;display:inline-flex;align-items:center;gap:6px;" title="Los paneles se actualizan automaticamente cada 15 minutos. Contactos y gestion siempre en tiempo real.">' +
             '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>' +
@@ -786,6 +787,47 @@ async function runDrSync(backfill) {
 async function confirmDrBackfill() {
     if (!window.confirm('Reconciliar TODO el historico?\n\nConsultara al operador el estado final de todos los envios pendientes (no solo las ultimas 72h) para corregir la conciliacion en el panel. Si hay una gran cantidad, se procesan lotes de 20.000 por clic; vuelve a pulsar el boton para continuar hasta vaciar la cola.')) return;
     await runDrSync(true);
+}
+
+async function confirmRebillHistory() {
+    if (!window.confirm('Recalcular la facturacion de TODO el historico?\n\nSe volveran a contar los segmentos de cada SMS con la regla actual: espanol 70 solo si el texto tiene acentos/n/signos invertidos; el resto (incluido el espanol en ASCII) se cuenta a 160. Esto reduce los SMS facturados de los mensajes que antes se clasificaban por palabras. El proceso recorre la tabla en lotes y puede tardar; los paneles se actualizan al terminar.')) return;
+    await runRebillHistory();
+}
+
+async function runRebillHistory() {
+    var btn = document.getElementById('rebill-btn');
+    var lastId = 0;
+    var totalChanged = 0;
+    var totalRows = 0;
+    var batchDelta = 0;
+    var rounds = 0;
+    if (btn) { btn.disabled = true; }
+    try {
+        while (true) {
+            rounds += 1;
+            if (btn) btn.textContent = 'Recalculando... (' + (totalRows || 0) + ')';
+            var res = await api('/api/sms/recompute-billing', {
+                method: 'POST',
+                body: JSON.stringify({ max_records: 50000, last_id: lastId })
+            });
+            if (res.error) throw new Error(res.error);
+            lastId = res.next_last_id || lastId;
+            totalChanged += (res.changed || 0);
+            totalRows = res.total_rows || totalRows;
+            batchDelta += (res.segments_delta_in_batch || 0);
+            if (res.done) break;
+            if (rounds >= 500) break; // safety guard against an endless loop
+        }
+        showToast('Facturacion recalculada: ' + totalChanged + ' de ' + totalRows +
+            ' registros ajustados (' + (batchDelta <= 0 ? batchDelta : '+' + batchDelta) +
+            ' segmentos). Paneles actualizados.', 'success');
+        var dashContent = document.getElementById('page-content');
+        if (dashContent) await renderDashboard(dashContent, { forceRefresh: true });
+    } catch (e) {
+        showToast('Error al recalcular facturacion: ' + e.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Recalcular facturacion'; }
+    }
 }
 
 async function refreshDashboard() {
