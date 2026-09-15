@@ -9714,7 +9714,7 @@ def send_email():
         "INSERT INTO email_jobs (job_id, status, total, sent, failed, suppressed, simulated, created_by, created_at, started_at, finished_at) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (job_id, 'completed' if (simulated or queued == 0) else 'queued',
-         total, queued if simulated else 0, 0, suppressed_count, 1 if simulated else 0,
+         total, queued if simulated else 0, 0, suppressed_count, bool(simulated),
          uid, now, now if simulated else None, now if simulated else None)
     )
     db.commit()
