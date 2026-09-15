@@ -4953,9 +4953,7 @@ async function loadEmailReplies() {
     if (st.search) p.set('search', st.search);
     if (st.unreadOnly) p.set('unread_only', '1');
     try {
-        var res = await apiFetch(API_BASE + '/email/replies?' + p.toString());
-        var data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Error');
+        var data = await api('/api/email/replies?' + p.toString());
         state.emailRepliesData = data;
         renderEmailReplies(document.getElementById('page-content'));
     } catch (e) { showToast(e.message, 'error'); }
@@ -5029,7 +5027,7 @@ async function toggleReply(id) {
     var r = (state.emailRepliesData.replies || []).find(function(x) { return x.id === id; });
     if (r && !r.is_read) {
         try {
-            await apiFetch(API_BASE + '/email/replies/' + id + '/read', { method: 'POST' });
+            await api('/api/email/replies/' + id + '/read', { method: 'POST', body: { read: true } });
             r.is_read = 1;
             state.emailRepliesData.unread = Math.max(0, (state.emailRepliesData.unread || 1) - 1);
             renderEmailReplies(document.getElementById('page-content'));
