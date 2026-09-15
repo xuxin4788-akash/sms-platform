@@ -97,7 +97,7 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET | /api/email/statistics | User | Email stats (total/sent/failed/pending/suppressed/success_rate/last_7_days/configured) |
 | GET/POST | /api/email/suppressions | Admin | List/search or add a suppressed email (bounce/complaint/manual) |
 | DELETE | /api/email/suppressions/&lt;id&gt; | Admin | Remove an address from the suppression list |
-| POST | /api/email/inbound/sns | Public | SES Email-receiving SNS webhook (raw RFC-822 in `content`, SubscriptionConfirmation + Notification); parses From/Subject/plain-or-HTML body, correlates to most recent outbound record by sender for owner scope, idempotent by Message-ID |
+| POST | /api/email/inbound/sns | Public | SES Email-receiving SNS webhook (raw RFC-822 in `content`; auto base64-decodes when the SNS action uses Encoding=Base64; SubscriptionConfirmation + Notification); parses From/Subject/plain-or-HTML body, correlates to most recent outbound record by sender for owner scope, idempotent by Message-ID |
 | GET | /api/email/replies | User | List inbound replies (role scope; search/sender/subject/body; `unread_only`; pagination; rows alias `received_at`/`body_text`) |
 | POST | /api/email/replies/&lt;id&gt;/read | User | Mark a reply read (body `{read:true}`), same role scope enforced |
 | POST | /api/email/sns/callback | Public | Amazon SES SNS webhook: subscription confirmation + Bounce/Complaint → suppression list + mark in-flight record failed |

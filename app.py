@@ -10286,8 +10286,28 @@ def email_inbound_sns():
     if not content:
         return jsonify({'error': 'no content'}), 400
 
+    import base64 as _b64
+    import binascii as _binascii
+
+    def _looks_like_mime(text):
+        head = text.lstrip()[:120].lower()
+        return any(h in head for h in ('received:', 'from:', 'return-path:',
+                                       'mime-version:', 'message-id:', 'date:'))
+
+    raw = content
+    if isinstance(raw, str):
+        # SES SNS action with Encoding=Base64 delivers the whole RFC-822 message
+        # base64-encoded. Decode when the text is not already raw MIME.
+        if not _looks_like_mime(raw):
+            compact = ''.join(raw.split())
+            try:
+                decoded = _b64.b64decode(compact, validate=True)
+                raw = decoded
+            except (ValueError, _binascii.Error):
+                raw = content
+
     try:
-        info = _parse_inbound_email(content)
+        info = _parse_inbound_email(raw)
     except Exception as e:
         return jsonify({'error': f'parse failed: {e}'}), 400
 
