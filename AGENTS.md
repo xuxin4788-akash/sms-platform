@@ -72,6 +72,7 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | PUT/DELETE | /api/templates/<id> | User | Update/Delete template |
 | POST | /api/sms/send | User | Send SMS (real API or simulation) |
 | GET | /api/sms/records | User | List send records (team: all, member: own) |
+| GET | /api/sms/records/export | User | Download current filter as UTF-8-BOM CSV (same role scope + status/date/search filters; streamed in batches via a dedicated DB connection because the generator runs after request teardown; capped at SMS_EXPORT_MAX_ROWS=100000, X-Total-Rows/X-Exported-Rows/X-Export-Truncated headers) |
 | GET | /api/sms/statistics | User | Dashboard stats (team: all, member: own) |
 | POST | /api/sms/query-status | User | Query delivery status via API |
 | POST | /api/sms/check-charset | User | Check charset/billing for content |

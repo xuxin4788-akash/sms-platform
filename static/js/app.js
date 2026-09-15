@@ -1727,7 +1727,7 @@ async function renderRecords(container) {
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Envio</h1>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><div style="display:flex;gap:8px;flex:1;"><input type="text" class="search-input" placeholder="Buscar por numero, nombre, usuario o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)" style="flex:1;"><button onclick="triggerRecordSearch()" style="padding:8px 16px;background:#2563EB;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Buscar</button></div><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="delivered"' + (state.records.status==='delivered'?' selected':'') + '>Entregado</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Aceptado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" lang="es" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setRecordsToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearRecordsFilters()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th title="Segmentos de facturacion (regla por idioma: 70 car. espanol/chino, 160 ingles/indonesio)">Segm.</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><div style="display:flex;gap:8px;flex:1;"><input type="text" class="search-input" placeholder="Buscar por numero, nombre, usuario o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)" style="flex:1;"><button onclick="triggerRecordSearch()" style="padding:8px 16px;background:#2563EB;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Buscar</button></div><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="delivered"' + (state.records.status==='delivered'?' selected':'') + '>Entregado</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Aceptado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" lang="es" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setRecordsToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearRecordsFilters()">Limpiar</button><button class="btn btn-secondary btn-sm" id="records-export-btn" onclick="exportSmsRecords()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Descargar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th title="Segmentos de facturacion (regla por idioma: 70 car. espanol/chino, 160 ingles/indonesio)">Segm.</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
@@ -1752,6 +1752,44 @@ function handleRecordDateFrom(date) { state.records.dateFrom = date; state.recor
 function handleRecordDateTo(date) { state.records.dateTo = date; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
 function setRecordsToday() { state.records.dateFrom = DEFAULT_LIST_DATE; state.records.dateTo = DEFAULT_LIST_DATE; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
 function clearRecordsFilters() { state.records.status = ''; state.records.dateFrom = ''; state.records.dateTo = ''; state.records.search = ''; state.records.page = 1; renderRecords(document.getElementById('page-content')); }
+
+async function exportSmsRecords() {
+    const btn = document.getElementById('records-export-btn');
+    const defaultHtml = btn ? btn.innerHTML : '';
+    try {
+        if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'wait'; }
+        const params = new URLSearchParams();
+        if (state.records.status) params.set('status', state.records.status);
+        if (state.records.dateFrom) params.set('date_from', state.records.dateFrom);
+        if (state.records.dateTo) params.set('date_to', state.records.dateTo);
+        if (state.records.search) params.set('search', state.records.search);
+        const qs = params.toString();
+        const response = await fetch('/api/sms/records/export' + (qs ? '?' + qs : ''), { credentials: 'include' });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || 'Error al exportar');
+        }
+        const total = parseInt(response.headers.get('X-Total-Rows') || '0', 10);
+        const exported = parseInt(response.headers.get('X-Exported-Rows') || '0', 10);
+        const truncated = response.headers.get('X-Export-Truncated') === '1';
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'registros_sms_' + new Date().toISOString().slice(0, 10) + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        showToast(truncated
+            ? 'Exportados ' + exported + ' de ' + total + ' registros (limite). Afina los filtros para el resto.'
+            : 'Exportacion completada (' + exported + ' registros)', 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.innerHTML = defaultHtml; }
+    }
+}
 
 // ============================================================
 // Content Search

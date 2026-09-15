@@ -5417,6 +5417,133 @@ def list_sms_records():
         'total_pages': (total + per_page - 1) // per_page
     })
 
+@app.route('/api/sms/records/export', methods=['GET'])
+@login_required
+def export_sms_records():
+    """Download the current SMS record filter as a UTF-8-BOM CSV.
+
+    Shares the exact role scope and filters (status/date/search) with the list
+    endpoint so the export matches what the user sees. Streamed in batches to
+    avoid loading the whole table into memory; capped at SMS_EXPORT_MAX_ROWS.
+    """
+    import io as _io
+    import csv as _csv
+    from flask import Response
+
+    status = request.args.get('status', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    search = request.args.get('search', '').strip()
+
+    where = " WHERE 1=1"
+    params = []
+    if g.user['role'] == 'team_member':
+        where += " AND r.created_by = ?"
+        params.append(g.user['id'])
+    elif g.user['role'] == 'team_admin':
+        where += (" AND r.created_by IN "
+                  "(SELECT id FROM users WHERE id=? OR team_creator_id=?)")
+        params.extend([g.user['id'], g.user['id']])
+    # admin: no scope restriction
+    if status:
+        where += " AND r.status = ?"
+        params.append(status)
+    if date_from:
+        where += " AND r.created_at >= ?"
+        params.append(date_from)
+    if date_to:
+        where += " AND r.created_at <= ?"
+        params.append(date_to + ' 23:59:59')
+    if search:
+        where += (" AND (r.phone LIKE ? OR r.contact_name LIKE ? "
+                  "OR r.content LIKE ? OR u.username LIKE ?)")
+        params.extend([f'%{search}%'] * 4)
+
+    db = get_db()
+    total = db.execute(
+        "SELECT COUNT(*) AS total FROM sms_records r "
+        "LEFT JOIN users u ON u.id = r.created_by" + where, params
+    ).fetchone()['total']
+
+    export_limit = SMS_EXPORT_MAX_ROWS
+    truncated = total > export_limit
+    filename = _export_filename('registros_sms')
+
+    def generate():
+        # The request-scoped connection is closed once the view returns, before
+        # WSGI consumes this generator. Open a dedicated read connection here
+        # (wrapped in DBWrapper so '?' placeholders and dict rows work) and
+        # close it when streaming finishes.
+        if get_db_type() == 'postgres':
+            import psycopg2 as _pg
+            conn = _pg.connect(DATABASE_URL)
+        else:
+            import sqlite3 as _sqlite
+            conn = _sqlite.connect(app.config['DATABASE'])
+            conn.row_factory = _sqlite.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+        sdb = DBWrapper(conn, get_db_type())
+
+        buf = _io.StringIO()
+        # UTF-8 BOM so Excel opens accented content correctly.
+        buf.write('\ufeff')
+        writer = _csv.writer(buf)
+        writer.writerow([
+            'Fecha', 'Usuario', 'Nombre completo', 'Telefono', 'Contacto',
+            'Contenido', 'Estado', 'Segmentos facturados', 'Simulado',
+            'ID Mensaje', 'Codigo API', 'Respuesta API'
+        ])
+        yield buf.getvalue()
+
+        BATCH = 2000
+        last_id = 0
+        emitted = 0
+        try:
+            while emitted < export_limit:
+                limit = min(BATCH, export_limit - emitted)
+                rows = sdb.execute(
+                    "SELECT r.*, u.username AS sender_username, "
+                    "u.full_name AS sender_full_name "
+                    "FROM sms_records r LEFT JOIN users u ON u.id = r.created_by"
+                    + where + " AND r.id > ? ORDER BY r.id ASC LIMIT ?",
+                    params + [last_id, limit]
+                ).fetchall()
+                if not rows:
+                    break
+                buf = _io.StringIO()
+                writer = _csv.writer(buf)
+                for r in rows:
+                    api_msg = r['api_msg'] or ''
+                    simulated = 'simulado' in api_msg.lower()
+                    writer.writerow([
+                        str(r['created_at'] or ''),
+                        r['sender_username'] or '',
+                        r['sender_full_name'] or '',
+                        r['phone'] or '',
+                        r['contact_name'] or '',
+                        r['content'] or '',
+                        r['status'] or '',
+                        r['billed_segments'] if r['billed_segments'] is not None else 1,
+                        'SI' if simulated else 'NO',
+                        r['msgid'] or '',
+                        '' if r['api_code'] is None else r['api_code'],
+                        api_msg,
+                    ])
+                    last_id = r['id']
+                    emitted += 1
+                yield buf.getvalue()
+        finally:
+            sdb.close()
+
+    headers = {
+        'Content-Disposition': f"attachment; filename={filename}",
+        'X-Total-Rows': str(total),
+        'X-Exported-Rows': str(min(total, export_limit)),
+        'X-Export-Truncated': '1' if truncated else '0',
+    }
+    return Response(generate(), mimetype='text/csv; charset=utf-8', headers=headers)
+
+
 @app.route('/api/sms/statistics', methods=['GET'])
 @login_required
 @stats_cache_namespace('sms_stats')
@@ -7003,6 +7130,15 @@ AUTO_CLEAR_LOCK_ID = 82347109
 # many days, then deleted by the daily job. (Finite category windows always
 # win; a category with retention_days=0 still means "retain forever".)
 UNCATEGORIZED_RETENTION_DAYS = 1
+
+# Maximum rows a single CSV export returns (streamed). Protects memory/time on
+# the ~700k-row table; apply a tighter date/search filter to narrow an export.
+SMS_EXPORT_MAX_ROWS = int(os.environ.get('SMS_EXPORT_MAX_ROWS', '100000') or 100000)
+
+
+def _export_filename(prefix):
+    """Build a filesystem-safe, timestamped CSV filename: prefix_YYYYMMDD_HHMMSS.csv."""
+    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
 def _parse_hhmm(value):
