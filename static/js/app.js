@@ -239,6 +239,7 @@ function changePage(type, page) {
     else if (type === 'contentSearch') { state.contentSearch.page = page; renderContentSearch(document.getElementById('page-content')); }
     else if (type === 'calls') { state.calls.page = page; loadVoiceRecords(); }
     else if (type === 'emailRecords') { state.emailRecords.page = page; loadEmailRecords(); }
+    else if (type === 'emailReplies') { state.emailReplies.page = page; loadEmailReplies(); }
 }
 
 // ============================================================
@@ -461,11 +462,11 @@ function showMainApp() {
         state.user.permsConfigured !== true) {
         if (role === 'team_admin') {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'calls', 'email', 'email-records', 'content-search',
+                     'records', 'calls', 'email', 'email-records', 'email-replies', 'content-search',
                      'users', 'my-account', 'my-team', 'all-teams', 'retention'];
         } else {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'calls', 'email', 'email-records', 'my-account'];
+                     'records', 'calls', 'email', 'email-records', 'email-replies', 'my-account'];
         }
     }
     document.querySelectorAll('.nav-item').forEach(function(el) {
@@ -556,6 +557,8 @@ function navigateTo(page) {
             renderEmailSend(content); break;
         case 'email-records':
             renderEmailRecords(content); break;
+        case 'email-replies':
+            renderEmailReplies(content); loadEmailReplies(); break;
         case 'email-config':
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
             renderEmailConfig(content); break;
@@ -4679,6 +4682,7 @@ function deleteCategory(id) {
 // ============================================================
 state.emailSend = { mode: 'contacts', contactList: [], filtered: [], selected: new Set(), search: '' };
 state.emailRecords = { page: 1, search: '', status: '', dateFrom: todayLocalStr(), dateTo: todayLocalStr() };
+state.emailReplies = { page: 1, search: '', unreadOnly: false, expanded: new Set() };
 
 async function renderEmailSend(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
@@ -4938,6 +4942,106 @@ function navigateRefreshSafe() {
     var c = document.getElementById('page-content');
     if ((location.hash || '').indexOf('email-records') >= 0) renderEmailRecords(c);
     else loadEmailRecords();
+}
+
+// ============================================================
+// Email Replies (Inbox)
+// ============================================================
+async function loadEmailReplies() {
+    var st = state.emailReplies;
+    var p = new URLSearchParams({ page: st.page || 1, per_page: 20 });
+    if (st.search) p.set('search', st.search);
+    if (st.unreadOnly) p.set('unread_only', '1');
+    try {
+        var res = await apiFetch(API_BASE + '/email/replies?' + p.toString());
+        var data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error');
+        state.emailRepliesData = data;
+        renderEmailReplies(document.getElementById('page-content'));
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+function renderEmailReplies(container) {
+    var st = state.emailReplies;
+    var data = state.emailRepliesData || { replies: [], page: 1, total_pages: 1, total: 0, unread: 0 };
+    var rows = data.replies || [];
+    var rowHtml = rows.map(function(r) {
+        var open = st.expanded.has(r.id);
+        var unreadCls = r.is_read ? '' : ' reply-unread';
+        var bodyEsc = escapeHtml(r.body_text || '').replace(/\n/g, '<br>');
+        var detail = open ? `<tr class="reply-detail-row"><td colspan="6"><div class="reply-detail">
+            <div class="reply-meta-line">
+              <span><strong>De:</strong> ${escapeHtml(r.from_name || '')} &lt;${escapeHtml(r.sender_email)}&gt;</span>
+              <span><strong>Asunto:</strong> ${escapeHtml(r.subject || '(sin asunto)')}</span>
+            </div>
+            ${r.original_subject ? `<div class="reply-meta-line"><strong>Correo original:</strong> ${escapeHtml(r.original_subject)}${r.original_created_at ? ' · ' + formatDateTime(r.original_created_at) : ''}</div>` : ''}
+            <div class="reply-body">${bodyEsc || '<em>(sin contenido)</em>'}</div>
+          </div></td></tr>` : '';
+        return `<tr class="reply-row${unreadCls}" onclick="toggleReply(${r.id})">
+            <td>${r.is_read ? '' : '<span class="unread-dot" title="Sin leer"></span>'}</td>
+            <td>${escapeHtml(r.from_name || r.sender_email)}</td>
+            <td>${escapeHtml(r.sender_email)}</td>
+            <td class="reply-subject-cell">${escapeHtml(r.subject || '(sin asunto)')}</td>
+            <td>${formatDateTime(r.received_at)}</td>
+            <td class="reply-arrow-cell">${open ? '&#9650;' : '&#9660;'}</td>
+        </tr>` + detail;
+    }).join('');
+
+    container.innerHTML = `
+    <div class="d-flex justify-between align-center mb-3">
+        <h2>Respuestas de Correo</h2>
+        <span class="text-muted">${data.unread || 0} sin leer</span>
+    </div>
+    <div class="card mb-3">
+        <div class="card-body">
+            <div class="d-flex gap-2 align-center flex-wrap">
+                <div class="search-box" style="flex:1;min-width:220px">
+                    <input type="text" class="form-input" placeholder="Buscar correo, nombre, asunto o contenido..."
+                        value="${escapeHtml(st.search || '')}"
+                        onkeydown="if(event.key==='Enter')applyEmailRepliesSearch(this.value)" id="email-replies-search">
+                </div>
+                <label class="d-flex align-center gap-1" style="white-space:nowrap">
+                    <input type="checkbox" ${st.unreadOnly ? 'checked' : ''} onchange="toggleEmailRepliesUnread(this.checked)"> Solo sin leer
+                </label>
+                <button class="btn btn-primary btn-sm" onclick="applyEmailRepliesSearch(document.getElementById('email-replies-search').value)">Buscar</button>
+                <button class="btn btn-secondary btn-sm" onclick="clearEmailRepliesFilters()">Limpiar</button>
+            </div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="table-wrap">
+            <table>
+                <thead><tr>
+                    <th style="width:36px"></th><th>NOMBRE</th><th>CORREO</th><th>ASUNTO</th><th>FECHA</th><th style="width:40px"></th>
+                </tr></thead>
+                <tbody>${rowHtml || `<tr><td colspan="6" class="empty-state">No hay respuestas</td></tr>`}</tbody>
+            </table>
+        </div>
+        <div class="pagination-container">${renderPagination(data, 'emailReplies')}</div>
+    </div>`;
+}
+
+async function toggleReply(id) {
+    var st = state.emailReplies;
+    if (st.expanded.has(id)) { st.expanded.delete(id); renderEmailReplies(document.getElementById('page-content')); return; }
+    st.expanded.add(id);
+    renderEmailReplies(document.getElementById('page-content'));
+    var r = (state.emailRepliesData.replies || []).find(function(x) { return x.id === id; });
+    if (r && !r.is_read) {
+        try {
+            await apiFetch(API_BASE + '/email/replies/' + id + '/read', { method: 'POST' });
+            r.is_read = 1;
+            state.emailRepliesData.unread = Math.max(0, (state.emailRepliesData.unread || 1) - 1);
+            renderEmailReplies(document.getElementById('page-content'));
+        } catch (e) { /* non fatal */ }
+    }
+}
+
+function applyEmailRepliesSearch(v) { state.emailReplies.search = (v || '').trim(); state.emailReplies.page = 1; loadEmailReplies(); }
+function toggleEmailRepliesUnread(v) { state.emailReplies.unreadOnly = v; state.emailReplies.page = 1; loadEmailReplies(); }
+function clearEmailRepliesFilters() {
+    state.emailReplies.search = ''; state.emailReplies.unreadOnly = false; state.emailReplies.page = 1;
+    loadEmailReplies();
 }
 
 // ---- Admin SMTP config ----

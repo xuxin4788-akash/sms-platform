@@ -599,6 +599,20 @@ def init_db():
                 sent_at TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS email_replies (
+                id SERIAL PRIMARY KEY,
+                sender_email VARCHAR(255) NOT NULL,
+                sender_name VARCHAR(255) DEFAULT '',
+                recipient_email VARCHAR(255) DEFAULT '',
+                subject VARCHAR(500) DEFAULT '',
+                body TEXT DEFAULT '',
+                original_record_id INTEGER REFERENCES email_records(id) ON DELETE SET NULL,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                is_read BOOLEAN NOT NULL DEFAULT FALSE,
+                message_id VARCHAR(500) DEFAULT '',
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
             CREATE TABLE IF NOT EXISTS sms_records (
                 id SERIAL PRIMARY KEY,
                 phone VARCHAR(50) NOT NULL,
@@ -1227,6 +1241,22 @@ def init_db():
                 attempts INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 sent_at TEXT,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS email_replies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender_email TEXT NOT NULL,
+                sender_name TEXT DEFAULT '',
+                recipient_email TEXT DEFAULT '',
+                subject TEXT DEFAULT '',
+                body TEXT DEFAULT '',
+                original_record_id INTEGER,
+                created_by INTEGER,
+                is_read INTEGER NOT NULL DEFAULT 0,
+                message_id TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (original_record_id) REFERENCES email_records(id) ON DELETE SET NULL,
                 FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             );
 
@@ -4365,12 +4395,12 @@ DEFAULT_ROLE_PERMISSIONS = {
     'admin': [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions'],
     'team_admin': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'email', 'email-records', 'content-search', 'users',
+        'calls', 'email', 'email-records', 'email-replies', 'content-search', 'users',
         'my-account', 'my-team', 'all-teams', 'retention',
     ],
     'team_member': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'email', 'email-records', 'my-account',
+        'calls', 'email', 'email-records', 'email-replies', 'my-account',
     ],
 }
 
@@ -4378,7 +4408,7 @@ DEFAULT_ROLE_PERMISSIONS = {
 # an explicit (possibly older) permission set stored. Used to roll out new
 # features without forcing an admin to re-check permissions for existing teams.
 # Admin-only pages (e.g. email-config) must never be added here.
-AUTO_GRANT_PAGES = {'email', 'email-records'}
+AUTO_GRANT_PAGES = {'email', 'email-records', 'email-replies'}
 
 @app.route('/api/role-permissions', methods=['GET'])
 @admin_required
@@ -10118,6 +10148,216 @@ def email_sns_callback():
                         (f'SES {detail}', addr.strip().lower()))
             db.commit()
     return jsonify({'message': 'ok'})
+
+
+# ----- Inbound email replies (SES Email receiving -> SNS) ------------------
+def _parse_inbound_email(raw_mime):
+    """Parse a raw RFC-822 message (str or bytes) delivered by SES inbound via
+    SNS 'content'. Return a dict with sender email/name, recipient, subject,
+    body (plain preferred, simple HTML fallback), message_id."""
+    from email import message_from_bytes, message_from_string
+    from email.utils import parseaddr, getaddresses
+
+    if isinstance(raw_mime, bytes):
+        em = message_from_bytes(raw_mime)
+    else:
+        em = message_from_string(raw_mime)
+
+    sname, saddr = parseaddr(em.get('From', ''))
+    to_list = [a for _, a in getaddresses(em.get_all('To', []) or []) if a]
+    rcpt = to_list[0] if to_list else ''
+    subject = em.get('Subject', '') or ''
+    try:
+        from email.header import decode_header, make_header
+        subject = str(make_header(decode_header(subject)))
+    except Exception:
+        pass
+    message_id = (em.get('Message-ID') or '').strip()
+
+    plain_parts, html_parts = [], []
+
+    def decode_part(part):
+        try:
+            payload = part.get_payload(decode=True)
+            if payload is None:
+                return ''
+            charset = part.get_content_charset() or 'utf-8'
+            return payload.decode(charset, errors='replace')
+        except Exception:
+            return ''
+
+    if em.is_multipart():
+        for part in em.walk():
+            ctype = part.get_content_type()
+            disp = (part.get('Content-Disposition') or '').lower()
+            if 'attachment' in disp:
+                continue
+            if ctype == 'text/plain':
+                plain_parts.append(decode_part(part))
+            elif ctype == 'text/html':
+                html_parts.append(decode_part(part))
+    else:
+        if em.get_content_type() == 'text/html':
+            html_parts.append(decode_part(em))
+        else:
+            plain_parts.append(decode_part(em))
+
+    if plain_parts:
+        body = '\n'.join(p for p in plain_parts if p is not None)
+    elif html_parts:
+        html = '\n'.join(h for h in html_parts if h)
+        body = re.sub(r'<\s*br\s*/?\s*>', '\n', html, flags=re.I)
+        body = re.sub(r'</\s*p\s*>', '\n', body, flags=re.I)
+        body = re.sub(r'<[^>]+>', '', body)
+    else:
+        body = ''
+    body = body.strip()
+
+    return {
+        'sender_email': (saddr or '').strip(),
+        'sender_name': (sname or '').strip(),
+        'recipient_email': rcpt.strip(),
+        'subject': subject.strip(),
+        'body': body,
+        'message_id': message_id,
+    }
+
+
+def _store_email_reply(db, info):
+    """Insert one inbound reply, correlating to the most recent outbound record
+    from this sender and inheriting its owner scope. Idempotent by message_id.
+    Returns the new row id, or None if it was a duplicate."""
+    sender = info['sender_email'].lower()
+    if not sender:
+        return None
+    if info['message_id']:
+        dup = db.execute(
+            "SELECT id FROM email_replies WHERE message_id=?",
+            (info['message_id'],)).fetchone()
+        if dup:
+            return None
+    orig = db.execute(
+        "SELECT id, created_by FROM email_records "
+        "WHERE LOWER(recipient_email)=? ORDER BY id DESC LIMIT 1",
+        (sender,)).fetchone()
+    original_record_id = orig['id'] if orig else None
+    created_by = orig['created_by'] if orig else None
+    now = datetime.now()
+    cur = db.execute(
+        "INSERT INTO email_replies (sender_email, sender_name, recipient_email, subject, body, "
+        "original_record_id, created_by, is_read, message_id, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (info['sender_email'], info['sender_name'], info['recipient_email'],
+         info['subject'][:500], info['body'], original_record_id, created_by,
+         False, info['message_id'], now))
+    db.commit()
+    return getattr(cur, 'lastrowid', None)
+
+
+@app.route('/api/email/inbound/sns', methods=['POST'])
+def email_inbound_sns():
+    """Public webhook for SES Email receiving -> SNS. The receipt rule must use
+    an SNS action with 'Include original email headers' (raw content) enabled."""
+    import json as _json
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        return jsonify({'error': 'bad payload'}), 400
+    mtype = payload.get('Type')
+    if mtype == 'SubscriptionConfirmation':
+        url = payload.get('SubscribeURL')
+        if url and url.startswith('https://'):
+            try:
+                urllib.request.urlopen(url, timeout=10).read()
+            except Exception:
+                pass
+        return jsonify({'message': 'subscribed'})
+    if mtype != 'Notification':
+        return jsonify({'message': 'ignored'})
+
+    content = payload.get('content')
+    if not content:
+        # Some configurations wrap the raw mail inside the SNS Message JSON.
+        try:
+            inner = _json.loads(payload.get('Message') or '{}')
+            content = inner.get('content') or inner.get('rawMessage')
+        except Exception:
+            content = None
+    if not content:
+        return jsonify({'error': 'no content'}), 400
+
+    try:
+        info = _parse_inbound_email(content)
+    except Exception as e:
+        return jsonify({'error': f'parse failed: {e}'}), 400
+
+    with app.app_context():
+        db = get_db()
+        rid = _store_email_reply(db, info)
+    return jsonify({'message': 'stored' if rid else 'duplicate', 'id': rid})
+
+
+@app.route('/api/email/replies', methods=['GET'])
+@login_required
+def email_replies_api():
+    """List inbound replies with the same role scope as outbound records."""
+    db = get_db()
+    user = g.user
+    page = max(1, int(request.args.get('page', 1)))
+    per_page = min(200, max(1, int(request.args.get('per_page', 20))))
+    search = request.args.get('search', '').strip()
+    unread_only = request.args.get('unread_only', request.args.get('unread', '')) == '1'
+    where, params = _email_scope_where(user, 'x')
+    if search:
+        where += (" AND (x.sender_email LIKE ? OR x.sender_name LIKE ? "
+                  "OR x.subject LIKE ? OR x.body LIKE ?)")
+        params += [f'%{search}%'] * 4
+    if unread_only:
+        where += " AND x.is_read = ?"
+        params.append(False)
+    total = db.execute(
+        f"SELECT COUNT(*) AS total FROM email_replies x WHERE {where}",
+        params).fetchone()['total']
+    offset = (page - 1) * per_page
+    rows = db.execute(
+        f"SELECT x.* FROM email_replies x WHERE {where} "
+        f"ORDER BY x.id DESC LIMIT ? OFFSET ?",
+        params + [per_page, offset]).fetchall()
+    unread = db.execute(
+        "SELECT COUNT(*) AS n FROM email_replies x WHERE " + where + " AND x.is_read = ?",
+        params + [False]).fetchone()['n']
+    out = []
+    for r in rows:
+        d = _row_with_dates(r, ('created_at',))
+        d['received_at'] = d.get('created_at')
+        d['body_text'] = d.get('body')
+        out.append(d)
+    return jsonify({
+        'replies': out, 'total': total, 'unread': unread, 'page': page,
+        'per_page': per_page, 'total_pages': (total + per_page - 1) // per_page,
+    })
+
+
+@app.route('/api/email/replies/<int:reply_id>/read', methods=['POST'])
+@login_required
+def email_reply_mark_read(reply_id):
+    """Mark a reply read/unread, enforcing the same role scope."""
+    db = get_db()
+    user = g.user
+    row = db.execute("SELECT * FROM email_replies WHERE id=?", (reply_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Respuesta no encontrada'}), 404
+    where, params = _email_scope_where(user, 'x')
+    allowed = db.execute(
+        f"SELECT 1 AS ok FROM email_replies x WHERE x.id=? AND {where}",
+        [reply_id] + params).fetchone()
+    if not allowed:
+        return jsonify({'error': 'No autorizado'}), 403
+    body = request.get_json(silent=True) or {}
+    new_val = bool(body.get('read', True))
+    db.execute("UPDATE email_replies SET is_read=? WHERE id=?", (new_val, reply_id))
+    db.commit()
+    return jsonify({'message': 'ok', 'is_read': new_val})
 
 
 @app.route('/api/email/records', methods=['GET'])
