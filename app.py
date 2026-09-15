@@ -9500,6 +9500,11 @@ def _row_with_dates(row, date_cols):
         v = d.get(k)
         if isinstance(v, datetime):
             d[k] = v.strftime('%Y-%m-%d %H:%M:%S')
+        elif isinstance(v, str) and '.' in v:
+            # SQLite may return 'YYYY-MM-DD HH:MM:SS.ffffff'; drop fractional seconds
+            head = v.split('.', 1)[0]
+            if len(head) == 19:
+                d[k] = head
     return d
 
 
@@ -10340,17 +10345,20 @@ def email_replies_api():
         params).fetchone()['total']
     offset = (page - 1) * per_page
     rows = db.execute(
-        f"SELECT x.* FROM email_replies x WHERE {where} "
-        f"ORDER BY x.id DESC LIMIT ? OFFSET ?",
+        "SELECT x.*, er.subject AS original_subject, er.sent_at AS original_sent_at, "
+        "er.created_at AS original_created_at "
+        "FROM email_replies x LEFT JOIN email_records er ON er.id = x.original_record_id "
+        f"WHERE {where} ORDER BY x.id DESC LIMIT ? OFFSET ?",
         params + [per_page, offset]).fetchall()
     unread = db.execute(
         "SELECT COUNT(*) AS n FROM email_replies x WHERE " + where + " AND x.is_read = ?",
         params + [False]).fetchone()['n']
     out = []
     for r in rows:
-        d = _row_with_dates(r, ('created_at',))
+        d = _row_with_dates(r, ('created_at', 'original_sent_at', 'original_created_at'))
         d['received_at'] = d.get('created_at')
         d['body_text'] = d.get('body')
+        d['from_name'] = d.get('sender_name') or ''
         out.append(d)
     return jsonify({
         'replies': out, 'total': total, 'unread': unread, 'page': page,

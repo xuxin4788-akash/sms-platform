@@ -4972,7 +4972,7 @@ function renderEmailReplies(container) {
               <span><strong>De:</strong> ${escapeHtml(r.from_name || '')} &lt;${escapeHtml(r.sender_email)}&gt;</span>
               <span><strong>Asunto:</strong> ${escapeHtml(r.subject || '(sin asunto)')}</span>
             </div>
-            ${r.original_subject ? `<div class="reply-meta-line"><strong>Correo original:</strong> ${escapeHtml(r.original_subject)}${r.original_created_at ? ' · ' + formatDateTime(r.original_created_at) : ''}</div>` : ''}
+            ${r.original_subject ? `<div class="reply-meta-line"><strong>Correo original:</strong> ${escapeHtml(r.original_subject)}${r.original_created_at ? ' · ' + formatDate(r.original_created_at) : ''}</div>` : ''}
             <div class="reply-body">${bodyEsc || '<em>(sin contenido)</em>'}</div>
           </div></td></tr>` : '';
         return `<tr class="reply-row${unreadCls}" onclick="toggleReply(${r.id})">
@@ -4980,7 +4980,7 @@ function renderEmailReplies(container) {
             <td>${escapeHtml(r.from_name || r.sender_email)}</td>
             <td>${escapeHtml(r.sender_email)}</td>
             <td class="reply-subject-cell">${escapeHtml(r.subject || '(sin asunto)')}</td>
-            <td>${formatDateTime(r.received_at)}</td>
+            <td>${formatDate(r.received_at)}</td>
             <td class="reply-arrow-cell">${open ? '&#9650;' : '&#9660;'}</td>
         </tr>` + detail;
     }).join('');
