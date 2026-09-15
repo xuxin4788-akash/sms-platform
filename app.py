@@ -814,7 +814,7 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_creator ON email_records(created_by, created_at)")
         cur.execute("""CREATE TABLE IF NOT EXISTS email_jobs (
                 job_id VARCHAR(40) PRIMARY KEY,
-                status VARCHAR(20) NOT NULL DEFAULT 'queued',
+                status VARCHAR(30) NOT NULL DEFAULT 'queued',
                 total INTEGER NOT NULL DEFAULT 0,
                 sent INTEGER NOT NULL DEFAULT 0,
                 failed INTEGER NOT NULL DEFAULT 0,
@@ -840,6 +840,8 @@ def init_db():
                 ALTER TABLE email_records ADD CONSTRAINT email_records_status_check
                     CHECK (status IN ('pending','sent','failed','simulated','suppressed'));
             EXCEPTION WHEN OTHERS THEN NULL; END $$;""")
+        # 'completed_with_errors' is 21 chars; the original VARCHAR(20) truncated it on PostgreSQL.
+        cur.execute("ALTER TABLE email_jobs ALTER COLUMN status TYPE VARCHAR(30)")
 
         # sms_api_configs: per-country SMS unit price (facturacion por pais).
         if not pg_column_exists('sms_api_configs', 'unit_price'):
@@ -5410,7 +5412,7 @@ def list_sms_records():
     params.extend([per_page, offset])
     records = db.execute(query, params).fetchall()
     return jsonify({
-        'records': [dict(r) for r in records],
+        'records': [_row_with_dates(r, ('created_at', 'sent_at', 'delivered_at', 'scheduled_at', 'dr_checked_at')) for r in records],
         'total': total,
         'page': page,
         'per_page': per_page,
@@ -9458,6 +9460,19 @@ EMAIL_PROVIDER_PRESETS = {
 EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
 
+def _row_with_dates(row, date_cols):
+    """Return a dict(row) with datetime columns normalized to the
+    'YYYY-MM-DD HH:MM:SS' string the SPA parses. SQLite already returns such
+    strings; PostgreSQL returns datetime objects that Flask would otherwise
+    JSON-serialize as RFC-822 (new Date() then shows 'Invalid Date')."""
+    d = dict(row)
+    for k in date_cols:
+        v = d.get(k)
+        if isinstance(v, datetime):
+            d[k] = v.strftime('%Y-%m-%d %H:%M:%S')
+    return d
+
+
 def get_email_config_row():
     db = get_db()
     return db.execute("SELECT * FROM email_config ORDER BY id LIMIT 1").fetchone()
@@ -9855,9 +9870,26 @@ def _process_email_queue_once():
             got = False
     if not got:
         return 0
+    lock_released = False
+
+    def _release_lock():
+        nonlocal lock_released
+        if lock_released:
+            return
+        lock_released = True
+        if get_db_type() == 'postgres':
+            raw.execute("SELECT pg_advisory_unlock(%s)", (EMAIL_QUEUE_LOCK_ID,))
+            db.conn.commit()
+        else:
+            db.execute("DELETE FROM maintenance_locks WHERE lock_name='email_queue'")
+            db.commit()
+
     try:
         cfg = get_email_config()
         if not cfg or not is_email_configured():
+            # Release the lock before returning; otherwise this PG session holds
+            # the advisory lock forever and no other worker can ever drain.
+            _release_lock()
             return 0
         pending = db.execute(
             "SELECT id, recipient_email, subject, body, attempts FROM email_records "
@@ -9883,7 +9915,11 @@ def _process_email_queue_once():
             return local.smtp
 
         def deliver(rec):
-            rid, to_email, subject, html, attempts = rec[0], rec[1], rec[2], rec[3], (rec[4] or 0)
+            rid = rec['id']
+            to_email = rec['recipient_email']
+            subject = rec['subject']
+            html = rec['body']
+            attempts = rec['attempts'] or 0
             # Simple global rate limiter (token start-time spacing).
             with gate:
                 now = time.time()
@@ -9927,11 +9963,11 @@ def _process_email_queue_once():
         # Roll up counters for every affected job (native ? placeholders are
         # translated to %s for PostgreSQL by the wrapper).
         job_rows = db.execute(
-            "SELECT DISTINCT job_id FROM email_records WHERE id IN (%s)" %
-            ','.join(['?'] * len(pending)), [r[0] for r in pending]
+            "SELECT DISTINCT job_id FROM email_records WHERE id IN (" +
+            ','.join(['?'] * len(pending)) + ")", [r['id'] for r in pending]
         ).fetchall()
         for jr in job_rows:
-            jid = jr[0]
+            jid = jr['job_id']
             agg = db.execute(
                 "SELECT COUNT(*) total, "
                 "COALESCE(SUM(CASE WHEN status='sent' OR status='simulated' THEN 1 ELSE 0 END),0) sent, "
@@ -9939,7 +9975,8 @@ def _process_email_queue_once():
                 "COALESCE(SUM(CASE WHEN status='suppressed' THEN 1 ELSE 0 END),0) suppressed, "
                 "COALESCE(SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),0) pending "
                 "FROM email_records WHERE job_id=?", (jid,)).fetchone()
-            total, jsent, jfail, jsup, jpend = agg[0], agg[1], agg[2], agg[3], agg[4]
+            total, jsent, jfail, jsup, jpend = (agg['total'], agg['sent'], agg['failed'],
+                                                agg['suppressed'], agg['pending'])
             if jpend > 0:
                 jstatus = 'processing'
             elif jfail > 0:
@@ -9952,12 +9989,10 @@ def _process_email_queue_once():
         db.commit()
         return len(results)
     finally:
-        if get_db_type() == 'postgres':
-            raw.execute("SELECT pg_advisory_unlock(%s)", (EMAIL_QUEUE_LOCK_ID,))
-            db.conn.commit()
-        else:
-            db.execute("DELETE FROM maintenance_locks WHERE lock_name='email_queue'")
-            db.commit()
+        try:
+            _release_lock()
+        except Exception:
+            pass
 
 
 def email_queue_loop():
@@ -10003,12 +10038,12 @@ def email_suppressions_list():
     if q:
         where += " AND email LIKE ?"
         params.append(f'%{q}%')
-    total = db.execute(f"SELECT COUNT(*) AS n FROM email_suppressions WHERE {where}", params).fetchone()[0]
+    total = db.execute(f"SELECT COUNT(*) AS n FROM email_suppressions WHERE {where}", params).fetchone()['n']
     rows = db.execute(
         f"SELECT id, email, reason, detail, created_at FROM email_suppressions WHERE {where} "
         f"ORDER BY id DESC LIMIT ? OFFSET ?", params + [per_page, (page - 1) * per_page]).fetchall()
     return jsonify({'total': total, 'page': page, 'per_page': per_page,
-                    'suppressions': [dict(r) for r in rows]})
+                    'suppressions': [_row_with_dates(r, ('created_at',)) for r in rows]})
 
 
 @app.route('/api/email/suppressions', methods=['POST'])
@@ -10117,8 +10152,9 @@ def email_records_api():
         f"WHERE {where} ORDER BY r.created_at DESC LIMIT ? OFFSET ?",
         params + [per_page, offset]
     ).fetchall()
+    out_records = [_row_with_dates(r, ('created_at', 'sent_at')) for r in rows]
     return jsonify({
-        'records': [dict(r) for r in rows], 'total': total, 'page': page,
+        'records': out_records, 'total': total, 'page': page,
         'per_page': per_page, 'total_pages': (total + per_page - 1) // per_page,
     })
 
