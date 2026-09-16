@@ -590,6 +590,8 @@ def init_db():
                 contact_name VARCHAR(255) DEFAULT '',
                 subject VARCHAR(500) DEFAULT '',
                 body TEXT DEFAULT '',
+                from_email VARCHAR(255) DEFAULT '',
+                app_name VARCHAR(255) DEFAULT '',
                 status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'simulated', 'suppressed')),
                 error_msg TEXT DEFAULT '',
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -597,6 +599,16 @@ def init_db():
                 attempts INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 sent_at TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS email_app_senders (
+                id SERIAL PRIMARY KEY,
+                app_name VARCHAR(255) NOT NULL UNIQUE,
+                from_email VARCHAR(255) NOT NULL DEFAULT '',
+                from_name VARCHAR(255) DEFAULT '',
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
             CREATE TABLE IF NOT EXISTS email_replies (
@@ -823,6 +835,20 @@ def init_db():
             cur.execute("ALTER TABLE email_records ADD COLUMN job_id VARCHAR(40) DEFAULT NULL")
         if not pg_column_exists('email_records', 'attempts'):
             cur.execute("ALTER TABLE email_records ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        # per-APP sender address: which mailbox sent each record + the contact's APP
+        if not pg_column_exists('email_records', 'from_email'):
+            cur.execute("ALTER TABLE email_records ADD COLUMN from_email VARCHAR(255) DEFAULT ''")
+        if not pg_column_exists('email_records', 'app_name'):
+            cur.execute("ALTER TABLE email_records ADD COLUMN app_name VARCHAR(255) DEFAULT ''")
+        cur.execute("""CREATE TABLE IF NOT EXISTS email_app_senders (
+                id SERIAL PRIMARY KEY,
+                app_name VARCHAR(255) NOT NULL UNIQUE,
+                from_email VARCHAR(255) NOT NULL DEFAULT '',
+                from_name VARCHAR(255) DEFAULT '',
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )""")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_job ON email_records(job_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_status ON email_records(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_creator ON email_records(created_by, created_at)")
@@ -1234,6 +1260,8 @@ def init_db():
                 contact_name TEXT DEFAULT '',
                 subject TEXT DEFAULT '',
                 body TEXT DEFAULT '',
+                from_email TEXT DEFAULT '',
+                app_name TEXT DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'simulated', 'suppressed')),
                 error_msg TEXT DEFAULT '',
                 created_by INTEGER,
@@ -1242,6 +1270,16 @@ def init_db():
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 sent_at TEXT,
                 FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS email_app_senders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_name TEXT NOT NULL UNIQUE,
+                from_email TEXT NOT NULL DEFAULT '',
+                from_name TEXT DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS email_replies (
@@ -1897,7 +1935,7 @@ def init_db():
         # job_id exists on pre-existing databases.
         try:
             er_cols = [row[1] for row in db.execute("PRAGMA table_info(email_records)").fetchall()]
-            need_cols = ('job_id' not in er_cols) or ('attempts' not in er_cols)
+            need_cols = ('job_id' not in er_cols) or ('attempts' not in er_cols) or ('from_email' not in er_cols) or ('app_name' not in er_cols)
             sql_text = ''
             if er_cols:
                 ddl = db.execute(
@@ -1913,6 +1951,8 @@ def init_db():
                         contact_name TEXT DEFAULT '',
                         subject TEXT DEFAULT '',
                         body TEXT DEFAULT '',
+                        from_email TEXT DEFAULT '',
+                        app_name TEXT DEFAULT '',
                         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent','failed','simulated','suppressed')),
                         error_msg TEXT DEFAULT '',
                         created_by INTEGER,
@@ -1924,12 +1964,35 @@ def init_db():
                     )''')
                 common = ['id','recipient_email','contact_name','subject','body','status','error_msg','created_by','created_at','sent_at']
                 sel = common + (['job_id'] if 'job_id' in er_cols else ["NULL"]) + (['attempts'] if 'attempts' in er_cols else ['0'])
+                cols_new = ['id','recipient_email','contact_name','subject','body','from_email','app_name','status','error_msg','created_by','created_at','sent_at','job_id','attempts']
+                sel_full = (['id','recipient_email','contact_name','subject','body']
+                            + (['from_email'] if 'from_email' in er_cols else ["''"])
+                            + (['app_name'] if 'app_name' in er_cols else ["''"])
+                            + ['status','error_msg','created_by','created_at','sent_at']
+                            + (['job_id'] if 'job_id' in er_cols else ["NULL"])
+                            + (['attempts'] if 'attempts' in er_cols else ['0']))
                 db.execute(
-                    "INSERT INTO email_records_new (id,recipient_email,contact_name,subject,body,status,error_msg,created_by,created_at,sent_at,job_id,attempts) "
-                    "SELECT " + ','.join(sel) + " FROM email_records")
+                    "INSERT INTO email_records_new (" + ','.join(cols_new) + ") "
+                    "SELECT " + ','.join(sel_full) + " FROM email_records")
                 db.execute("DROP TABLE email_records")
                 db.execute("ALTER TABLE email_records_new RENAME TO email_records")
                 db.execute("PRAGMA foreign_keys=ON")
+            # Non-rebuild case: table exists but the per-sender columns are missing.
+            er_cols = [row[1] for row in db.execute("PRAGMA table_info(email_records)").fetchall()]
+            if 'from_email' not in er_cols:
+                db.execute("ALTER TABLE email_records ADD COLUMN from_email TEXT DEFAULT ''")
+            if 'app_name' not in er_cols:
+                db.execute("ALTER TABLE email_records ADD COLUMN app_name TEXT DEFAULT ''")
+            db.execute('''
+                CREATE TABLE IF NOT EXISTS email_app_senders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    app_name TEXT NOT NULL UNIQUE,
+                    from_email TEXT NOT NULL DEFAULT '',
+                    from_name TEXT DEFAULT '',
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )''')
             db.execute('''
                 CREATE TABLE IF NOT EXISTS email_jobs (
                     job_id TEXT PRIMARY KEY,
@@ -9526,6 +9589,45 @@ def is_email_configured():
                 and cfg.get('from_email'))
 
 
+def _app_senders_map():
+    """Active APP name -> {from_email, from_name} (keys lower-cased/stripped)."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT app_name, from_email, from_name FROM email_app_senders WHERE is_active=1"
+    ).fetchall()
+    out = {}
+    for r in rows:
+        email = (r['from_email'] or '').strip()
+        if not email:
+            continue
+        out[(r['app_name'] or '').strip().lower()] = {
+            'from_email': email,
+            'from_name': (r['from_name'] or '').strip(),
+        }
+    return out
+
+
+def resolve_app_sender(app_name, cfg=None):
+    """Return (from_email, from_name) to use for a contact.
+
+    Contacts belonging to an APP with an admin-configured sender use that
+    mailbox; everything else falls back to the global SMTP from address."""
+    cfg = cfg if cfg is not None else get_email_config()
+    key = (app_name or '').strip().lower()
+    if key:
+        db = get_db()
+        row = db.execute(
+            "SELECT from_email, from_name FROM email_app_senders "
+            "WHERE LOWER(TRIM(app_name))=? AND is_active=1",
+            (key,)
+        ).fetchone()
+        if row and (row['from_email'] or '').strip():
+            return (row['from_email'].strip(), (row['from_name'] or '').strip())
+    if cfg:
+        return ((cfg.get('from_email') or '').strip(), (cfg.get('from_name') or '').strip())
+    return ('', '')
+
+
 def send_email_via_smtp(cfg, to_email, subject, body_html):
     """Send one email through SMTP. Raises on failure. Returns (ok, error)."""
     import smtplib
@@ -9655,6 +9757,91 @@ def test_email_config_api():
         return jsonify({'error': f'No se pudo enviar: {str(e)}'}), 400
 
 
+# ----- Per-APP sender addresses (direcciones de envio por APP) -------------
+@app.route('/api/config/email/senders', methods=['GET'])
+@admin_required
+def email_app_senders_list():
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, app_name, from_email, from_name, is_active, created_at, updated_at "
+        "FROM email_app_senders ORDER BY LOWER(app_name)"
+    ).fetchall()
+    cfg = get_email_config()
+    return jsonify({
+        'senders': [_row_with_dates(r, ['created_at', 'updated_at']) for r in rows],
+        'default_from_email': (cfg.get('from_email') or '') if cfg else '',
+        'default_from_name': (cfg.get('from_name') or '') if cfg else '',
+    })
+
+
+@app.route('/api/config/email/senders', methods=['POST'])
+@admin_required
+def email_app_senders_create():
+    data = request.get_json(silent=True) or {}
+    app_name = (data.get('app_name') or '').strip()
+    from_email = (data.get('from_email') or '').strip()
+    from_name = (data.get('from_name') or '').strip()
+    is_active = bool(data.get('is_active', True))
+    if not app_name:
+        return jsonify({'error': 'El nombre de la APP es requerido'}), 400
+    if not from_email or not EMAIL_RE.match(from_email):
+        return jsonify({'error': 'Correo de remitente invalido'}), 400
+    db = get_db()
+    if db.execute("SELECT 1 FROM email_app_senders WHERE LOWER(TRIM(app_name))=?",
+                  (app_name.lower(),)).fetchone():
+        return jsonify({'error': 'Ya existe una direccion para esta APP'}), 409
+    now = datetime.now()
+    cur = db.execute(
+        "INSERT INTO email_app_senders (app_name, from_email, from_name, is_active, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (app_name, from_email, from_name, is_active, now, now)
+    )
+    db.commit()
+    return jsonify({'message': 'Direccion de envio creada', 'id': cur.lastrowid}), 201
+
+
+@app.route('/api/config/email/senders/<int:sid>', methods=['PUT'])
+@admin_required
+def email_app_senders_update(sid):
+    data = request.get_json(silent=True) or {}
+    db = get_db()
+    row = db.execute("SELECT * FROM email_app_senders WHERE id=?", (sid,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Direccion no encontrada'}), 404
+    app_name = (data.get('app_name') or '').strip()
+    from_email = (data.get('from_email') or '').strip()
+    from_name = (data.get('from_name') or '').strip()
+    if not app_name:
+        return jsonify({'error': 'El nombre de la APP es requerido'}), 400
+    if not from_email or not EMAIL_RE.match(from_email):
+        return jsonify({'error': 'Correo de remitente invalido'}), 400
+    is_active = bool(data.get('is_active', True))
+    dup = db.execute(
+        "SELECT 1 FROM email_app_senders WHERE LOWER(TRIM(app_name))=? AND id<>?",
+        (app_name.lower(), sid)
+    ).fetchone()
+    if dup:
+        return jsonify({'error': 'Ya existe otra direccion para esta APP'}), 409
+    db.execute(
+        "UPDATE email_app_senders SET app_name=?, from_email=?, from_name=?, is_active=?, updated_at=? WHERE id=?",
+        (app_name, from_email, from_name, is_active, datetime.now(), sid)
+    )
+    db.commit()
+    return jsonify({'message': 'Direccion de envio actualizada'})
+
+
+@app.route('/api/config/email/senders/<int:sid>', methods=['DELETE'])
+@admin_required
+def email_app_senders_delete(sid):
+    db = get_db()
+    row = db.execute("SELECT 1 FROM email_app_senders WHERE id=?", (sid,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Direccion no encontrada'}), 404
+    db.execute("DELETE FROM email_app_senders WHERE id=?", (sid,))
+    db.commit()
+    return jsonify({'message': 'Direccion de envio eliminada'})
+
+
 def _email_scope_where(user, alias='r'):
     """Visibility scope for email records, mirroring SMS/voice."""
     uid = user['id']
@@ -9720,6 +9907,18 @@ def send_email():
 
     cfg = get_email_config()
     simulated = not (cfg and is_email_configured())
+    # Per-APP sender override: contacts with an APP mapped in email_app_senders
+    # go out through that mailbox; others use the global default From address.
+    # Loaded even in simulation mode so records preview the real mailbox.
+    senders = _app_senders_map()
+
+    def resolve_sender(c):
+        key = (c.get('app_name') or '').strip().lower()
+        if key in senders:
+            return senders[key]['from_email'], senders[key]['from_name']
+        if cfg:
+            return ((cfg.get('from_email') or '').strip(), (cfg.get('from_name') or '').strip())
+        return '', ''
 
     def render(text, c):
         msg = text.replace('{nombre}', c.get('name') or '')
@@ -9737,25 +9936,30 @@ def send_email():
     for c, email in targets:
         subj = render(subject_tpl, c)
         html = _email_html_body(render(body_tpl, c))
+        app_name = (c.get('app_name') or '').strip()
+        from_email, _sender_name = resolve_sender(c)
         if email.lower() in suppressed_set:
             db.execute(
-                "INSERT INTO email_records (recipient_email, contact_name, subject, body, status, error_msg, created_by, job_id, attempts, created_at, sent_at) "
-                "VALUES (?,?,?,?,'suppressed','En lista de supresion (bounce/queja)',?,?,0,?,?)",
-                (email, c.get('name') or '', subj, html, uid, job_id, now, now)
+                "INSERT INTO email_records (recipient_email, contact_name, subject, body, from_email, app_name, "
+                "status, error_msg, created_by, job_id, attempts, created_at, sent_at) "
+                "VALUES (?,?,?,?,?,?,'suppressed','En lista de supresion (bounce/queja)',?,?,0,?,?)",
+                (email, c.get('name') or '', subj, html, from_email, app_name, uid, job_id, now, now)
             )
             suppressed_count += 1
             continue
         if simulated:
             db.execute(
-                "INSERT INTO email_records (recipient_email, contact_name, subject, body, status, error_msg, created_by, job_id, attempts, created_at, sent_at) "
-                "VALUES (?,?,?,?,'simulated','Modo simulacion (SMTP no configurado)',?,?,0,?,?)",
-                (email, c.get('name') or '', subj, html, uid, job_id, now, now)
+                "INSERT INTO email_records (recipient_email, contact_name, subject, body, from_email, app_name, "
+                "status, error_msg, created_by, job_id, attempts, created_at, sent_at) "
+                "VALUES (?,?,?,?,?,?,'simulated','Modo simulacion (SMTP no configurado)',?,?,0,?,?)",
+                (email, c.get('name') or '', subj, html, from_email, app_name, uid, job_id, now, now)
             )
         else:
             db.execute(
-                "INSERT INTO email_records (recipient_email, contact_name, subject, body, status, error_msg, created_by, job_id, attempts, created_at, sent_at) "
-                "VALUES (?,?,?,?,'pending','',?,?,0,?,NULL)",
-                (email, c.get('name') or '', subj, html, uid, job_id, now)
+                "INSERT INTO email_records (recipient_email, contact_name, subject, body, from_email, app_name, "
+                "status, error_msg, created_by, job_id, attempts, created_at, sent_at) "
+                "VALUES (?,?,?,?,?,?,'pending','',?,?,0,?,NULL)",
+                (email, c.get('name') or '', subj, html, from_email, app_name, uid, job_id, now)
             )
         queued += 1
 
@@ -9860,12 +10064,13 @@ class _PersistentSmtp:
             self.server = None
 
 
-def _build_email_message(cfg, to_email, subject, body_html):
+def _build_email_message(cfg, to_email, subject, body_html, from_email=None, from_name=None):
     from email.message import EmailMessage
     msg = EmailMessage()
-    from_name = (cfg.get('from_name') or '').strip()
-    from_email = cfg['from_email'].strip()
-    msg['From'] = f'{from_name} <{from_email}>' if from_name else from_email
+    # Per-record From (APP-specific mailbox); fall back to the global SMTP config.
+    sender_email = (from_email or cfg.get('from_email') or '').strip()
+    sender_name = (from_name if from_name is not None else (cfg.get('from_name') or '')).strip()
+    msg['From'] = f'{sender_name} <{sender_email}>' if sender_name else sender_email
     msg['To'] = to_email
     msg['Subject'] = subject
     # SES VERP-style envelope for bounce attribution via the From address;
@@ -9927,11 +10132,17 @@ def _process_email_queue_once():
             _release_lock()
             return 0
         pending = db.execute(
-            "SELECT id, recipient_email, subject, body, attempts FROM email_records "
+            "SELECT id, recipient_email, subject, body, from_email, attempts FROM email_records "
             "WHERE status='pending' ORDER BY id LIMIT 200"
         ).fetchall()
         if not pending:
             return 0
+        # From display name per sender mailbox (APP mapping may be edited after
+        # enqueue; records only store the address).
+        sender_names = {}
+        for srow in db.execute(
+                "SELECT from_email, from_name FROM email_app_senders WHERE is_active=1").fetchall():
+            sender_names[(srow['from_email'] or '').strip().lower()] = (srow['from_name'] or '').strip()
         # Mark job as processing.
         db.execute("UPDATE email_jobs SET status='processing', started_at=COALESCE(started_at, ?) "
                    "WHERE status='queued'", (datetime.now(),))
@@ -9955,6 +10166,8 @@ def _process_email_queue_once():
             subject = rec['subject']
             html = rec['body']
             attempts = rec['attempts'] or 0
+            from_email = (rec['from_email'] or '').strip() or cfg['from_email'].strip()
+            from_name = sender_names.get(from_email.lower())
             # Simple global rate limiter (token start-time spacing).
             with gate:
                 now = time.time()
@@ -9964,7 +10177,8 @@ def _process_email_queue_once():
                 next_slot[0] = max(now, next_slot[0]) + rate_interval
             err = ''
             try:
-                msg = _build_email_message(cfg, to_email, subject, html)
+                msg = _build_email_message(cfg, to_email, subject, html,
+                                           from_email=from_email, from_name=from_name)
                 get_smtp().send(msg)
                 return rid, 'sent', '', attempts + 1
             except Exception as e:

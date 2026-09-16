@@ -4915,10 +4915,12 @@ async function loadEmailRecords() {
             var lb = labels[r.status] || [r.status, 'badge-gray'];
             var dt = r.created_at ? new Date(r.created_at.replace(' ', 'T')).toLocaleString() : '-';
             var err = r.error_msg ? '<div class="text-secondary text-sm" style="color:#DC2626;">' + escapeHtml(r.error_msg) + '</div>' : '';
-            return '<tr><td style="white-space:nowrap;">' + dt + '</td><td>' + escapeHtml(r.recipient_email) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td>' + escapeHtml(r.subject || '') + '</td><td><span class="badge ' + lb[1] + '">' + lb[0] + '</span>' + err + '</td></tr>';
+            var appCell = r.app_name ? escapeHtml(r.app_name) : '<span class="text-secondary">-</span>';
+            var fromCell = r.from_email ? escapeHtml(r.from_email) : '<span class="text-secondary">-</span>';
+            return '<tr><td style="white-space:nowrap;">' + dt + '</td><td>' + appCell + '</td><td>' + fromCell + '</td><td>' + escapeHtml(r.recipient_email) + '</td><td>' + escapeHtml(r.contact_name || '-') + '</td><td>' + escapeHtml(r.subject || '') + '</td><td><span class="badge ' + lb[1] + '">' + lb[0] + '</span>' + err + '</td></tr>';
         }).join('');
-        if (!rows) rows = '<tr><td colspan="5" class="text-center text-secondary" style="padding:24px;">Sin registros.</td></tr>';
-        body.innerHTML = '<div class="table-container"><table><thead><tr><th>Fecha</th><th>Correo</th><th>Nombre</th><th>Asunto</th><th>Estado</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        if (!rows) rows = '<tr><td colspan="7" class="text-center text-secondary" style="padding:24px;">Sin registros.</td></tr>';
+        body.innerHTML = '<div class="table-container"><table><thead><tr><th>Fecha</th><th>APP</th><th>Remitente</th><th>Correo</th><th>Nombre</th><th>Asunto</th><th>Estado</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
             renderPagination(data, 'emailRecords') +
             '<div style="padding:0 16px 16px;" class="text-secondary text-sm">Total: ' + data.total + '</div>';
     } catch (e) {
@@ -5046,10 +5048,12 @@ function clearEmailRepliesFilters() {
 async function renderEmailConfig(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
-        var [prov, cfg] = await Promise.all([
+        var results = await Promise.all([
             api('/api/config/email/providers'),
-            api('/api/config/email').catch(function() { return { configured: false }; })
+            api('/api/config/email').catch(function() { return { configured: false }; }),
+            api('/api/config/email/senders').catch(function() { return { senders: [], default_from_email: '' }; })
         ]);
+        var prov = results[0], cfg = results[1] || {}, sendersData = results[2] || {};
         window._emailProviders = prov.providers || [];
         cfg = cfg || {};
         var provOpts = window._emailProviders.map(function(p) {
@@ -5083,10 +5087,113 @@ async function renderEmailConfig(container) {
                 '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="submit" class="btn btn-primary">Guardar configuracion</button><button type="button" class="btn btn-secondary" onclick="handleTestEmailConfig()">Enviar correo de prueba</button></div>' +
               '</form>' +
             '</div></div>' +
+            renderEmailSendersCard(sendersData) +
             '<div class="card"><div class="card-body"><h3 style="margin-bottom:8px;">Proveedores soportados</h3><p class="text-secondary text-sm" style="margin-bottom:8px;">Microsoft 365 / Google Workspace usan autenticacion de aplicacion: en Google activa la verificacion en 2 pasos y crea una "contrasena de aplicacion"; en Microsoft usa una cuenta con SMTP AUTH habilitado. Amazon SES, Mailgun y SendGrid generan credenciales SMTP dedicadas en su consola.</p></div></div>';
     } catch (e) {
         container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
     }
+}
+
+function renderEmailSendersCard(data) {
+    var senders = data.senders || [];
+    var defaultFrom = data.default_from_email || '';
+    var rows = senders.length ? senders.map(function(s) {
+        var badge = s.is_active === false
+            ? '<span class="badge badge-secondary">Inactiva</span>'
+            : '<span class="badge badge-success">Activa</span>';
+        return '<tr>' +
+            '<td><strong>' + escapeHtml(s.app_name) + '</strong></td>' +
+            '<td>' + escapeHtml(s.from_email) + (s.from_name ? ' <span class="text-secondary text-sm">(' + escapeHtml(s.from_name) + ')</span>' : '') + '</td>' +
+            '<td>' + badge + '</td>' +
+            '<td class="text-right" style="white-space:nowrap;">' +
+              '<button class="btn btn-secondary btn-sm" onclick="editEmailSender(' + s.id + ')">Editar</button> ' +
+              '<button class="btn btn-danger btn-sm" onclick="deleteEmailSender(' + s.id + ')">Eliminar</button>' +
+            '</td></tr>';
+    }).join('') : '<tr><td colspan="4" class="text-center text-secondary" style="padding:20px;">Sin direcciones por APP</td></tr>';
+    return '<div class="card mb-4"><div class="card-body">' +
+        '<h3 style="margin-bottom:4px;">Direcciones de envio por APP</h3>' +
+        '<p class="text-secondary text-sm" style="margin-bottom:14px;">Los contactos de cada APP se envian desde una direccion distinta. ' +
+        'Las APP sin una direccion configurada usan el remitente global' +
+        (defaultFrom ? ' (<strong>' + escapeHtml(defaultFrom) + '</strong>)' : '') + '.</p>' +
+        '<div style="overflow-x:auto;margin-bottom:16px;"><table class="data-table"><thead><tr>' +
+          '<th>APP</th><th>Correo remitente</th><th>Estado</th><th class="text-right">Acciones</th>' +
+        '</tr></thead><tbody id="em-senders-rows">' + rows + '</tbody></table></div>' +
+        '<div id="em-sender-form" style="border-top:1px solid var(--border-color,#E2E8F0);padding-top:16px;">' +
+          '<div class="form-row" style="display:grid;grid-template-columns:1fr 1.4fr 1fr;gap:12px;">' +
+            '<div class="form-group"><label>Nombre de la APP</label><input id="es-app" type="text" placeholder="Ej. App Prestamos MX"></div>' +
+            '<div class="form-group"><label>Correo remitente</label><input id="es-email" type="email" placeholder="cobranza@app-dominio.com"></div>' +
+            '<div class="form-group"><label>Nombre remitente (opcional)</label><input id="es-name" type="text" placeholder="Cobranza APP"></div>' +
+          '</div>' +
+          '<div class="form-group"><label class="text-secondary text-sm" style="display:flex;align-items:center;gap:8px;font-weight:400;"><input type="checkbox" id="es-active" checked> Activa</label></div>' +
+          '<div id="es-msg"></div>' +
+          '<div style="display:flex;gap:8px;">' +
+            '<button type="button" class="btn btn-primary" id="es-save" onclick="saveEmailSender()">Agregar direccion</button>' +
+            '<button type="button" class="btn btn-secondary" id="es-cancel" style="display:none;" onclick="resetEmailSenderForm()">Cancelar</button>' +
+          '</div>' +
+        '</div>' +
+    '</div></div>';
+}
+
+function emailSenderFormPayload() {
+    return {
+        app_name: document.getElementById('es-app').value.trim(),
+        from_email: document.getElementById('es-email').value.trim(),
+        from_name: document.getElementById('es-name').value.trim(),
+        is_active: document.getElementById('es-active').checked
+    };
+}
+
+function resetEmailSenderForm() {
+    state.editingEmailSenderId = null;
+    document.getElementById('es-app').value = '';
+    document.getElementById('es-email').value = '';
+    document.getElementById('es-name').value = '';
+    document.getElementById('es-active').checked = true;
+    document.getElementById('es-save').textContent = 'Agregar direccion';
+    document.getElementById('es-cancel').style.display = 'none';
+    var m = document.getElementById('es-msg');
+    if (m) m.innerHTML = '';
+}
+
+async function saveEmailSender() {
+    var msg = document.getElementById('es-msg');
+    msg.innerHTML = '';
+    var payload = emailSenderFormPayload();
+    if (!payload.app_name) { msg.innerHTML = '<div class="alert alert-error">El nombre de la APP es requerido.</div>'; return; }
+    if (!payload.from_email) { msg.innerHTML = '<div class="alert alert-error">El correo remitente es requerido.</div>'; return; }
+    try {
+        var id = state.editingEmailSenderId;
+        if (id) {
+            await api('/api/config/email/senders/' + id, { method: 'PUT', body: payload });
+        } else {
+            await api('/api/config/email/senders', { method: 'POST', body: payload });
+        }
+        renderEmailConfig(document.getElementById('page-content'));
+    } catch (err) { msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(err.message) + '</div>'; }
+}
+
+async function editEmailSender(id) {
+    try {
+        var data = await api('/api/config/email/senders');
+        var s = (data.senders || []).find(function(x) { return x.id === id; });
+        if (!s) return;
+        state.editingEmailSenderId = id;
+        document.getElementById('es-app').value = s.app_name || '';
+        document.getElementById('es-email').value = s.from_email || '';
+        document.getElementById('es-name').value = s.from_name || '';
+        document.getElementById('es-active').checked = s.is_active !== false;
+        document.getElementById('es-save').textContent = 'Guardar cambios';
+        document.getElementById('es-cancel').style.display = '';
+        document.getElementById('em-sender-form').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function deleteEmailSender(id) {
+    if (!confirm('Eliminar esta direccion de envio por APP? Los contactos de esa APP volveran a usar el remitente global.')) return;
+    try {
+        await api('/api/config/email/senders/' + id, { method: 'DELETE' });
+        renderEmailConfig(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
 }
 
 function applyEmailProviderPreset(key) {
