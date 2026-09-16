@@ -4975,6 +4975,7 @@ function renderEmailReplies(container) {
               <span><strong>Asunto:</strong> ${escapeHtml(r.subject || '(sin asunto)')}</span>
             </div>
             ${r.original_subject ? `<div class="reply-meta-line"><strong>Correo original:</strong> ${escapeHtml(r.original_subject)}${r.original_created_at ? ' · ' + formatDate(r.original_created_at) : ''}</div>` : ''}
+            ${r.original_from_email ? `<div class="reply-meta-line"><strong>Enviado desde:</strong> ${escapeHtml(r.original_from_email)}${r.original_app_name ? ' <span class="badge">' + escapeHtml(r.original_app_name) + '</span>' : ''}${r.sent_by_username ? ' · por ' + escapeHtml(r.sent_by_username) : ''}</div>` : ''}
             <div class="reply-body">${bodyEsc || '<em>(sin contenido)</em>'}</div>
           </div></td></tr>` : '';
         return `<tr class="reply-row${unreadCls}" onclick="toggleReply(${r.id})">

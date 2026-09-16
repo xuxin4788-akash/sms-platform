@@ -10445,7 +10445,12 @@ def _parse_inbound_email(raw_mime):
 def _store_email_reply(db, info):
     """Insert one inbound reply, correlating to the most recent outbound record
     from this sender and inheriting its owner scope. Idempotent by message_id.
-    Returns the new row id, or None if it was a duplicate."""
+
+    With per-APP sender addresses, the reply's To (the mailbox the customer wrote
+    back to) pins the exact outbound record — and therefore the account that sent
+    it — by matching email_records.from_email. A recipient-only fallback keeps
+    legacy/single-sender rows working. Returns the new row id, or None if it was
+    a duplicate."""
     sender = info['sender_email'].lower()
     if not sender:
         return None
@@ -10455,10 +10460,22 @@ def _store_email_reply(db, info):
             (info['message_id'],)).fetchone()
         if dup:
             return None
-    orig = db.execute(
-        "SELECT id, created_by FROM email_records "
-        "WHERE LOWER(recipient_email)=? ORDER BY id DESC LIMIT 1",
-        (sender,)).fetchone()
+    # Priority: the mailbox the customer replied TO matches our outgoing From,
+    # so the reply is attributed to the exact account that sent that email.
+    to_lower = (info.get('recipient_email') or '').strip().lower()
+    orig = None
+    if to_lower:
+        orig = db.execute(
+            "SELECT id, created_by FROM email_records "
+            "WHERE LOWER(from_email)=? AND LOWER(recipient_email)=? "
+            "ORDER BY id DESC LIMIT 1",
+            (to_lower, sender)).fetchone()
+    if not orig:
+        # Fallback: single global sender / legacy rows with empty from_email.
+        orig = db.execute(
+            "SELECT id, created_by FROM email_records "
+            "WHERE LOWER(recipient_email)=? ORDER BY id DESC LIMIT 1",
+            (sender,)).fetchone()
     original_record_id = orig['id'] if orig else None
     created_by = orig['created_by'] if orig else None
     now = datetime.now()
@@ -10560,8 +10577,11 @@ def email_replies_api():
     offset = (page - 1) * per_page
     rows = db.execute(
         "SELECT x.*, er.subject AS original_subject, er.sent_at AS original_sent_at, "
-        "er.created_at AS original_created_at "
-        "FROM email_replies x LEFT JOIN email_records er ON er.id = x.original_record_id "
+        "er.created_at AS original_created_at, er.from_email AS original_from_email, "
+        "er.app_name AS original_app_name, uu.username AS sent_by_username "
+        "FROM email_replies x "
+        "LEFT JOIN email_records er ON er.id = x.original_record_id "
+        "LEFT JOIN users uu ON uu.id = er.created_by "
         f"WHERE {where} ORDER BY x.id DESC LIMIT ? OFFSET ?",
         params + [per_page, offset]).fetchall()
     unread = db.execute(
