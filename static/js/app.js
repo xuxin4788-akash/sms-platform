@@ -608,7 +608,6 @@ window.addEventListener('hashchange', function() {
 async function renderDashboard(container, opts) {
     opts = opts || {};
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
-    var smsPricingLoadError = '';
     try {
         var isManager = state.user && (state.user.role === 'admin' || state.user.role === 'team_admin');
 
@@ -5181,6 +5180,7 @@ var SMS_PRICING_COUNTRIES = [
 
 async function renderEmailPricing(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    var smsPricingLoadError = '';
     try {
         var [pData, smsPricingData] = await Promise.all([
             api('/api/config/email/pricing'),
