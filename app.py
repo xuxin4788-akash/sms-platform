@@ -3718,7 +3718,8 @@ def list_users():
                u.last_login_ip, u.last_login_at, u.extnumber, u.country,
                u.category_id,
                c.name AS category_name, c.retention_days AS category_retention_days,
-               tc.username AS team_creator_name, tc.full_name AS team_creator_fullname
+               tc.username AS team_creator_name, tc.full_name AS team_creator_fullname,
+               tc.role AS team_creator_role
         FROM users u
         LEFT JOIN users tc ON u.team_creator_id = tc.id
         LEFT JOIN user_categories c ON u.category_id = c.id
@@ -3764,14 +3765,11 @@ def list_users():
         # Admin always has all permissions
         if ud['role'] == 'admin':
             ud['permissions'] = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'api-config', 'email-senders', 'extensions']
-        # Team affiliation (Equipo column):
-        # - A member / custom-role account shows its direct superior (the team
-        #   admin that owns the team). With no superior it is unattached -> None
-        #   (the UI renders "-" / "Sin equipo"), instead of echoing the member's
-        #   own name which was misleading.
-        # - A team_admin with no superior is itself the team, so it shows its own
-        #   name as the team identifier.
-        if ud['team_creator_name']:
+        # Team affiliation (Equipo column): only a real team admin serves as a
+        # team. Historic rows whose team_creator_id points to the system admin
+        # account (role='admin') are NOT a team -> show no affiliation ("-").
+        # A team_admin with no superior is itself the team.
+        if ud.get('team_creator_role') == 'team_admin' and ud['team_creator_name']:
             ud['team_affiliation'] = ud['team_creator_fullname'] or ud['team_creator_name']
         elif ud['role'] == 'team_admin':
             ud['team_affiliation'] = ud['full_name'] or ud['username'] or None
