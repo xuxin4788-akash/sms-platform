@@ -4687,6 +4687,7 @@ AVAILABLE_PAGES = [
     {'id': 'email', 'label': 'Correos', 'icon': 'mail'},
     {'id': 'email-records', 'label': 'Registros de Correo', 'icon': 'activity'},
     {'id': 'email-records-team', 'label': 'Correos del Equipo', 'icon': 'activity'},
+    {'id': 'email-replies', 'label': 'Respuestas de Correo', 'icon': 'mail'},
     {'id': 'content-search', 'label': 'Buscar Contenido', 'icon': 'search'},
     {'id': 'users', 'label': 'Usuarios', 'icon': 'user-plus'},
     {'id': 'my-account', 'label': 'Mi Cuenta', 'icon': 'user'},

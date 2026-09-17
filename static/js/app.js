@@ -2096,6 +2096,7 @@ var PERM_ITEMS = [
     { key: 'records', label: 'Registros SMS', icon: 'activity' },
     { key: 'email-records', label: 'Registros de Correo', icon: 'mail' },
     { key: 'email-records-team', label: 'Correos del Equipo', icon: 'mail' },
+    { key: 'email-replies', label: 'Respuestas de Correo', icon: 'mail' },
     { key: 'calls', label: 'Llamadas (Voz)', icon: 'phone' },
     { key: 'content-search', label: 'Buscar Contenido', icon: 'search' },
     { key: 'users', label: 'Usuarios', icon: 'user-plus' },
