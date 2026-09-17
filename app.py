@@ -6620,6 +6620,7 @@ def get_unified_stats():
                     'today': 0, 'rate': 0, 'unit_price': 0,
                     'total_cost': 0, 'sent_cost': 0, 'failed_cost': 0,
                     'cost_total': 0, 'cost_sent': 0, 'cost_failed': 0,
+                    'email_sent': 0, 'email_cost': 0.0, 'email_unit_price': 0.0,
                 }
             placeholders = ','.join(['?'] * len(user_ids))
             row = db.execute(f"""
@@ -6652,6 +6653,25 @@ def get_unified_stats():
             # tiene sentido cuando hay segmentos facturados; la columna COSTO es
             # igual a 'precio x SMS Fact.' cuando todas las cuentas comparten pais.
             t_unit_price = round(t_cost / _seg_total, 4) if _seg_total else 0
+
+            # Correos: solo los realmente enviados (status='sent') se cuentan y
+            # facturan. Los simulados/pendientes/fallidos/suprimidos se excluyen,
+            # igual que en /api/email/statistics (facturacion global, no por pais).
+            email_date_filter = ''
+            if date_from:
+                email_date_filter += ' AND date(er.created_at) >= ?'
+            if date_to:
+                email_date_filter += ' AND date(er.created_at) <= ?'
+            email_row = db.execute(f"""
+                SELECT COUNT(*) AS sent
+                FROM email_records er
+                WHERE er.created_by IN ({placeholders})
+                  AND er.status='sent' {email_date_filter}
+            """, user_ids + list(date_params)).fetchone()
+            t_email_sent = int(email_row['sent'] or 0) if email_row else 0
+            t_email_unit_price = get_email_unit_price()
+            t_email_cost = round(t_email_unit_price * t_email_sent, 6)
+
             return {
                 'unit_role': unit_role,
                 'team_name': name,
@@ -6675,6 +6695,9 @@ def get_unified_stats():
                 'cost_total': t_cost,
                 'cost_sent': s_cost,
                 'cost_failed': f_cost,
+                'email_sent': t_email_sent,
+                'email_cost': t_email_cost,
+                'email_unit_price': t_email_unit_price,
             }
 
         # (a) One row per team_admin (admin + their members).
@@ -6815,7 +6838,8 @@ def export_teams_stats():
     headers = [
         "Equipo", "Administrador", "Miembros", "Total SMS",
         "SMS facturados (segmentos)", "Enviados", "Fallidos", "Costo", "Hoy", "Exito %",
-        "Costo enviados", "Costo fallidos", "Precio unitario"
+        "Costo enviados", "Costo fallidos", "Precio unitario",
+        "Correos enviados", "Costo correos", "Precio unitario correo"
     ]
     ws.append(headers)
     header_fill = PatternFill(start_color="2563EB", end_color="2563EB", fill_type="solid")
@@ -6849,6 +6873,17 @@ def export_teams_stats():
         )
         seg_sent_cost = calc_cost(_seg_sent, unit_price)
         seg_failed_cost = calc_cost(_seg_failed, unit_price)
+        # Correos enviados (solo status='sent') y su costo (precio global).
+        email_where_date = date_filter_r.replace('r.created_at', 'er.created_at')
+        email_row = db.execute(
+            f"SELECT COUNT(*) AS n FROM email_records er "
+            f"WHERE er.created_by IN ({ph}) AND er.status='sent' "
+            f"{email_where_date}",
+            unit_ids + date_params
+        ).fetchone()
+        team_email_sent = int(email_row['n'] or 0) if email_row else 0
+        email_unit_price = get_email_unit_price()
+        team_email_cost = round(email_unit_price * team_email_sent, 6)
         today_row = db.execute(f"""
             SELECT COUNT(*) as cnt FROM sms_records
             WHERE created_by IN (
@@ -6870,10 +6905,11 @@ def export_teams_stats():
             _seg_total, team_sent, team_failed, seg_cost,
             team_today, f"{team_rate}%",
             seg_sent_cost,
-            seg_failed_cost, unit_price
+            seg_failed_cost, unit_price,
+            team_email_sent, team_email_cost, email_unit_price
         ])
 
-    widths = [22, 20, 12, 12, 12, 12, 12, 10, 10, 14, 14, 14]
+    widths = [22, 20, 12, 12, 12, 12, 12, 10, 10, 14, 14, 14, 14, 16, 14, 20]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
