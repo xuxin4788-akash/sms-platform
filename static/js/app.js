@@ -4284,6 +4284,15 @@ async function addVoiceConfigForCountry(country, countryLabel) {
     } catch (err) { showToast(err.message, 'error'); }
 }
 
+async function addSmsConfigForCountry(country, countryLabel) {
+    if (!confirm('Crear la configuracion SMS para ' + countryLabel + ' (' + country + ')?')) return;
+    try {
+        await api('/api/config/sms', { method: 'POST', body: { name: countryLabel, country: country.trim().toUpperCase(), domain: '', spid: '', api_pwd: '', sender_name: '', unit_price: 0 } });
+        showToast('Configuracion SMS creada', 'success');
+        refreshConfigPage();
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
 async function renderUnifiedConfig(container) {
     _configPageMode = 'unified';
     if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
@@ -4323,7 +4332,7 @@ async function renderUnifiedConfig(container) {
             var sms = smsByCountry[cc];
             var voice = voiceByCountry[cc];
             var smsHtml = sms ? _smsConfigCardHtml(sms)
-                : '<div class="card mb-3" style="border-style:dashed;"><div class="card-body"><h3 style="margin:0;margin-bottom:4px;">SMS <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><p class="text-secondary" style="font-size:13px;margin-bottom:12px;">Sin configuracion SMS para ' + escapeHtml(label) + '.</p><button type="button" class="btn btn-outline btn-sm" onclick="location.hash=\'#/config\'">Gestionar desde SMS</button></div></div>';
+                : '<div class="card mb-3" style="border-style:dashed;"><div class="card-body"><h3 style="margin:0;margin-bottom:4px;">SMS <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><p class="text-secondary" style="font-size:13px;margin-bottom:12px;">Sin configuracion SMS para ' + escapeHtml(label) + '.</p><button type="button" class="btn btn-outline btn-sm" onclick="addSmsConfigForCountry(\'' + escapeHtml(cc) + '\', \'' + escapeHtml(label) + '\')">+ Crear configuracion SMS</button></div></div>';
             var voiceHtml = voice ? _voiceConfigCardHtml(voice)
                 : '<div class="card mb-3" style="border-style:dashed;"><div class="card-body"><h3 style="margin:0;margin-bottom:4px;">Voz (电呼) <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><p class="text-secondary" style="font-size:13px;margin-bottom:12px;">Sin configuracion de Voz para ' + escapeHtml(label) + '.</p><button type="button" class="btn btn-outline btn-sm" onclick="addVoiceConfigForCountry(\'' + escapeHtml(cc) + '\', \'' + escapeHtml(label) + '\')">+ Crear configuracion de Voz</button></div></div>';
             return '<div class="card mb-4" style="border:1px solid var(--border,#E2E8F0);"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><h3 style="margin:0;">' + escapeHtml(label) + ' <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><span class="badge badge-secondary" style="margin-left:auto;">SMS + Voz</span></div><div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">' + '<div>' + smsHtml + '</div>' + '<div>' + voiceHtml + '</div>' + '</div></div>';
@@ -4331,8 +4340,7 @@ async function renderUnifiedConfig(container) {
 
         // Email block reuses the existing renderer (separate section).
         container.innerHTML =
-            '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Configuracion de APIs</h1>' +
-            '<div style="display:flex;gap:8px;"><a class="btn btn-outline btn-sm" href="#/config">SMS por separado</a><a class="btn btn-outline btn-sm" href="#/voice-config">Voz por separado</a><a class="btn btn-outline btn-sm" href="#/email-config">Correo por separado</a></div></div>' +
+            '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Configuracion de APIs</h1></div>' +
             '<div class="alert alert-info mb-4"><div class="card-body" style="padding:12px;">SMS y Voz se configuran juntos aqui, agrupados por <strong>pais</strong> (Mexico/Colombia/Peru). Cada pais usa sus propias credenciales e infiere el proveedor: con URL+AppID+AccessKey se activa <strong>Infinity</strong>; si faltan, queda en <strong>modo simulacion</strong>. El Correo (SMTP) se configura por separado abajo.</div></div>' +
             countryBlocks +
             '<div id="unified-email-body"></div>';
