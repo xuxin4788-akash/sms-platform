@@ -64,7 +64,10 @@ async function api(url, options = {}) {
         handleSessionExpiry(data.error);
         throw new Error(data.error || 'Sesion expirada');
     }
-    if (!res.ok) throw new Error(data.error || 'Error en la solicitud');
+    if (!res.ok) {
+        var detail = (data && data.error) || (data && data.message) || 'Error en la solicitud';
+        throw new Error('HTTP ' + res.status + ': ' + detail);
+    }
     return data;
 }
 
@@ -605,6 +608,7 @@ window.addEventListener('hashchange', function() {
 async function renderDashboard(container, opts) {
     opts = opts || {};
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    var smsPricingLoadError = '';
     try {
         var isManager = state.user && (state.user.role === 'admin' || state.user.role === 'team_admin');
 
@@ -5180,7 +5184,12 @@ async function renderEmailPricing(container) {
     try {
         var [pData, smsPricingData] = await Promise.all([
             api('/api/config/email/pricing'),
-            api('/api/config/sms/pricing').catch(function() { return { configs: [] }; })
+            api('/api/config/sms/pricing').catch(function(e) {
+                // Surface the real HTTP error instead of silently swallowing it,
+                // so admins can see whether it's 404 (route missing) or 500 (DB error).
+                smsPricingLoadError = e && e.message ? e.message : 'Error cargando precios SMS';
+                return { configs: [], error: smsPricingLoadError };
+            })
         ]);
         var emailUnit = (pData.unit_price != null ? pData.unit_price : 0);
         var smsConfigs = smsPricingData.configs || [];
@@ -5221,6 +5230,7 @@ async function renderEmailPricing(container) {
                   '<th>Pais</th><th>Precio por SMS</th><th class="text-right">Accion</th>' +
                 '</tr></thead><tbody>' + smsRows + '</tbody></table></div>' +
                 '<div id="sp-msg" style="margin-top:10px;"></div>' +
+                (smsPricingLoadError ? '<div class="alert alert-error" style="margin-top:10px;">Error al cargar precios SMS: ' + escapeHtml(smsPricingLoadError) + '</div>' : '') +
             '</div></div>';
     } catch (e) {
         container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
