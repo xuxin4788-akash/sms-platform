@@ -426,6 +426,7 @@ body {
 .stat-icon.green { background: var(--success-light); color: var(--success); }
 .stat-icon.red { background: var(--danger-light); color: var(--danger); }
 .stat-icon.yellow { background: var(--warning-light); color: var(--warning); }
+.stat-icon.amber { background: var(--warning-light); color: var(--warning); }
 
 /* ============================================================
    Tables
