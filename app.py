@@ -3582,11 +3582,13 @@ def list_users():
         # Admin always has all permissions
         if ud['role'] == 'admin':
             ud['permissions'] = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'voice-config']
-        # Team affiliation: show team creator name for team members
+        # Team affiliation: show the direct superior (team creator) name as the
+        # team label; when there is no superior (the account itself is a team
+        # admin / leader), show its own name as the team identifier (Option B).
         if ud['team_creator_name']:
             ud['team_affiliation'] = ud['team_creator_fullname'] or ud['team_creator_name']
         else:
-            ud['team_affiliation'] = None
+            ud['team_affiliation'] = ud['full_name'] or ud['username'] or None
         result.append(ud)
     return jsonify({'users': result})
 
