@@ -3766,9 +3766,18 @@ def create_user():
             return jsonify({'error': 'El rol no existe'}), 400
         team_creator_id = None
     elif current['role'] == 'team_admin':
-        # Team admin can only create team_member
-        if role != 'team_member':
-            return jsonify({'error': 'Solo puede crear Miembros de Equipo'}), 400
+        # Team admin can create team members OR any custom role (e.g. a data
+        # agent). Both are placed under this team (team_creator_id = self), so
+        # they share the team's data scope. The default team_member behaviour
+        # is kept when no explicit role is supplied.
+        if not _is_custom_role(role):
+            if role != 'team_member':
+                return jsonify({'error': 'Solo puede crear Miembros de Equipo'}), 400
+        else:
+            # Ensure the custom role exists in role_permissions.
+            rp = db.execute("SELECT role FROM role_permissions WHERE role = ?", (role,)).fetchone()
+            if not rp:
+                return jsonify({'error': 'El rol no existe'}), 400
         team_creator_id = current['id']
     else:
         return jsonify({'error': 'Permisos insuficientes'}), 403
@@ -4981,9 +4990,13 @@ def _scope_where(alias: str, uid: int, role, mode: str = 'auto') -> tuple[str, l
         return "1=1", []
     if mode == 'own':
         return f"{alias}.created_by = ?", [uid]
-    if mode == 'team' or role == 'team_admin':
+    if role == 'team_admin':
+        # team_admin always scopes to their whole team
         owner = uid
     else:
+        # member / custom role: 'auto' and 'team' both resolve the managing
+        # team-admin via team_creator_id (data agent sees the whole team),
+        # falling back to the user themself when there is no team.
         owner = _team_scope_owner_id(uid, role)
     if owner is not None:
         # whole team (the team_admin themself + members under that admin)
@@ -5000,9 +5013,12 @@ def _scope_where_unnamed(uid: int, role, mode: str = 'auto') -> tuple[str, list]
         return "1=1", []
     if mode == 'own':
         return "created_by = ?", [uid]
-    if mode == 'team' or role == 'team_admin':
+    if role == 'team_admin':
+        # team_admin always scopes to their whole team
         owner = uid
     else:
+        # member / custom role: resolve the managing team-admin via
+        # team_creator_id; fall back to themself when there is no team.
         owner = _team_scope_owner_id(uid, role)
     if owner is not None:
         return (f"(created_by = ? OR created_by IN "
