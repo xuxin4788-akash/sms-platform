@@ -4282,16 +4282,27 @@ var UNIFIED_EXTRA_LABEL = 'Otros';
 // code from the config name (Mexico/Colombia/Peru/... ) so those rows are not
 // dropped and still show under the right country block on the unified page.
 function _countryFromNameOrCode(code, name) {
-    var k = (code || '').toString().trim().toUpperCase();
-    if (k) return k;
+    var k = (code || '').toString().trim();
+    var kUpper = k.toUpperCase();
     var n = (name || '').toString().trim().toLowerCase();
-    for (var i = 0; i < UNIFIED_CONFIG_ORDER.length; i++) {
-        if (UNIFIED_CONFIG_ORDER[i].label.toLowerCase() === n) return UNIFIED_CONFIG_ORDER[i].code;
+    // Exact ISO code match first (MX, mx, CO, pe ...).
+    if (kUpper && (VOICE_COUNTRY_LABELS[k.toLowerCase()] || UNIFIED_CONFIG_ORDER.some(function(x) { return x.code === kUpper; }))) {
+        return kUpper;
     }
-    for (var vk in VOICE_COUNTRY_LABELS) {
-        if (String(VOICE_COUNTRY_LABELS[vk]).toLowerCase() === n) return vk.toUpperCase();
-    }
-    return '';
+    // Fall back to matching by name OR by the raw code text (e.g. a
+    // legacy country field stored as "mexico" / "Colombia" / "Mexico ").
+    var scan = function(t) {
+        if (!t) return '';
+        t = t.toLowerCase();
+        for (var i = 0; i < UNIFIED_CONFIG_ORDER.length; i++) {
+            if (UNIFIED_CONFIG_ORDER[i].label.toLowerCase() === t) return UNIFIED_CONFIG_ORDER[i].code;
+        }
+        for (var vk in VOICE_COUNTRY_LABELS) {
+            if (vk === t || String(VOICE_COUNTRY_LABELS[vk]).toLowerCase() === t) return vk.toUpperCase();
+        }
+        return '';
+    };
+    return scan(n) || scan(k);
 }
 
 async function addVoiceConfigForCountry(country, countryLabel) {
