@@ -564,13 +564,18 @@ function navigateTo(page) {
             renderEmailReplies(content); loadEmailReplies(); break;
         case 'email-config':
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            _configPageMode = 'sms';
             renderEmailConfig(content); break;
         case 'email-pricing':
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
             renderEmailPricing(content); break;
         case 'voice-config':
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            _configPageMode = 'sms';
             renderVoiceConfig(content); break;
+        case 'api-config':
+            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            renderUnifiedConfig(content); break;
         case 'extensions':
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
             renderExtensions(content); break;
@@ -588,6 +593,7 @@ function navigateTo(page) {
             renderTeamApiConfig(content); break;
         case 'role-permissions': renderRolePermissions(content); break;
         case 'config':
+            _configPageMode = 'sms';
             if (state.user.role === 'team_admin') renderTeamConfig(content);
             else renderConfig(content);
             break;
@@ -2056,6 +2062,7 @@ var PERM_ITEMS = [
     { key: 'my-team', label: 'Mi Equipo', icon: 'users' },
     { key: 'all-teams', label: 'Todos los Equipos', icon: 'bar-chart' },
     { key: 'config', label: 'Configuracion API SMS', icon: 'settings' },
+    { key: 'api-config', label: 'Configuracion de APIs', icon: 'settings' },
     { key: 'voice-config', label: 'Configuracion Voz', icon: 'settings' },
     { key: 'extensions', label: 'Extensiones', icon: 'phone' },
     { key: 'retention', label: 'Retencion de Contactos', icon: 'shield' },
@@ -3175,6 +3182,25 @@ async function saveRolePermissions(role) {
     } catch (err) { showToast('Error: ' + err.message, 'error'); }
 }
 
+// ============================================================
+// API Config pages (SMS / Voz / Correo)
+// A unified page merges SMS+Voz per country and Email separately.
+// refreshConfigPage / refreshEmailConfigPage re-render whichever
+// page is currently active so standalone pages still work.
+// ============================================================
+var _configPageMode = 'sms'; // 'sms' | 'unified'
+function refreshConfigPage() {
+    var content = document.getElementById('page-content');
+    if (_configPageMode === 'unified') { renderUnifiedConfig(content); return; }
+    if (state.user.role === 'team_admin') { renderTeamConfig(content); return; }
+    renderConfig(content);
+}
+function refreshEmailConfigPage() {
+    var content = document.getElementById('page-content');
+    if (_configPageMode === 'unified') { renderUnifiedConfig(content); return; }
+    renderEmailConfig(content);
+}
+
 async function renderConfig(container) {
     if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
@@ -3225,7 +3251,7 @@ async function handleSaveApiConfig(event, configId) {
     // Preserve the country tag (badge next to the title).
     var badge = card.querySelector('h3 .badge');
     var country = badge ? badge.textContent.trim() : '';
-    try { await api('/api/config/sms/' + configId, { method: 'PUT', body: { name: name, country: country, domain: form.domain.value.trim(), spid: form.spid.value.trim(), api_pwd: form.api_pwd.value.trim(), sender_name: form.sender_name.value.trim(), unit_price: price, is_active: true } }); showToast('Configuracion guardada', 'success'); renderConfig(document.getElementById('page-content')); }
+    try { await api('/api/config/sms/' + configId, { method: 'PUT', body: { name: name, country: country, domain: form.domain.value.trim(), spid: form.spid.value.trim(), api_pwd: form.api_pwd.value.trim(), sender_name: form.sender_name.value.trim(), unit_price: price, is_active: true } }); showToast('Configuracion guardada', 'success'); refreshConfigPage(); }
     catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -3242,7 +3268,7 @@ async function saveBillingPrice() {
     try {
         await api('/api/settings/billing', { method: 'PUT', body: { sms_unit_price: val } });
         showToast('Costo por SMS guardado', 'success');
-        renderConfig(document.getElementById('page-content'));
+        refreshConfigPage();
     } catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -3251,13 +3277,13 @@ async function showAddApiConfig() {
     if (!name) return;
     var country = prompt('Codigo de pais (ej: MX, CO):');
     if (!country) return;
-    try { await api('/api/config/sms', { method: 'POST', body: { name: name.trim(), country: country.trim().toUpperCase(), domain: '', spid: '', api_pwd: '', sender_name: '', unit_price: 0 } }); showToast('Configuracion creada', 'success'); renderConfig(document.getElementById('page-content')); }
+    try { await api('/api/config/sms', { method: 'POST', body: { name: name.trim(), country: country.trim().toUpperCase(), domain: '', spid: '', api_pwd: '', sender_name: '', unit_price: 0 } }); showToast('Configuracion creada', 'success'); refreshConfigPage(); }
     catch (err) { showToast(err.message, 'error'); }
 }
 
 async function deleteApiConfig(configId) {
     if (!confirm('Eliminar esta configuracion?')) return;
-    try { await api('/api/config/sms/' + configId, { method: 'DELETE' }); showToast('Configuracion eliminada', 'success'); renderConfig(document.getElementById('page-content')); }
+    try { await api('/api/config/sms/' + configId, { method: 'DELETE' }); showToast('Configuracion eliminada', 'success'); refreshConfigPage(); }
     catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -4187,6 +4213,130 @@ async function loadVoiceRecords() {
         container.innerHTML =
             '<div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono</th><th>Nombre</th><th>Ext.</th><th>Guion</th><th>Estado</th><th>Duracion</th><th>Operador</th><th>Acciones</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
             renderPagination({ page: data.page, per_page: data.per_page, total: data.total, total_pages: Math.ceil(data.total / data.per_page) }, 'calls');
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
+    }
+}
+
+// ============================================================
+// Unified API Config page (Configuracion de APIs)
+// SMS + Voz merged per country, Correo (SMTP) separate.
+// ============================================================
+function _smsConfigCardHtml(c) {
+    var isCfg = c.domain && c.spid && c.api_pwd;
+    return '<div class="card mb-3"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><h3 style="margin:0;">' + escapeHtml(c.name) + ' <span class="badge ' + (c.country === 'MX' ? 'badge-green' : 'badge-blue') + '">' + escapeHtml(c.country) + '</span></h3><span class="badge ' + (c.is_active ? 'badge-green' : 'badge-gray') + '" style="margin-left:auto;">' + (c.is_active ? 'Activa' : 'Inactiva') + '</span></div><div class="card-body"><form onsubmit="handleSaveApiConfig(event, ' + c.id + ')"><div class="form-grid"><div class="form-group"><label>Dominio del Servidor</label><input type="text" name="domain" value="' + escapeHtml(c.domain || '') + '" placeholder="api.infin8linx.com"></div><div class="form-group"><label>Cuenta de Interfaz (SPID)</label><input type="text" name="spid" value="' + escapeHtml(c.spid || '') + '" placeholder="Su cuenta de interfaz"></div><div class="form-group"><label>Contrasena API</label><input type="password" name="api_pwd" value="' + escapeHtml(c.api_pwd || '') + '" placeholder="Contrasena de la API"></div><div class="form-group"><label>Nombre del Remitente</label><input type="text" name="sender_name" value="' + escapeHtml(c.sender_name || '') + '" placeholder="MiEmpresa"></div><div class="form-group"><label>Costo por SMS (' + escapeHtml(c.country || 'pais') + ')</label><input type="number" name="unit_price" value="' + (c.unit_price != null ? c.unit_price : 0) + '" min="0" step="0.0001" placeholder="0.0000"></div></div><div class="flex gap-2 mt-3"><button type="submit" class="btn btn-primary">Guardar</button><button type="button" class="btn btn-secondary" onclick="testApiConfig(' + c.id + ')">Probar</button><button type="button" class="btn btn-danger btn-sm" onclick="deleteApiConfig(' + c.id + ')">Eliminar</button></div></form>' + (isCfg ? '<div class="mt-3"><span class="badge badge-green">API Configurada</span></div>' : '<div class="mt-3"><span class="badge badge-yellow">API No Configurada - Modo Simulacion</span></div>') + '</div></div>';
+}
+
+function _voiceConfigCardHtml(c) {
+    var label = VOICE_COUNTRY_LABELS[c.country] || c.name || c.country;
+    var statusBadge = c.configured
+        ? '<span class="badge badge-green">Configurada</span>'
+        : '<span class="badge badge-yellow">No configurada - Simulacion</span>';
+    return '' +
+        '<div class="card mb-3" data-vc-id="' + c.id + '">' +
+          '<div class="card-header" style="display:flex;align-items:center;gap:10px;">' +
+            '<h3 style="margin:0;">' + escapeHtml(c.name || label) + ' <span class="badge badge-blue">' + escapeHtml((c.country || '').toUpperCase()) + '</span></h3>' +
+            '<span style="margin-left:auto;">' + statusBadge + '</span>' +
+          '</div>' +
+          '<div class="card-body">' +
+            '<form onsubmit="saveVoiceConfig(event, ' + c.id + ')">' +
+              '<div class="form-grid">' +
+                '<div class="form-group"><label>URL de la API</label><input type="text" name="api_domain" value="' + escapeHtml(c.api_domain || '') + '" placeholder="host:puerto (ej: mex.infin8link.com:4434)"></div>' +
+                '<div class="form-group"><label>AppID</label><input type="text" name="voice_appid" value="' + escapeHtml(c.voice_appid || '') + '" placeholder="AppID autorizado"></div>' +
+                '<div class="form-group"><label>AccessKey</label><input type="password" name="voice_accesskey" placeholder="' + (c.has_accesskey ? '******** (configurada - dejar vacia para conservar)' : 'AccessKey autorizada') + '"></div>' +
+                '<div class="form-group"><label>Numero remitente / DID (disnumber)</label><input type="text" name="from_number" value="' + escapeHtml(c.from_number || '') + '" placeholder="Ej. 528332613611 (dejar vacio = aleatorio)"></div>' +
+                '<div class="form-group"><label>Prefijo de marcado (dest_prefix)</label><input type="text" name="dest_prefix" value="' + escapeHtml(c.dest_prefix || '') + '" placeholder="Ej. Mexico movil: 521 / vacio = 52 nacional"></div>' +
+              '</div>' +
+              '<div class="flex gap-2 mt-3">' +
+                '<button type="submit" class="btn btn-primary">Guardar</button>' +
+                '<button type="button" class="btn btn-secondary" onclick="testVoiceConfig(' + c.id + ', \'' + escapeHtml(c.country || '') + '\')">Probar conexion</button>' +
+              '</div>' +
+              '<div class="vc-result mt-3"></div>' +
+            '</form>' +
+          '</div>' +
+        '</div>';
+}
+
+// Countries supported for unified SMS+Voz groups. Extra SMS-only countries
+// (argentina/chile from pricing) still appear if they hold an SMS config.
+var UNIFIED_CONFIG_ORDER = [
+    { code: 'MX', label: 'Mexico' },
+    { code: 'CO', label: 'Colombia' },
+    { code: 'PE', label: 'Peru' },
+    { code: 'AR', label: 'Argentina' },
+    { code: 'CL', label: 'Chile' }
+];
+
+function _countryLabel(code) {
+    var k = (code || '').toUpperCase();
+    for (var i = 0; i < UNIFIED_CONFIG_ORDER.length; i++) {
+        if (UNIFIED_CONFIG_ORDER[i].code === k) return UNIFIED_CONFIG_ORDER[i].label;
+    }
+    return VOICE_COUNTRY_LABELS[(code || '').toLowerCase()] || code || 'Pais';
+}
+
+async function addVoiceConfigForCountry(country, countryLabel) {
+    if (!confirm('Crear la configuracion de Voz (Infinity) para ' + countryLabel + ' (' + country + ')?')) return;
+    try {
+        await api('/api/config/voice', { method: 'POST', body: { name: countryLabel, country: country.toLowerCase() } });
+        showToast('Configuracion de Voz creada', 'success');
+        refreshConfigPage();
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function renderUnifiedConfig(container) {
+    _configPageMode = 'unified';
+    if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var res = await Promise.all([
+            api('/api/config/sms'),
+            api('/api/config/voice'),
+            api('/api/config/email/providers'),
+            api('/api/config/email').catch(function() { return { configured: false }; }),
+            api('/api/config/email/senders').catch(function() { return { senders: [], default_from_email: '' }; })
+        ]);
+        var smsConfigs = (res[0].configs || []).slice();
+        var voiceConfigs = (res[1].configs || []).slice();
+
+        // Index by country (case-insensitive, first wins).
+        var smsByCountry = {};
+        smsConfigs.forEach(function(c) { var k = (c.country || '').toUpperCase(); if (!smsByCountry[k]) smsByCountry[k] = c; });
+        var voiceByCountry = {};
+        voiceConfigs.forEach(function(c) { var k = (c.country || '').toUpperCase(); if (!voiceByCountry[k]) voiceByCountry[k] = c; });
+
+        // Union of countries, ordered: canonical list first, then any SMS extras.
+        var countries = [];
+        var seen = {};
+        var pushCc = function(code) {
+            code = (code || '').toUpperCase();
+            if (!code || seen[code]) return;
+            seen[code] = true;
+            countries.push(code);
+        };
+        UNIFIED_CONFIG_ORDER.forEach(function(x) { pushCc(x.code); });
+        smsConfigs.forEach(function(c) { pushCc(c.country); });
+        voiceConfigs.forEach(function(c) { pushCc(c.country); });
+
+        var countryBlocks = countries.map(function(cc) {
+            var label = _countryLabel(cc);
+            var sms = smsByCountry[cc];
+            var voice = voiceByCountry[cc];
+            var smsHtml = sms ? _smsConfigCardHtml(sms)
+                : '<div class="card mb-3" style="border-style:dashed;"><div class="card-body"><h3 style="margin:0;margin-bottom:4px;">SMS <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><p class="text-secondary" style="font-size:13px;margin-bottom:12px;">Sin configuracion SMS para ' + escapeHtml(label) + '.</p><button type="button" class="btn btn-outline btn-sm" onclick="location.hash=\'#/config\'">Gestionar desde SMS</button></div></div>';
+            var voiceHtml = voice ? _voiceConfigCardHtml(voice)
+                : '<div class="card mb-3" style="border-style:dashed;"><div class="card-body"><h3 style="margin:0;margin-bottom:4px;">Voz (电呼) <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><p class="text-secondary" style="font-size:13px;margin-bottom:12px;">Sin configuracion de Voz para ' + escapeHtml(label) + '.</p><button type="button" class="btn btn-outline btn-sm" onclick="addVoiceConfigForCountry(\'' + escapeHtml(cc) + '\', \'' + escapeHtml(label) + '\')">+ Crear configuracion de Voz</button></div></div>';
+            return '<div class="card mb-4" style="border:1px solid var(--border,#E2E8F0);"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><h3 style="margin:0;">' + escapeHtml(label) + ' <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><span class="badge badge-secondary" style="margin-left:auto;">SMS + Voz</span></div><div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">' + '<div>' + smsHtml + '</div>' + '<div>' + voiceHtml + '</div>' + '</div></div>';
+        }).join('');
+
+        // Email block reuses the existing renderer (separate section).
+        container.innerHTML =
+            '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Configuracion de APIs</h1>' +
+            '<div style="display:flex;gap:8px;"><a class="btn btn-outline btn-sm" href="#/config">SMS por separado</a><a class="btn btn-outline btn-sm" href="#/voice-config">Voz por separado</a><a class="btn btn-outline btn-sm" href="#/email-config">Correo por separado</a></div></div>' +
+            '<div class="alert alert-info mb-4"><div class="card-body" style="padding:12px;">SMS y Voz se configuran juntos aqui, agrupados por <strong>pais</strong> (Mexico/Colombia/Peru). Cada pais usa sus propias credenciales e infiere el proveedor: con URL+AppID+AccessKey se activa <strong>Infinity</strong>; si faltan, queda en <strong>modo simulacion</strong>. El Correo (SMTP) se configura por separado abajo.</div></div>' +
+            countryBlocks +
+            '<div id="unified-email-body"></div>';
+        renderEmailConfig(document.getElementById('unified-email-body'));
     } catch (e) {
         container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
     }
@@ -5377,7 +5527,8 @@ async function saveEmailSender() {
         } else {
             await api('/api/config/email/senders', { method: 'POST', body: payload });
         }
-        renderEmailConfig(document.getElementById('page-content'));
+        showToast('Direccion guardada', 'success');
+        refreshEmailConfigPage();
     } catch (err) { msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(err.message) + '</div>'; }
 }
 
@@ -5401,7 +5552,7 @@ async function deleteEmailSender(id) {
     if (!confirm('Eliminar esta direccion de envio por APP? Los contactos de esa APP volveran a usar el remitente global.')) return;
     try {
         await api('/api/config/email/senders/' + id, { method: 'DELETE' });
-        renderEmailConfig(document.getElementById('page-content'));
+        refreshEmailConfigPage();
     } catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -5438,7 +5589,7 @@ async function handleSaveEmailConfig(e) {
     try {
         await api('/api/config/email', { method: 'POST', body: emailConfigPayload() });
         msg.innerHTML = '<div class="alert alert-success">Configuracion guardada.</div>';
-        renderEmailConfig(document.getElementById('page-content'));
+        refreshEmailConfigPage();
     } catch (err) { msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(err.message) + '</div>'; }
 }
 
