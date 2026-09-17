@@ -2207,6 +2207,39 @@ def init_db():
             except Exception:
                 pass
 
+        # Self-healing: a failed users rebuild from an older migration could
+        # leave several tables' FKs pointing at the dropped `users_old` table
+        # (voice_records, extensions, email_jobs, email_replies, email_records,
+        # team_config, ...). Rebuild each affected table with the FK retargeted
+        # back to `users`, preserving all rows.
+        try:
+            affected = db.execute(
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type='table' AND sql LIKE '%users_old%'"
+            ).fetchall()
+        except Exception:
+            affected = []
+        for tbl_row in affected:
+            tname = tbl_row[0]
+            new_sql = (tbl_row[1] or '').replace('users_old', 'users') if len(tbl_row) > 1 else ''
+            try:
+                db.execute("PRAGMA foreign_keys=OFF")
+                tmp = tname + '_fkfix'
+                db.execute("DROP TABLE IF EXISTS " + tmp)
+                db.execute("ALTER TABLE " + tname + " RENAME TO " + tmp)
+                db.execute(new_sql)
+                db.execute("INSERT INTO " + tname + " SELECT * FROM " + tmp)
+                db.execute("DROP TABLE " + tmp)
+                db.commit()
+                print("Rebuilt " + tname + " FK (users_old -> users)")
+            except Exception as e:
+                db.rollback()
+                print(f"Migration FK repair {tname} error: {e}")
+                try:
+                    db.execute("PRAGMA foreign_keys=ON")
+                except Exception:
+                    pass
+
         # Performance indexes (idempotent). Critical for large teams:
         # the send_logs page and SMS records/statistics pages sort/filter by
         # these columns. Without indexes every request does a full table scan
@@ -4644,6 +4677,7 @@ AVAILABLE_PAGES = [
     {'id': 'calls', 'label': 'Llamadas', 'icon': 'phone'},
     {'id': 'email', 'label': 'Correos', 'icon': 'mail'},
     {'id': 'email-records', 'label': 'Registros de Correo', 'icon': 'activity'},
+    {'id': 'email-records-team', 'label': 'Correos del Equipo', 'icon': 'activity'},
     {'id': 'content-search', 'label': 'Buscar Contenido', 'icon': 'search'},
     {'id': 'users', 'label': 'Usuarios', 'icon': 'user-plus'},
     {'id': 'my-account', 'label': 'Mi Cuenta', 'icon': 'user'},
@@ -4664,7 +4698,7 @@ DEFAULT_ROLE_PERMISSIONS = {
     'admin': [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions'],
     'team_admin': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'email', 'email-records', 'email-replies', 'content-search', 'users',
+        'calls', 'email', 'email-records', 'email-records-team', 'email-replies', 'content-search', 'users',
         'my-account', 'my-team', 'all-teams', 'retention',
     ],
     'team_member': [
@@ -4677,7 +4711,7 @@ DEFAULT_ROLE_PERMISSIONS = {
 # an explicit (possibly older) permission set stored. Used to roll out new
 # features without forcing an admin to re-check permissions for existing teams.
 # Admin-only pages (e.g. email-config) must never be added here.
-AUTO_GRANT_PAGES = {'email', 'email-records', 'email-replies'}
+AUTO_GRANT_PAGES = {'email', 'email-records', 'email-records-team', 'email-replies'}
 
 @app.route('/api/role-permissions', methods=['GET'])
 @admin_required
@@ -4871,15 +4905,10 @@ def _contact_visible_where(alias: str = "c") -> tuple[str, list]:
 
     admin          -> all contacts
     team_admin     -> own + team members' contacts
+    custom role    -> the team of the team_admin who created this user
     team_member    -> own contacts only
     """
-    uid = session.get('user_id')
-    role = session.get('role')
-    if role == 'admin':
-        return "1=1", []
-    if role == 'team_admin':
-        return f"({alias}.created_by = ? OR {alias}.created_by IN (SELECT id FROM users WHERE team_creator_id = ?))", [uid, uid]
-    return f"{alias}.created_by = ?", [uid]
+    return _scope_where(alias, session.get('user_id'), session.get('role'))
 
 
 def _can_manage_contact(contact: sqlite3.Row | None) -> bool:
@@ -4892,6 +4921,10 @@ def _can_manage_contact(contact: sqlite3.Row | None) -> bool:
     owner = contact['created_by']
     if role == 'team_admin':
         return owner == session['user_id'] or owner in _team_member_ids(session['user_id'])
+    # custom role scoped to its team_admin's team
+    tmo = _team_scope_owner_id(session.get('user_id'), role)
+    if tmo is not None:
+        return owner == session['user_id'] or owner == tmo or owner in _team_member_ids(tmo)
     return owner == session['user_id']
 
 
@@ -4900,6 +4933,101 @@ def _team_member_ids(team_admin_id: int) -> list[int]:
     return [r['id'] for r in db.execute(
         "SELECT id FROM users WHERE team_creator_id=?", (team_admin_id,)
     ).fetchall()]
+
+
+# Built-in roles that own system-level scope; anything else is a custom role
+# (e.g. data agent) that must be treated like a member of the team that created it.
+_BUILTIN_ROLES = ('admin', 'team_admin', 'team_member')
+
+
+def _is_custom_role(role) -> bool:
+    """True when role is not one of the three built-in roles."""
+    return role is not None and role not in _BUILTIN_ROLES
+
+
+def _team_scope_owner_id(uid: int, role) -> int | None:
+    """Resolve the team-admin id whose team the given user belongs to, for
+    data-scoping purposes.
+
+    - admin          -> None  (all data, scope not restricted)
+    - team_admin     -> uid   (own team)
+    - team_member    -> None  (own data only)
+    - custom role    -> the team_admin who created this user (via team_creator_id),
+                        so a data agent sees the whole team; if none, None
+    """
+    if role == 'team_admin':
+        return uid
+    if not _is_custom_role(role):
+        return None
+    db = get_db()
+    row = db.execute("SELECT team_creator_id FROM users WHERE id=?", (uid,)).fetchone()
+    return (row['team_creator_id'] if row and row['team_creator_id'] is not None else None)
+
+
+def _scope_where(alias: str, uid: int, role, mode: str = 'auto') -> tuple[str, list]:
+    """Return (WHERE fragment, params) for data rows owned by users in the
+    current user's scope, mirroring SMS/voice/contact visibility:
+
+    admin       -> 1=1 (always, regardless of mode; no data restriction)
+    mode='own'  -> the current user's own rows only
+    mode='team' -> the current user's managed scope (team_admin: own + members;
+                   custom role/data agent: the team that created it)
+    mode='auto' -> normal per-role rule:
+                   team_admin  -> own + own team members
+                   custom role -> the team of the team_admin who created this user
+                   team_member -> own only
+    """
+    if role == 'admin':
+        return "1=1", []
+    if mode == 'own':
+        return f"{alias}.created_by = ?", [uid]
+    if mode == 'team' or role == 'team_admin':
+        owner = uid
+    else:
+        owner = _team_scope_owner_id(uid, role)
+    if owner is not None:
+        # whole team (the team_admin themself + members under that admin)
+        return (f"({alias}.created_by = ? OR {alias}.created_by IN "
+                f"(SELECT id FROM users WHERE team_creator_id = ?))", [owner, owner])
+    return f"{alias}.created_by = ?", [uid]
+
+
+def _scope_where_unnamed(uid: int, role, mode: str = 'auto') -> tuple[str, list]:
+    """Like _scope_where but for tables queried without an alias (the fragment
+    references `created_by` directly). Admin returns ("1=1", []). See _scope_where
+    for the semantics of mode ('auto' | 'own' | 'team')."""
+    if role == 'admin':
+        return "1=1", []
+    if mode == 'own':
+        return "created_by = ?", [uid]
+    if mode == 'team' or role == 'team_admin':
+        owner = uid
+    else:
+        owner = _team_scope_owner_id(uid, role)
+    if owner is not None:
+        return (f"(created_by = ? OR created_by IN "
+                f"(SELECT id FROM users WHERE team_creator_id = ?))", [owner, owner])
+    return "created_by = ?", [uid]
+
+
+def _scope_user_ids(uid: int, role) -> list[int]:
+    """Return the list of user ids whose data is visible to the current user
+    (for `IN (...)` filters). Admin returns [] meaning "all" (caller chooses)."""
+    if role == 'admin':
+        return []
+    db = get_db()
+    if role == 'team_admin':
+        ids = [uid] + [r['id'] for r in db.execute(
+            "SELECT id FROM users WHERE team_creator_id=?", (uid,)).fetchall()]
+        return ids
+    owner = _team_scope_owner_id(uid, role)
+    if owner is not None:
+        ids = [owner] + [r['id'] for r in db.execute(
+            "SELECT id FROM users WHERE team_creator_id=?", (owner,)).fetchall()]
+        if uid not in ids:
+            ids.append(uid)
+        return ids
+    return [uid]
 
 
 def _parse_money(value):
@@ -4943,11 +5071,10 @@ def _contact_stats_map(contacts):
     keylist = sorted(keys)
 
     # Scope clause on records (mirrors sms/voice visibility).
-    scope = ''
-    sparams: list = []
+    scope, sparams = _scope_where_unnamed(uid, role)
     if role != 'admin':
-        scope = ' AND (created_by = ? OR created_by IN (SELECT id FROM users WHERE team_creator_id = ?))'
-        sparams = [uid, uid]
+        scope = ' AND (' + scope + ')'
+    sparams = list(sparams)
 
     # Coarse SQL pre-filter: match the last 8 digits with a LIKE wildcard, then
     # exact last-10 matching is done in Python (avoids a full table scan).
@@ -5728,22 +5855,22 @@ def list_sms_records():
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
     search = request.args.get('search', '').strip()
+    scope = request.args.get('scope', 'auto').strip()
     offset = (page - 1) * per_page
     query = ("SELECT r.*, u.username AS sender_username, u.full_name AS sender_full_name, "
              "u.role AS sender_role FROM sms_records r "
              "LEFT JOIN users u ON u.id = r.created_by WHERE 1=1")
     count_query = "SELECT COUNT(*) as total FROM sms_records r WHERE 1=1"
     params = []
-    # Role-based scope filtering
-    if g.user['role'] == 'team_member':
-        query += " AND r.created_by = ?"
-        count_query += " AND created_by = ?"
-        params.append(g.user['id'])
-    elif g.user['role'] == 'team_admin':
-        query += " AND r.created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)"
-        count_query += " AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)"
-        params.extend([g.user['id'], g.user['id']])
-    # admin sees all
+    # Role-based scope filtering: pass scope=own (my own records) or scope=team
+    # (records of the whole managed scope) from the client; auto follows the
+    # per-role rule.
+    mode = scope if scope in ('own', 'team') else 'auto'
+    scope_where, scope_params = _scope_where('r', g.user['id'], g.user['role'], mode)
+    if scope_where != '1=1':
+        query += " AND " + scope_where
+        count_query += " AND " + scope_where.replace('r.created_by', 'created_by')
+        params.extend(scope_params)
     if status:
         query += " AND r.status = ?"
         count_query += " AND status = ?"
@@ -5793,16 +5920,15 @@ def export_sms_records():
     date_to = request.args.get('date_to', '').strip()
     search = request.args.get('search', '').strip()
 
+    scope = request.args.get('scope', 'auto').strip()
+    mode = scope if scope in ('own', 'team') else 'auto'
+
     where = " WHERE 1=1"
     params = []
-    if g.user['role'] == 'team_member':
-        where += " AND r.created_by = ?"
-        params.append(g.user['id'])
-    elif g.user['role'] == 'team_admin':
-        where += (" AND r.created_by IN "
-                  "(SELECT id FROM users WHERE id=? OR team_creator_id=?)")
-        params.extend([g.user['id'], g.user['id']])
-    # admin: no scope restriction
+    scope_where, scope_params = _scope_where('r', g.user['id'], g.user['role'], mode)
+    if scope_where != '1=1':
+        where += " AND " + scope_where
+        params.extend(scope_params)
     if status:
         where += " AND r.status = ?"
         params.append(status)
@@ -6545,20 +6671,17 @@ def get_unified_stats():
         date_params.append(date_to)
 
     # Account filter, validated against the caller's scope:
-    #  - admin may pick any team_admin/team_member account
-    #  - team_admin may pick only themselves or a member they created
+    #  - admin may pick any account
+    #  - team_admin may pick themselves or a member they created
+    #  - custom role (data agent) may pick the whole team that created it
     #  - team_member can only ever see their own account
     if role == 'admin':
-        scope_rows = db.execute(
-            "SELECT id FROM users WHERE role IN ('team_admin','team_member')"
-        ).fetchall()
-    elif role == 'team_admin':
-        scope_rows = db.execute(
-            "SELECT id FROM users WHERE id = ? OR team_creator_id = ?",
-            (user_id, user_id)
-        ).fetchall()
+        scope_rows = db.execute("SELECT id FROM users").fetchall()
     else:
-        scope_rows = [{'id': user_id}]
+        vis_ids = _scope_user_ids(user_id, role)
+        scope_rows = [] if not vis_ids else db.execute(
+            "SELECT id FROM users WHERE id IN ({})".format(','.join(['?'] * len(vis_ids))),
+            vis_ids).fetchall()
     scope_ids = {r['id'] for r in scope_rows}
 
     filter_uid = None
@@ -6595,10 +6718,18 @@ def get_unified_stats():
 
     # 2. My Team stats
     my_team_data = None
-    if role in ('admin', 'team_admin'):
+    team_owner_id = _team_scope_owner_id(user_id, role)
+    can_see_team = role in ('admin', 'team_admin') or team_owner_id is not None
+    if can_see_team:
         # Scope of accounts this manager can see, narrowed down to a single
         # account when a valid user_id filter is provided.
-        if role == 'team_admin':
+        if role == 'admin':
+            team_member_rows = db.execute(
+                "SELECT id FROM users WHERE role IN ('team_admin','team_member')"
+            ).fetchall()
+            team_ids = [r['id'] for r in team_member_rows]
+            team_name_default = 'Todos los Equipos'
+        elif role == 'team_admin':
             team_member_rows = db.execute(
                 "SELECT id FROM users WHERE id = ? OR team_creator_id = ?",
                 (user_id, user_id)
@@ -6609,11 +6740,16 @@ def get_unified_stats():
             if admin_row:
                 team_name_default = f"Equipo de {admin_row['username']}"
         else:
+            # custom role: the whole team of the team_admin that created it
             team_member_rows = db.execute(
-                "SELECT id FROM users WHERE role IN ('team_admin','team_member')"
+                "SELECT id FROM users WHERE id = ? OR team_creator_id = ?",
+                (team_owner_id, team_owner_id)
             ).fetchall()
             team_ids = [r['id'] for r in team_member_rows]
-            team_name_default = 'Todos los Equipos'
+            if user_id not in team_ids:
+                team_ids.append(user_id)
+            oa = db.execute("SELECT username FROM users WHERE id = ?", (team_owner_id,)).fetchone()
+            team_name_default = f"Equipo de {oa['username']}" if oa else 'Mi Equipo'
 
         # Narrow to the selected account if a valid filter was applied.
         if filter_uid is not None and filter_uid in team_ids:
@@ -6930,8 +7066,9 @@ def get_unified_stats():
     users_list = []
     if role == 'admin':
         users_list = db.execute("SELECT id, username, full_name FROM users WHERE role IN ('team_admin','team_member') ORDER BY username").fetchall()
-    elif role == 'team_admin':
-        users_list = db.execute("SELECT id, username, full_name FROM users WHERE id = ? OR team_creator_id = ? ORDER BY username", (user_id, user_id)).fetchall()
+    elif role == 'team_admin' or _team_scope_owner_id(user_id, role):
+        owner = user_id if role == 'team_admin' else _team_scope_owner_id(user_id, role)
+        users_list = db.execute("SELECT id, username, full_name FROM users WHERE id = ? OR team_creator_id = ? ORDER BY username", (owner, owner)).fetchall()
     else:
         users_list = [{'id': user_id, 'username': session.get('username', ''), 'full_name': ''}]
 
@@ -7120,17 +7257,16 @@ def get_team_daily_stats():
     if role == 'admin':
         date_filter = ""
         params = ()
-    elif role == 'team_admin':
-        member_ids = [u['id'] for u in db.execute(
-            "SELECT id FROM users WHERE team_creator_id = ?", (user['id'],)
-        ).fetchall()]
-        member_ids.append(user['id'])
-        placeholders = ','.join('?' * len(member_ids))
-        date_filter = f" AND created_by IN ({placeholders})"
-        params = tuple(member_ids)
     else:
-        date_filter = " AND created_by = ?"
-        params = (user['id'],)
+        member_ids = _scope_user_ids(user_id, role)
+        if member_ids:
+            placeholders = ','.join('?' * len(member_ids))
+            date_filter = f" AND created_by IN ({placeholders})"
+            params = tuple(member_ids)
+        else:
+            # inbox admin-all already handled above; safe fallback to own
+            date_filter = " AND created_by = ?"
+            params = (user_id,)
 
     # Get last 30 days daily stats
     rows = db.execute(f"""
@@ -9041,12 +9177,10 @@ def voice_list_records():
 
     where = ['1=1']
     params = []
-    if g.user['role'] == 'team_member':
-        where.append('r.created_by = ?')
-        params.append(g.user['id'])
-    elif g.user['role'] == 'team_admin':
-        where.append('r.created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)')
-        params.extend([g.user['id'], g.user['id']])
+    scope_where, scope_params = _scope_where('r', g.user['id'], g.user['role'])
+    if scope_where != '1=1':
+        where.append(scope_where)
+        params.extend(scope_params)
     if status:
         where.append('r.status = ?')
         params.append(status)
@@ -9180,12 +9314,10 @@ def voice_hangup_route():
     else:
         where = 'call_sid=?'
         params.append(call_sid)
-    if role == 'team_member':
-        where += ' AND created_by=?'
-        params.append(uid)
-    elif role == 'team_admin':
-        where += ' AND (created_by=? OR created_by IN (SELECT id FROM users WHERE team_creator_id=?))'
-        params.extend([uid, uid])
+    scope_where, scope_params = _scope_where_unnamed(uid, role)
+    if scope_where != '1=1':
+        where += ' AND ' + scope_where
+        params.extend(scope_params)
     row = db.execute(
         "SELECT id, call_sid, extnumber, phone, status, country FROM voice_records WHERE " + where,
         tuple(params)
@@ -10165,16 +10297,9 @@ def email_app_senders_delete(sid):
     return jsonify({'message': 'Direccion de envio eliminada'})
 
 
-def _email_scope_where(user, alias='r'):
-    """Visibility scope for email records, mirroring SMS/voice."""
-    uid = user['id']
-    role = user['role']
-    if role == 'admin':
-        return "1=1", []
-    if role == 'team_admin':
-        return (f"({alias}.created_by = ? OR {alias}.created_by IN "
-                f"(SELECT id FROM users WHERE team_creator_id = ?))"), [uid, uid]
-    return f"{alias}.created_by=?", [uid]
+def _email_scope_where(user, alias='r', mode='auto'):
+    """Visibility scope for email records, mirroring SMS/voice. mode: auto|own|team."""
+    return _scope_where(alias, user['id'], user['role'], mode)
 
 
 # --- Email pricing (facturacion global, no por pais) ---
@@ -11369,7 +11494,9 @@ def email_records_api():
     status = request.args.get('status', '').strip()
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
-    where, params = _email_scope_where(user)
+    scope = request.args.get('scope', 'auto').strip()
+    mode = scope if scope in ('own', 'team') else 'auto'
+    where, params = _email_scope_where(user, 'r', mode)
     if search:
         where += " AND (r.recipient_email LIKE ? OR r.contact_name LIKE ? OR r.subject LIKE ?)"
         params += [f'%{search}%'] * 3

@@ -465,7 +465,7 @@ function showMainApp() {
         state.user.permsConfigured !== true) {
         if (role === 'team_admin') {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'calls', 'email', 'email-records', 'email-replies', 'content-search',
+                     'records', 'calls', 'email', 'email-records', 'email-records-team', 'email-replies', 'content-search',
                      'users', 'my-account', 'my-team', 'all-teams', 'retention'];
         } else {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
@@ -559,7 +559,9 @@ function navigateTo(page) {
         case 'email':
             renderEmailSend(content); break;
         case 'email-records':
-            renderEmailRecords(content); break;
+            renderEmailRecords(content, { scope: 'own', title: 'Mis Registros de Correo' }); break;
+        case 'email-records-team':
+            renderEmailRecords(content, { scope: 'team', title: 'Registros de Correo del Equipo' }); break;
         case 'email-replies':
             renderEmailReplies(content); loadEmailReplies(); break;
         case 'email-config':
@@ -1725,7 +1727,7 @@ async function handleSendSMS() {
 async function renderRecords(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
-        var params = new URLSearchParams({ page: state.records.page, per_page: state.records.perPage });
+        var params = new URLSearchParams({ page: state.records.page, per_page: state.records.perPage, scope: 'own' });
         if (state.records.status) params.set('status', state.records.status);
         if (state.records.dateFrom) params.set('date_from', state.records.dateFrom);
         if (state.records.dateTo) params.set('date_to', state.records.dateTo);
@@ -1748,7 +1750,7 @@ async function renderRecords(container) {
             }).join('');
 
         container.innerHTML =
-            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Envio</h1>' +
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Mis Registros SMS</h1>' +
             '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><div style="display:flex;gap:8px;flex:1;"><input type="text" class="search-input" placeholder="Buscar por numero, nombre, usuario o contenido..." value="' + escapeHtml(state.records.search) + '" onkeyup="handleRecordSearch(event)" style="flex:1;"><button onclick="triggerRecordSearch()" style="padding:8px 16px;background:#2563EB;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Buscar</button></div><select onchange="handleRecordStatusFilter(this.value)"><option value="">Todos los estados</option><option value="delivered"' + (state.records.status==='delivered'?' selected':'') + '>Entregado</option><option value="sent"' + (state.records.status==='sent'?' selected':'') + '>Aceptado</option><option value="failed"' + (state.records.status==='failed'?' selected':'') + '>Fallido</option><option value="pending"' + (state.records.status==='pending'?' selected':'') + '>Pendiente</option><option value="scheduled"' + (state.records.status==='scheduled'?' selected':'') + '>Programado</option></select><input type="date" lang="es" value="' + state.records.dateFrom + '" onchange="handleRecordDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.records.dateTo + '" onchange="handleRecordDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setRecordsToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearRecordsFilters()">Limpiar</button><button class="btn btn-secondary btn-sm" id="records-export-btn" onclick="exportSmsRecords()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Descargar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th title="Segmentos de facturacion (regla por idioma: 70 car. espanol/chino, 160 ingles/indonesio)">Segm.</th><th>Detalles API</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'records') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
@@ -1781,6 +1783,7 @@ async function exportSmsRecords() {
     try {
         if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'wait'; }
         const params = new URLSearchParams();
+        params.set('scope', 'own');
         if (state.records.status) params.set('status', state.records.status);
         if (state.records.dateFrom) params.set('date_from', state.records.dateFrom);
         if (state.records.dateTo) params.set('date_to', state.records.dateTo);
@@ -1821,7 +1824,7 @@ if (!state.contentSearch) state.contentSearch = { keyword: '', dateFrom: DEFAULT
 async function renderContentSearch(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
-        var params = new URLSearchParams({ page: state.contentSearch.page, per_page: state.contentSearch.perPage });
+        var params = new URLSearchParams({ page: state.contentSearch.page, per_page: state.contentSearch.perPage, scope: 'team' });
         if (state.contentSearch.keyword) params.set('search', state.contentSearch.keyword);
         if (state.contentSearch.dateFrom) params.set('date_from', state.contentSearch.dateFrom);
         if (state.contentSearch.dateTo) params.set('date_to', state.contentSearch.dateTo);
@@ -2074,6 +2077,8 @@ var PERM_ITEMS = [
     { key: 'templates', label: 'Plantillas', icon: 'file' },
     { key: 'send', label: 'Enviar SMS', icon: 'send' },
     { key: 'records', label: 'Registros SMS', icon: 'activity' },
+    { key: 'email-records', label: 'Registros de Correo', icon: 'mail' },
+    { key: 'email-records-team', label: 'Correos del Equipo', icon: 'mail' },
     { key: 'calls', label: 'Llamadas (Voz)', icon: 'phone' },
     { key: 'content-search', label: 'Buscar Contenido', icon: 'search' },
     { key: 'users', label: 'Usuarios', icon: 'user-plus' },
@@ -5178,9 +5183,11 @@ function pollEmailJob(jobId) {
     emailJobTimers[jobId] = setInterval(tick, 4000);
 }
 
-async function renderEmailRecords(container) {
+async function renderEmailRecords(container, opts) {
+    state.emailRecordsScope = (opts && opts.scope) || 'own';
+    state.emailRecordsTitle = (opts && opts.title) || 'Mis Registros de Correo';
     container.innerHTML =
-        '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Registros de Correo</h1>' +
+        '<h1 class="mb-4" style="font-size:22px;font-weight:700;">' + escapeHtml(state.emailRecordsTitle) + '</h1>' +
         '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;">' +
             '<input type="text" class="search-input" placeholder="Buscar correo, nombre o asunto..." value="' + escapeHtml(state.emailRecords.search) + '" onkeydown="if(event.key===\'Enter\')triggerEmailRecordSearch()" style="flex:1;min-width:200px;">' +
             '<button class="btn btn-primary btn-sm" onclick="triggerEmailRecordSearch()">Buscar</button>' +
@@ -5197,6 +5204,7 @@ function emailRecordQuery() {
     var s = state.emailRecords;
     var p = new URLSearchParams();
     p.set('page', s.page); p.set('per_page', 20);
+    p.set('scope', state.emailRecordsScope || 'own');
     if (s.search) p.set('search', s.search);
     if (s.status) p.set('status', s.status);
     if (s.dateFrom) p.set('date_from', s.dateFrom);
@@ -5241,7 +5249,9 @@ function clearEmailRecordFilters() { state.emailRecords = { page: 1, search: '',
 // Re-render current records page after a filter reset/today action
 function navigateRefreshSafe() {
     var c = document.getElementById('page-content');
-    if ((location.hash || '').indexOf('email-records') >= 0) renderEmailRecords(c);
+    var h = (location.hash || '');
+    if (h.indexOf('email-records-team') >= 0) renderEmailRecords(c, { scope: 'team', title: 'Registros de Correo del Equipo' });
+    else if (h.indexOf('email-records') >= 0) renderEmailRecords(c);
     else loadEmailRecords();
 }
 
