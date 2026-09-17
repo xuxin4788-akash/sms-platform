@@ -1839,3 +1839,20 @@ button.var-chip:active {
 .reply-detail { padding: 16px 20px; border-top: 1px solid #E2E8F0; }
 .reply-meta-line { display: flex; flex-wrap: wrap; gap: 18px; font-size: 13px; color: #475569; margin-bottom: 8px; }
 .reply-body { margin-top: 10px; padding: 12px 14px; background-color: #fff; border: 1px solid #E2E8F0; border-radius: 10px; font-size: 14px; color: #1E293B; line-height: 1.55; white-space: normal; }
+
+/* Email reply -> contact association (m121) */
+.reply-contact-line {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin: 8px 0;
+  padding: 8px 10px; border-radius: 8px; background: var(--bg-soft, #f5f7fb);
+}
+.reply-contact-linked { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.reply-contact-modal { max-width: 520px; width: 92%; }
+.rc-picker-list { max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.rc-pick-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--border, #e3e7ef); border-radius: 8px;
+}
+.rc-pick-item:hover { background: var(--bg-soft, #f5f7fb); }
+.rc-pick-info { min-width: 0; }
+.rc-pick-info .text-muted { font-size: 12.5px; word-break: break-all; }

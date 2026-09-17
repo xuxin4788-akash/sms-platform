@@ -620,6 +620,7 @@ def init_db():
                 body TEXT DEFAULT '',
                 original_record_id INTEGER REFERENCES email_records(id) ON DELETE SET NULL,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
                 is_read BOOLEAN NOT NULL DEFAULT FALSE,
                 message_id VARCHAR(500) DEFAULT '',
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -882,6 +883,10 @@ def init_db():
             EXCEPTION WHEN OTHERS THEN NULL; END $$;""")
         # 'completed_with_errors' is 21 chars; the original VARCHAR(20) truncated it on PostgreSQL.
         cur.execute("ALTER TABLE email_jobs ALTER COLUMN status TYPE VARCHAR(30)")
+
+        # email_replies: optional link to the contact who wrote back.
+        if not pg_column_exists('email_replies', 'contact_id'):
+            cur.execute("ALTER TABLE email_replies ADD COLUMN contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL")
 
         # sms_api_configs: per-country SMS unit price (facturacion por pais).
         if not pg_column_exists('sms_api_configs', 'unit_price'):
@@ -1291,11 +1296,13 @@ def init_db():
                 body TEXT DEFAULT '',
                 original_record_id INTEGER,
                 created_by INTEGER,
+                contact_id INTEGER,
                 is_read INTEGER NOT NULL DEFAULT 0,
                 message_id TEXT DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (original_record_id) REFERENCES email_records(id) ON DELETE SET NULL,
-                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS templates (
@@ -1993,6 +2000,28 @@ def init_db():
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                 )''')
+            # email_replies table (created for new DBs above; ensure it exists on old DBs too).
+            db.execute('''
+                CREATE TABLE IF NOT EXISTS email_replies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender_email TEXT NOT NULL,
+                    sender_name TEXT DEFAULT '',
+                    recipient_email TEXT DEFAULT '',
+                    subject TEXT DEFAULT '',
+                    body TEXT DEFAULT '',
+                    original_record_id INTEGER,
+                    created_by INTEGER,
+                    contact_id INTEGER,
+                    is_read INTEGER NOT NULL DEFAULT 0,
+                    message_id TEXT DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (original_record_id) REFERENCES email_records(id) ON DELETE SET NULL,
+                    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                    FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL
+                )''')
+            rp_cols = [row[1] for row in db.execute("PRAGMA table_info(email_replies)").fetchall()]
+            if 'contact_id' not in rp_cols:
+                db.execute("ALTER TABLE email_replies ADD COLUMN contact_id INTEGER")
             db.execute('''
                 CREATE TABLE IF NOT EXISTS email_jobs (
                     job_id TEXT PRIMARY KEY,
@@ -10478,14 +10507,30 @@ def _store_email_reply(db, info):
             (sender,)).fetchone()
     original_record_id = orig['id'] if orig else None
     created_by = orig['created_by'] if orig else None
+    # Auto-link the contact whose email matches the reply sender. Prefer a
+    # contact owned by the same account that sent the original email; with no
+    # owner match, take the unique/most recent matching contact.
+    contact_id = None
+    cands = db.execute(
+        "SELECT id, created_by FROM contacts WHERE LOWER(email)=? AND email<>'' "
+        "ORDER BY id DESC",
+        (sender,)).fetchall()
+    if cands:
+        if created_by is not None:
+            for c in cands:
+                if c['created_by'] == created_by:
+                    contact_id = c['id']
+                    break
+        if contact_id is None:
+            contact_id = cands[0]['id']
     now = datetime.now()
     cur = db.execute(
         "INSERT INTO email_replies (sender_email, sender_name, recipient_email, subject, body, "
-        "original_record_id, created_by, is_read, message_id, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "original_record_id, created_by, contact_id, is_read, message_id, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (info['sender_email'], info['sender_name'], info['recipient_email'],
          info['subject'][:500], info['body'], original_record_id, created_by,
-         False, info['message_id'], now))
+         contact_id, False, info['message_id'], now))
     db.commit()
     return getattr(cur, 'lastrowid', None)
 
@@ -10578,10 +10623,13 @@ def email_replies_api():
     rows = db.execute(
         "SELECT x.*, er.subject AS original_subject, er.sent_at AS original_sent_at, "
         "er.created_at AS original_created_at, er.from_email AS original_from_email, "
-        "er.app_name AS original_app_name, uu.username AS sent_by_username "
+        "er.app_name AS original_app_name, uu.username AS sent_by_username, "
+        "ct.name AS contact_name, ct.phone AS contact_phone, ct.email AS contact_email, "
+        "ct.app_name AS contact_app "
         "FROM email_replies x "
         "LEFT JOIN email_records er ON er.id = x.original_record_id "
         "LEFT JOIN users uu ON uu.id = er.created_by "
+        "LEFT JOIN contacts ct ON ct.id = x.contact_id "
         f"WHERE {where} ORDER BY x.id DESC LIMIT ? OFFSET ?",
         params + [per_page, offset]).fetchall()
     unread = db.execute(
@@ -10620,6 +10668,79 @@ def email_reply_mark_read(reply_id):
     db.execute("UPDATE email_replies SET is_read=? WHERE id=?", (new_val, reply_id))
     db.commit()
     return jsonify({'message': 'ok', 'is_read': new_val})
+
+
+def _reply_visible_or_404(db, user, reply_id):
+    """Return the reply row iff the current user may see it, else (None, error response)."""
+    row = db.execute("SELECT * FROM email_replies WHERE id=?", (reply_id,)).fetchone()
+    if not row:
+        return None, (jsonify({'error': 'Respuesta no encontrada'}), 404)
+    where, params = _email_scope_where(user, 'x')
+    allowed = db.execute(
+        f"SELECT 1 AS ok FROM email_replies x WHERE x.id=? AND {where}",
+        [reply_id] + params).fetchone()
+    if not allowed:
+        return None, (jsonify({'error': 'No autorizado'}), 403)
+    return row, None
+
+
+@app.route('/api/email/replies/<int:reply_id>/contacts', methods=['GET'])
+@login_required
+def email_reply_contact_candidates(reply_id):
+    """Search visible contacts to manually associate with a reply.
+
+    Without ?q= it returns contacts whose email exactly matches the reply
+    sender (the auto-match candidates). With q= it searches name/phone/email.
+    """
+    db = get_db()
+    row, err = _reply_visible_or_404(db, g.user, reply_id)
+    if err:
+        return err
+    q = request.args.get('q', '').strip()
+    where, params = _contact_visible_where("c")
+    if q:
+        where += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?)"
+        params += [f'%{q}%'] * 3
+    else:
+        sender = (row['sender_email'] or '').strip().lower()
+        where += " AND c.email<>'' AND LOWER(c.email)=?"
+        params.append(sender)
+    cands = db.execute(
+        "SELECT c.id, c.name, c.phone, c.email, c.app_name "
+        "FROM contacts c WHERE " + where + " ORDER BY c.id DESC LIMIT 50",
+        params).fetchall()
+    return jsonify({'contacts': [dict(c) for c in cands]})
+
+
+@app.route('/api/email/replies/<int:reply_id>/contact', methods=['POST', 'DELETE'])
+@login_required
+def email_reply_link_contact(reply_id):
+    """Link (POST body {contact_id}) or unlink (DELETE) the reply's contact."""
+    db = get_db()
+    row, err = _reply_visible_or_404(db, g.user, reply_id)
+    if err:
+        return err
+    if request.method == 'DELETE':
+        db.execute("UPDATE email_replies SET contact_id=NULL WHERE id=?", (reply_id,))
+        db.commit()
+        return jsonify({'message': 'ok', 'contact_id': None})
+    body = request.get_json(silent=True) or {}
+    contact_id = body.get('contact_id')
+    if contact_id in (None, ''):
+        return jsonify({'error': 'contact_id requerido'}), 400
+    try:
+        contact_id = int(contact_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'contact_id invalido'}), 400
+    cwhere, cparams = _contact_visible_where("c")
+    contact = db.execute(
+        "SELECT c.id, c.name, c.phone, c.email, c.app_name FROM contacts c WHERE c.id=? AND "
+        + cwhere, [contact_id] + cparams).fetchone()
+    if not contact:
+        return jsonify({'error': 'Contacto no encontrado o no autorizado'}), 404
+    db.execute("UPDATE email_replies SET contact_id=? WHERE id=?", (contact_id, reply_id))
+    db.commit()
+    return jsonify({'message': 'ok', 'contact': dict(contact)})
 
 
 @app.route('/api/email/records', methods=['GET'])
