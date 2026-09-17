@@ -4275,6 +4275,25 @@ function _countryLabel(code) {
     return VOICE_COUNTRY_LABELS[(code || '').toLowerCase()] || code || 'Pais';
 }
 
+// Friendly heading for the fallback block holding legacy rows with no country.
+var UNIFIED_EXTRA_LABEL = 'Otros';
+
+// Some legacy SMS configs stored an empty/non-ISO `country`. Infer the ISO
+// code from the config name (Mexico/Colombia/Peru/... ) so those rows are not
+// dropped and still show under the right country block on the unified page.
+function _countryFromNameOrCode(code, name) {
+    var k = (code || '').toString().trim().toUpperCase();
+    if (k) return k;
+    var n = (name || '').toString().trim().toLowerCase();
+    for (var i = 0; i < UNIFIED_CONFIG_ORDER.length; i++) {
+        if (UNIFIED_CONFIG_ORDER[i].label.toLowerCase() === n) return UNIFIED_CONFIG_ORDER[i].code;
+    }
+    for (var vk in VOICE_COUNTRY_LABELS) {
+        if (String(VOICE_COUNTRY_LABELS[vk]).toLowerCase() === n) return vk.toUpperCase();
+    }
+    return '';
+}
+
 async function addVoiceConfigForCountry(country, countryLabel) {
     if (!confirm('Crear la configuracion de Voz (Infinity) para ' + countryLabel + ' (' + country + ')?')) return;
     try {
@@ -4308,34 +4327,44 @@ async function renderUnifiedConfig(container) {
         var smsConfigs = (res[0].configs || []).slice();
         var voiceConfigs = (res[1].configs || []).slice();
 
-        // Index by country (case-insensitive, first wins).
+        // Index by country (case-insensitive, first wins). Fall back to the
+        // config name when country is empty so legacy rows are not dropped.
         var smsByCountry = {};
-        smsConfigs.forEach(function(c) { var k = (c.country || '').toUpperCase(); if (!smsByCountry[k]) smsByCountry[k] = c; });
+        smsConfigs.forEach(function(c) {
+            var k = _countryFromNameOrCode(c.country, c.name);
+            if (!k) k = '_extra';
+            if (!smsByCountry[k]) smsByCountry[k] = c;
+        });
         var voiceByCountry = {};
-        voiceConfigs.forEach(function(c) { var k = (c.country || '').toUpperCase(); if (!voiceByCountry[k]) voiceByCountry[k] = c; });
+        voiceConfigs.forEach(function(c) {
+            var k = _countryFromNameOrCode(c.country, c.name);
+            if (!k) k = '_extra';
+            if (!voiceByCountry[k]) voiceByCountry[k] = c;
+        });
 
         // Union of countries, ordered: canonical list first, then any SMS extras.
         var countries = [];
         var seen = {};
         var pushCc = function(code) {
             code = (code || '').toUpperCase();
-            if (!code || seen[code]) return;
+            if (!code) code = '_extra';
+            if (seen[code]) return;
             seen[code] = true;
             countries.push(code);
         };
         UNIFIED_CONFIG_ORDER.forEach(function(x) { pushCc(x.code); });
-        smsConfigs.forEach(function(c) { pushCc(c.country); });
-        voiceConfigs.forEach(function(c) { pushCc(c.country); });
+        smsConfigs.forEach(function(c) { pushCc(_countryFromNameOrCode(c.country, c.name)); });
+        voiceConfigs.forEach(function(c) { pushCc(_countryFromNameOrCode(c.country, c.name)); });
 
         var countryBlocks = countries.map(function(cc) {
-            var label = _countryLabel(cc);
+            var label = cc === '_extra' ? UNIFIED_EXTRA_LABEL : _countryLabel(cc);
             var sms = smsByCountry[cc];
             var voice = voiceByCountry[cc];
             var smsHtml = sms ? _smsConfigCardHtml(sms)
                 : '<div class="card mb-3" style="border-style:dashed;"><div class="card-body"><h3 style="margin:0;margin-bottom:4px;">SMS <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><p class="text-secondary" style="font-size:13px;margin-bottom:12px;">Sin configuracion SMS para ' + escapeHtml(label) + '.</p><button type="button" class="btn btn-outline btn-sm" onclick="addSmsConfigForCountry(\'' + escapeHtml(cc) + '\', \'' + escapeHtml(label) + '\')">+ Crear configuracion SMS</button></div></div>';
             var voiceHtml = voice ? _voiceConfigCardHtml(voice)
                 : '<div class="card mb-3" style="border-style:dashed;"><div class="card-body"><h3 style="margin:0;margin-bottom:4px;">Voz (电呼) <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><p class="text-secondary" style="font-size:13px;margin-bottom:12px;">Sin configuracion de Voz para ' + escapeHtml(label) + '.</p><button type="button" class="btn btn-outline btn-sm" onclick="addVoiceConfigForCountry(\'' + escapeHtml(cc) + '\', \'' + escapeHtml(label) + '\')">+ Crear configuracion de Voz</button></div></div>';
-            return '<div class="card mb-4" style="border:1px solid var(--border,#E2E8F0);"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><h3 style="margin:0;">' + escapeHtml(label) + ' <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><span class="badge badge-secondary" style="margin-left:auto;">SMS + Voz</span></div><div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">' + '<div>' + smsHtml + '</div>' + '<div>' + voiceHtml + '</div>' + '</div></div>';
+            return '<div class="card mb-4" style="border:1px solid var(--border,#E2E8F0);"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><h3 style="margin:0;">' + escapeHtml(label) + ' <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><span class="badge badge-secondary" style="margin-left:auto;">SMS + Voz</span></div><div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">' + (sms || voice ? '<div>' + smsHtml + '</div>' + '<div>' + voiceHtml + '</div>' : '<div class="text-secondary">Sin configuraciones para este pais.</div>') + '</div></div>';
         }).join('');
 
         // Email block reuses the existing renderer (separate section).
