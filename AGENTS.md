@@ -13,9 +13,9 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 - **Deployment**: Docker + docker-compose (PostgreSQL + Gunicorn + Nginx)
 
 ## Git Workflow (SINGLE-TRACK, AUTO-PUSH)
-- **唯一主干分支为 `develop`，不使用任何分支/功能线**：所有功能、修复、文档一律直接提交到 `develop`（不创建、不切换、不保留任何其他分支）。
-- **Every code change MUST be committed AND pushed to `origin/develop` automatically** — do not wait for the user to ask.
-- After finalizing any change and passing validation, `git push origin develop` is mandatory before reporting completion.
+- **唯一主干分支为 `main`，不使用任何分支/功能线**：所有功能、修复、文档一律直接提交到 `main`（不创建、不切换、不保留任何其他分支）。`develop` 分支已废弃删除。
+- **Every code change MUST be committed AND pushed to `origin/main` automatically** — do not wait for the user to ask.
+- After finalizing any change and passing validation, `git push origin main` is mandatory before reporting completion. This also triggers the production webhook auto-deploy.
 ```
 .
 ├── app.py                 # Main Flask application (all routes + DB abstraction)
