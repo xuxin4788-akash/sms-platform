@@ -4502,7 +4502,7 @@ AVAILABLE_PAGES = [
     {'id': 'config', 'label': 'Configuracion API SMS', 'icon': 'settings'},
     {'id': 'voice-config', 'label': 'Configuracion Voz', 'icon': 'settings'},
     {'id': 'retention', 'label': 'Retencion de Contactos', 'icon': 'shield'},
-    {'id': 'email-pricing', 'label': 'Precios de Correo', 'icon': 'mail'},
+    {'id': 'email-pricing', 'label': 'Facturacion', 'icon': 'mail'},
 ]
 
 # Default permissions per role when the role_permissions table has no explicit

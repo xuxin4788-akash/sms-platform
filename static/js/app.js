@@ -5170,17 +5170,42 @@ async function renderEmailConfig(container) {
 async function renderEmailPricing(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
-        var data = await api('/api/config/email/pricing');
-        var unit = (data.unit_price != null ? data.unit_price : 0);
+        var [pData, smsData, billing] = await Promise.all([
+            api('/api/config/email/pricing'),
+            api('/api/config/sms'),
+            api('/api/settings/billing').catch(function() { return { sms_unit_price: 0 }; })
+        ]);
+        window._smsPricingConfigs = smsData.configs || [];
+        var emailUnit = (pData.unit_price != null ? pData.unit_price : 0);
+        var smsDefault = (billing && billing.sms_unit_price != null) ? billing.sms_unit_price : 0;
+        var smsConfigs = window._smsPricingConfigs;
+        var smsRows = smsConfigs.length ? smsConfigs.map(function(c) {
+            var cty = escapeHtml(c.country || 'pais');
+            return '<tr>' +
+                '<td><strong>' + cty + '</strong></td>' +
+                '<td style="white-space:nowrap;"><input type="number" step="any" min="0" id="sp-sms-' + c.id + '" value="' + (c.unit_price != null ? c.unit_price : 0) + '" style="max-width:160px;"></td>' +
+                '<td class="text-right" style="white-space:nowrap;"><button class="btn btn-primary btn-sm" onclick="saveSmsCountryPricing(' + c.id + ')">Guardar</button></td></tr>';
+        }).join('') : '<tr><td colspan="3" class="text-center text-secondary" style="padding:18px;">Sin configuraciones SMS. Agregue una en <a href="#/config">Configuraciones API SMS</a> para fijar su precio por pais.</td></tr>';
         container.innerHTML =
-            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Precio de Correo (facturacion global)</h1>' +
-            '<div class="alert alert-info" style="margin-bottom:16px;">Cada correo <strong>enviado de verdad</strong> (no simulado) se factura una vez al precio unitario global. Costo = cant. de correos enviados x precio unitario.</div>' +
-            '<div class="card mb-4"><div class="card-body">' +
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Facturacion (SMS y Correo)</h1>' +
+            '<div class="card mb-4"><div class="card-header"><h2 style="margin:0;">Correo (facturacion global)</h2></div><div class="card-body">' +
+                '<p class="text-secondary" style="margin-bottom:14px;">Cada correo <strong>enviado de verdad</strong> (no simulado) se factura una vez al precio unitario global. Costo = cant. de correos enviados x precio unitario.</p>' +
                 '<div class="form-row" style="display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:end;">' +
-                  '<div class="form-group"><label>Precio por correo</label><input id="ep-price" type="number" step="any" min="0" value="' + unit + '" style="max-width:220px;"></div>' +
+                  '<div class="form-group"><label>Precio por correo</label><input id="ep-price" type="number" step="any" min="0" value="' + emailUnit + '" style="max-width:220px;"></div>' +
                   '<div><button class="btn btn-primary" onclick="saveEmailPricing()">Guardar</button></div>' +
                 '</div>' +
                 '<div id="ep-msg" style="margin-top:10px;"></div>' +
+            '</div></div>' +
+            '<div class="card mb-4"><div class="card-header"><h2 style="margin:0;">SMS (facturacion por pais)</h2></div><div class="card-body">' +
+                '<p class="text-secondary" style="margin-bottom:14px;">El costo por SMS se factura por <strong>segmento</strong> segun el idioma (espanol/chino 70 caracteres, ingles/indonesio 160) y se usa el <strong>precio configurado en el pais de cada cuenta</strong>. Se refleja en Mi Cuenta, Mi Equipo y Todos los Equipos.</p>' +
+                '<div style="overflow-x:auto;margin-bottom:16px;"><table class="data-table"><thead><tr>' +
+                  '<th>Pais</th><th>Precio por SMS</th><th class="text-right">Accion</th>' +
+                '</tr></thead><tbody>' + smsRows + '</tbody></table></div>' +
+                '<div class="form-row" style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:end;border-top:1px solid var(--border-color,#E2E8F0);padding-top:16px;">' +
+                  '<div class="form-group"><label>Costo global por defecto (por SMS facturado)</label><input id="sms-unit-price" type="number" step="any" min="0" value="' + smsDefault + '" style="max-width:220px;"></div>' +
+                  '<div><button class="btn btn-primary" onclick="saveSmsDefaultPrice()">Guardar</button></div>' +
+                '</div>' +
+                '<div id="sp-msg" style="margin-top:10px;"></div>' +
             '</div></div>';
     } catch (e) {
         container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
@@ -5194,6 +5219,40 @@ async function saveEmailPricing() {
     try {
         await api('/api/config/email/pricing', { method: 'POST', body: { unit_price: input.value } });
         if (msg) msg.innerHTML = '<div class="alert alert-success">Precio actualizado.</div>';
+        renderEmailPricing(document.getElementById('page-content'));
+    } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
+}
+
+async function saveSmsCountryPricing(configId) {
+    var msg = document.getElementById('sp-msg');
+    if (msg) msg.innerHTML = '';
+    var input = document.getElementById('sp-sms-' + configId);
+    if (!input) return;
+    var cfg = (window._smsPricingConfigs || []).filter(function(c) { return c.id === configId; })[0];
+    if (!cfg) return;
+    var price = parseFloat(input.value);
+    if (isNaN(price) || price < 0) { if (msg) msg.innerHTML = '<div class="alert alert-error">Ingrese un precio por SMS valido.</div>'; return; }
+    try {
+        await api('/api/config/sms/' + configId, { method: 'PUT', body: {
+            name: cfg.name, country: cfg.country, domain: cfg.domain || '',
+            spid: cfg.spid || '', api_pwd: cfg.api_pwd || '', sender_name: cfg.sender_name || '',
+            unit_price: price, is_active: true
+        }});
+        if (msg) msg.innerHTML = '<div class="alert alert-success">Precio por SMS (' + escapeHtml(cfg.country) + ') actualizado.</div>';
+        renderEmailPricing(document.getElementById('page-content'));
+    } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
+}
+
+async function saveSmsDefaultPrice() {
+    var msg = document.getElementById('sp-msg');
+    if (msg) msg.innerHTML = '';
+    var input = document.getElementById('sms-unit-price');
+    if (!input) return;
+    var val = parseFloat(input.value);
+    if (isNaN(val) || val < 0) { if (msg) msg.innerHTML = '<div class="alert alert-error">Ingrese un costo valido.</div>'; return; }
+    try {
+        await api('/api/settings/billing', { method: 'PUT', body: { sms_unit_price: val } });
+        if (msg) msg.innerHTML = '<div class="alert alert-success">Costo global por SMS actualizado.</div>';
         renderEmailPricing(document.getElementById('page-content'));
     } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
 }
