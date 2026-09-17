@@ -566,6 +566,9 @@ function navigateTo(page) {
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
             _configPageMode = 'sms';
             renderEmailConfig(content); break;
+        case 'email-senders':
+            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            renderEmailSendersPage(content); break;
         case 'email-pricing':
             if (state.user.role !== 'admin') { renderDashboard(content); break; }
             renderEmailPricing(content); break;
@@ -2062,6 +2065,7 @@ var PERM_ITEMS = [
     { key: 'my-team', label: 'Mi Equipo', icon: 'users' },
     { key: 'all-teams', label: 'Todos los Equipos', icon: 'bar-chart' },
     { key: 'api-config', label: 'Configuracion de APIs', icon: 'settings' },
+    { key: 'email-senders', label: 'Direcciones envio por APP', icon: 'mail' },
     { key: 'extensions', label: 'Extensiones', icon: 'phone' },
     { key: 'retention', label: 'Retencion de Contactos', icon: 'shield' },
     { key: 'team-api-select', label: 'Seleccionar API de Equipo', icon: 'server' }
@@ -3196,6 +3200,7 @@ function refreshConfigPage() {
 function refreshEmailConfigPage() {
     var content = document.getElementById('page-content');
     if (_configPageMode === 'unified') { renderUnifiedConfig(content); return; }
+    if (_configPageMode === 'email-senders') { renderEmailSendersPage(content); return; }
     renderEmailConfig(content);
 }
 
@@ -5333,10 +5338,9 @@ async function renderEmailConfig(container) {
     try {
         var results = await Promise.all([
             api('/api/config/email/providers'),
-            api('/api/config/email').catch(function() { return { configured: false }; }),
-            api('/api/config/email/senders').catch(function() { return { senders: [], default_from_email: '' }; })
+            api('/api/config/email').catch(function() { return { configured: false }; })
         ]);
-        var prov = results[0], cfg = results[1] || {}, sendersData = results[2] || {};
+        var prov = results[0], cfg = results[1] || {};
         window._emailProviders = prov.providers || [];
         cfg = cfg || {};
         var provOpts = window._emailProviders.map(function(p) {
@@ -5370,7 +5374,10 @@ async function renderEmailConfig(container) {
                 '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="submit" class="btn btn-primary">Guardar configuracion</button><button type="button" class="btn btn-secondary" onclick="handleTestEmailConfig()">Enviar correo de prueba</button></div>' +
               '</form>' +
             '</div></div>' +
-            renderEmailSendersCard(sendersData) +
+            '<div class="card mb-4" style="border-style:dashed;"><div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">' +
+              '<div><h3 style="margin:0;margin-bottom:4px;">Direcciones de envio por APP</h3><p class="text-secondary text-sm" style="margin:0;">Cada APP puede enviar desde su propio correo remitente. Se gestiona en su propia pagina.</p></div>' +
+              '<a class="btn btn-primary btn-sm" href="#/email-senders">Gestionar direcciones por APP</a>' +
+            '</div></div>' +
             '<div class="card"><div class="card-body"><h3 style="margin-bottom:8px;">Proveedores soportados</h3><p class="text-secondary text-sm" style="margin-bottom:8px;">Microsoft 365 / Google Workspace usan autenticacion de aplicacion: en Google activa la verificacion en 2 pasos y crea una "contrasena de aplicacion"; en Microsoft usa una cuenta con SMTP AUTH habilitado. Amazon SES, Mailgun y SendGrid generan credenciales SMTP dedicadas en su consola.</p></div></div>';
     } catch (e) {
         container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
@@ -5497,6 +5504,20 @@ async function deleteSmsPricing(configId) {
         if (msg) msg.innerHTML = '<div class="alert alert-success">Precio por SMS eliminado.</div>';
         renderEmailPricing(document.getElementById('page-content'));
     } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
+}
+
+function renderEmailSendersPage(container) {
+    _configPageMode = 'email-senders';
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    api('/api/config/email/senders').then(function(data) {
+        data = data || {};
+        container.innerHTML =
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Direcciones de envio por APP</h1>' +
+            '<div class="alert alert-info mb-3"><div class="card-body" style="padding:12px;">Cada APP se configura con su propio correo remitente. Las APP sin una direccion asignada usan el remitente global del SMTP.</div></div>' +
+            renderEmailSendersCard(data);
+    }).catch(function(e) {
+        container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
+    });
 }
 
 function renderEmailSendersCard(data) {
