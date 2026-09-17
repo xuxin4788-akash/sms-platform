@@ -3261,14 +3261,38 @@ def logout():
 @login_required
 def get_me():
     db = get_db()
-    # Get permissions from role_permissions table
+    # Permissions resolution: per-user overrides (assigned by an admin via the
+    # user page) -> role_permissions -> role defaults.
     permissions = []
     perms_configured = True
+    import json as _json
+    user_perms = []
+    has_user_config = False
+    try:
+        urow = db.execute("SELECT permissions FROM users WHERE id=?", (g.user['id'],)).fetchone()
+        if urow:
+            _pu = urow['permissions']
+            if isinstance(_pu, (list, dict)):
+                user_perms = _pu if isinstance(_pu, list) else []
+                has_user_config = True
+            else:
+                _pu = _pu or ''
+                if _pu:
+                    try:
+                        user_perms = _json.loads(_pu) if _pu else []
+                        has_user_config = bool(_pu)
+                    except Exception:
+                        user_perms = []
+    except Exception:
+        user_perms = []
     try:
         role = g.user['role']
         if role == 'admin':
             # Admin always has all permissions
             permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'api-config', 'email-senders', 'extensions', 'email', 'email-records', 'email-config', 'retention', 'role-permissions']
+            perms_configured = True
+        elif has_user_config:
+            permissions = user_perms or []
             perms_configured = True
         else:
             # Get permissions from role_permissions table
@@ -3531,7 +3555,7 @@ def list_users():
 
     # Base query with team creator name and category
     base_select = """
-        SELECT u.id, u.username, u.full_name, u.role, u.team_creator_id,
+        SELECT u.id, u.username, u.full_name, u.role, u.permissions, u.team_creator_id,
                u.is_active, u.created_at, u.updated_at,
                u.last_login_ip, u.last_login_at, u.extnumber, u.country,
                u.category_id,
@@ -3612,9 +3636,9 @@ def create_user():
         return jsonify({'error': 'La contrasena debe tener minimo 6 caracteres'}), 400
     # Role assignment rules
     if current['role'] == 'admin':
-        # System admin can only create team_admin
-        if role != 'team_admin':
-            return jsonify({'error': 'El Administrador del Sistema solo puede crear Administradores de Equipo'}), 400
+        # System admin can create team_admins or team members (e.g. data analysts)
+        if role not in ('team_admin', 'team_member'):
+            return jsonify({'error': 'El Administrador del Sistema solo puede crear Administradores de Equipo o Miembros de Equipo'}), 400
         team_creator_id = None
     elif current['role'] == 'team_admin':
         # Team admin can only create team_member

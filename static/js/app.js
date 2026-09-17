@@ -1890,7 +1890,7 @@ async function renderUsers(container) {
             var bulkDeletable = canEdit;
             var checkbox = bulkDeletable ? '<input type="checkbox" class="user-row-check" data-id="' + u.id + '" data-username="' + escapeHtml(u.username) + '" onchange="onBulkUserSelect()" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;">' : '';
             var editBtn = canEdit ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="showEditUserModal(' + u.id + ')" title="Editar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>' : '';
-            var roleBtn = (myRole === 'admin' && u.role !== 'admin') ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="showRoleModal(' + u.id + ', \'' + u.role + '\')" title="Cambiar Rol" style="color:var(--primary);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg></button>' : '';
+            var roleBtn = (myRole === 'admin' && u.role !== 'admin') ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="showPermModal(' + u.id + ')" title="Asignar Permisos" style="color:var(--primary);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg></button>' : '';
             var deleteBtn = canEdit ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="deleteUser(' + u.id + ')" title="Eliminar" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>' : '';
             var teamCell = u.team_affiliation ? '<span class="text-sm">' + escapeHtml(u.team_affiliation) + '</span>' : '<span class="text-sm text-secondary">-</span>';
             var extCell = u.extnumber ? '<span class="badge badge-blue" title="Extension/telefono fijo asignado">' + escapeHtml(u.extnumber) + '</span>' : '<span class="text-sm text-secondary">-</span>';
@@ -1933,12 +1933,12 @@ async function showAddUserModal() {
     var myRole = state.user.role;
     var roleOptions = '';
     if (myRole === 'admin') {
-        roleOptions = '<option value="team_admin">Administrador de Equipo</option>';
+        roleOptions = '<option value="team_admin">Administrador de Equipo</option><option value="team_member">Miembro de Equipo</option>';
     } else if (myRole === 'team_admin') {
         roleOptions = '<option value="team_member">Miembro de Equipo</option>';
     }
     var infoText = myRole === 'admin'
-        ? 'Se creara un Administrador de Equipo que podra gestionar sus propios miembros.'
+        ? 'Se creara un Administrador de Equipo o un Miembro de Equipo (todas las cuentas son gestionadas por el sistema).'
         : 'Se creara un Miembro de Equipo bajo tu gestion.';
     // Fetch API configs for team_admin creation
     var apiConfigHtml = '';
