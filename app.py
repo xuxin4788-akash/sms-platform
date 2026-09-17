@@ -6177,7 +6177,7 @@ def get_user_usage():
             u.role,
             u.is_active,
             u.team_creator_id,
-            COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
+            COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) as sent,
             COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
             COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
             COALESCE(COUNT(r.id), 0) as total,
@@ -6256,7 +6256,7 @@ def get_user_usage():
     summary = db.execute(f"""
         SELECT
             COUNT(*) as total_users,
-            COALESCE(SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END), 0) as total_sent,
+            COALESCE(SUM(CASE WHEN status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) as total_sent,
             COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0) as total_failed,
             COALESCE(COUNT(id), 0) as total_all
         FROM sms_records WHERE 1=1 {date_filter} {summary_filter}
@@ -6272,7 +6272,7 @@ def get_user_usage():
                 ta.username as team_admin_username,
                 ta.full_name as team_admin_name,
                 COUNT(DISTINCT m.id) + 1 as member_count,
-                COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as team_sent,
+                COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) as team_sent,
                 COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as team_failed,
                 COALESCE(COUNT(r.id), 0) as team_total
             FROM users ta
@@ -6306,7 +6306,7 @@ def get_user_usage():
         team_row = db.execute(f"""
             SELECT
                 COUNT(DISTINCT u.id) as member_count,
-                COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as team_sent,
+                COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) as team_sent,
                 COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as team_failed,
                 COALESCE(COUNT(r.id), 0) as team_total
             FROM users u
@@ -6391,7 +6391,7 @@ def get_unified_stats():
     account_user_id = filter_uid if filter_uid is not None else user_id
     my_account = db.execute(f"""
         SELECT
-            COALESCE(SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END), 0) as sent,
+            COALESCE(SUM(CASE WHEN status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) as sent,
             COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0) as failed,
             COALESCE(SUM(CASE WHEN status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
             COALESCE(COUNT(id), 0) as total
@@ -6445,7 +6445,7 @@ def get_unified_stats():
         team_stats = db.execute(f"""
             SELECT
                 COUNT(DISTINCT u.id) as member_count,
-                COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
+                COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) as sent,
                 COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
                 COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) as pending,
                 COALESCE(COUNT(r.id), 0) as total
@@ -6500,7 +6500,7 @@ def get_unified_stats():
             # Per-account breakdown for every account in the (possibly filtered) scope.
             member_rows = db.execute(f"""
                 SELECT u.id, u.username, u.full_name, u.role, u.extnumber, u.country,
-                       COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) AS sent,
+                       COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) AS sent,
                        COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) AS failed,
                        COALESCE(SUM(CASE WHEN r.status IN ('pending','scheduled') THEN 1 ELSE 0 END), 0) AS pending,
                        COALESCE(COUNT(r.id), 0) AS total,
@@ -6624,7 +6624,7 @@ def get_unified_stats():
             placeholders = ','.join(['?'] * len(user_ids))
             row = db.execute(f"""
                 SELECT
-                    COALESCE(SUM(CASE WHEN r.status='sent'   THEN 1 ELSE 0 END), 0) AS sent,
+                    COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) AS sent,
                     COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) AS failed,
                     COALESCE(COUNT(r.id), 0) AS total
                 FROM users u
@@ -6797,7 +6797,7 @@ def export_teams_stats():
             u.full_name as unit_name,
             u.role as unit_role,
             COUNT(DISTINCT m.id) + 1 as member_count,
-            COALESCE(SUM(CASE WHEN r.status='sent' THEN 1 ELSE 0 END), 0) as sent,
+            COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) as sent,
             COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as failed,
             COALESCE(COUNT(r.id), 0) as total
         FROM users u
@@ -6921,7 +6921,7 @@ def get_team_daily_stats():
         SELECT
             DATE(created_at) as day,
             COUNT(*) as total,
-            SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
+            SUM(CASE WHEN status IN ('sent','delivered') THEN 1 ELSE 0 END) as sent,
             SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed
         FROM sms_records
         WHERE created_at >= date('now', '-30 days') {date_filter}
@@ -6988,7 +6988,7 @@ def get_team_stats():
         total_row = db.execute(f"""
             SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
+                SUM(CASE WHEN status IN ('sent','delivered') THEN 1 ELSE 0 END) as sent,
                 SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
                 SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending
             FROM sms_records
@@ -7008,7 +7008,7 @@ def get_team_stats():
             SELECT
                 DATE(created_at) as day,
                 COUNT(*) as total,
-                SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent
+                SUM(CASE WHEN status IN ('sent','delivered') THEN 1 ELSE 0 END) as sent
             FROM sms_records
             WHERE created_by IN ({placeholders})
               AND created_at >= date('now', '-30 days')
