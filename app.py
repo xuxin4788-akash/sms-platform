@@ -4986,10 +4986,10 @@ def _scope_where(alias: str, uid: int, role, mode: str = 'auto') -> tuple[str, l
                    custom role -> the team of the team_admin who created this user
                    team_member -> own only
     """
-    if role == 'admin':
-        return "1=1", []
     if mode == 'own':
         return f"{alias}.created_by = ?", [uid]
+    if role == 'admin':
+        return "1=1", []
     if role == 'team_admin':
         # team_admin always scopes to their whole team
         owner = uid
@@ -5009,10 +5009,10 @@ def _scope_where_unnamed(uid: int, role, mode: str = 'auto') -> tuple[str, list]
     """Like _scope_where but for tables queried without an alias (the fragment
     references `created_by` directly). Admin returns ("1=1", []). See _scope_where
     for the semantics of mode ('auto' | 'own' | 'team')."""
-    if role == 'admin':
-        return "1=1", []
     if mode == 'own':
         return "created_by = ?", [uid]
+    if role == 'admin':
+        return "1=1", []
     if role == 'team_admin':
         # team_admin always scopes to their whole team
         owner = uid
