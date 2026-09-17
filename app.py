@@ -10048,12 +10048,19 @@ def _ensure_sms_pricing_table():
 @app.route('/api/config/sms/pricing', methods=['GET'])
 @admin_required
 def list_sms_pricing():
-    _ensure_sms_pricing_table()
-    db = get_db()
-    rows = db.execute(
-        "SELECT id, country, country_name, unit_price, is_active, updated_at "
-        "FROM sms_billing_prices ORDER BY country"
-    ).fetchall()
+    try:
+        _ensure_sms_pricing_table()
+        db = get_db()
+        rows = db.execute(
+            "SELECT id, country, country_name, unit_price, is_active, updated_at "
+            "FROM sms_billing_prices ORDER BY country"
+        ).fetchall()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Error de base de datos: ' + str(e)}), 500
     configs = []
     for r in rows:
         up = r['updated_at']
@@ -10083,19 +10090,33 @@ def add_sms_pricing():
         return jsonify({'error': 'El precio debe ser un numero valido'}), 400
     if unit_price < 0:
         return jsonify({'error': 'El precio no puede ser negativo'}), 400
-    _ensure_sms_pricing_table()
-    db = get_db()
-    dup = db.execute(
-        "SELECT id FROM sms_billing_prices WHERE UPPER(country)=UPPER(?)",
-        (country,)).fetchone()
+    try:
+        _ensure_sms_pricing_table()
+        db = get_db()
+        dup = db.execute(
+            "SELECT id FROM sms_billing_prices WHERE UPPER(country)=UPPER(?)",
+            (country,)).fetchone()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Error de base de datos: ' + str(e)}), 500
     if dup:
         return jsonify({'error': 'Ya existe un precio para ese pais'}), 409
     now = datetime.now()
-    db.execute(
-        "INSERT INTO sms_billing_prices (country, country_name, unit_price, is_active, updated_at) "
-        "VALUES (?, ?, ?, 1, ?)",
-        (country, country_name, unit_price, now))
-    db.commit()
+    try:
+        db.execute(
+            "INSERT INTO sms_billing_prices (country, country_name, unit_price, is_active, updated_at) "
+            "VALUES (?, ?, ?, 1, ?)",
+            (country, country_name, unit_price, now))
+        db.commit()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Error de base de datos: ' + str(e)}), 500
     return jsonify({'message': 'Precio creado'})
 
 
@@ -10103,9 +10124,16 @@ def add_sms_pricing():
 @admin_required
 def update_sms_pricing(pid):
     data = request.get_json(silent=True) or {}
-    _ensure_sms_pricing_table()
-    db = get_db()
-    row = db.execute("SELECT id FROM sms_billing_prices WHERE id=?", (pid,)).fetchone()
+    try:
+        _ensure_sms_pricing_table()
+        db = get_db()
+        row = db.execute("SELECT id FROM sms_billing_prices WHERE id=?", (pid,)).fetchone()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Error de base de datos: ' + str(e)}), 500
     if not row:
         return jsonify({'error': 'No encontrado'}), 404
     if 'is_active' in data:
@@ -10132,9 +10160,16 @@ def update_sms_pricing(pid):
 @app.route('/api/config/sms/pricing/<int:pid>', methods=['DELETE'])
 @admin_required
 def delete_sms_pricing(pid):
-    _ensure_sms_pricing_table()
-    db = get_db()
-    row = db.execute("SELECT id FROM sms_billing_prices WHERE id=?", (pid,)).fetchone()
+    try:
+        _ensure_sms_pricing_table()
+        db = get_db()
+        row = db.execute("SELECT id FROM sms_billing_prices WHERE id=?", (pid,)).fetchone()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Error de base de datos: ' + str(e)}), 500
     if not row:
         return jsonify({'error': 'No encontrado'}), 404
     db.execute("DELETE FROM sms_billing_prices WHERE id=?", (pid,))
