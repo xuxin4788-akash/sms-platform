@@ -5171,64 +5171,31 @@ async function renderEmailPricing(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
         var data = await api('/api/config/email/pricing');
-        var configs = data.configs || [];
-        var rows = configs.length ? configs.map(function(c) {
-            var badge = c.is_active === false
-                ? '<span class="badge badge-secondary">Inactiva</span>'
-                : '<span class="badge badge-success">Activa</span>';
-            return '<tr>' +
-                '<td><strong>' + escapeHtml(c.country) + '</strong></td>' +
-                '<td><input type="number" step="any" min="0" id="ep-price-' + c.id + '" value="' + c.unit_price + '" style="max-width:160px;"></td>' +
-                '<td>' + badge + '</td>' +
-                '<td class="text-right" style="white-space:nowrap;">' +
-                    '<button class="btn btn-primary btn-sm" onclick="saveEmailPricing(' + c.id + ')">Guardar</button> ' +
-                    '<button class="btn btn-danger btn-sm" onclick="deleteEmailPricing(' + c.id + ')">Eliminar</button>' +
-                '</td></tr>';
-        }).join('') : '<tr><td colspan="4" class="text-center text-secondary" style="padding:20px;">Sin precios configurados</td></tr>';
+        var unit = (data.unit_price != null ? data.unit_price : 0);
         container.innerHTML =
-            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Precios de Correo (facturacion por pais)</h1>' +
-            '<div class="alert alert-info" style="margin-bottom:16px;">Cada correo <strong>enviado de verdad</strong> (no simulado) se factura al precio del pais de la cuenta que lo envio. Costo = cant. de correos x precio unitario del pais.</div>' +
+            '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Precio de Correo (facturacion global)</h1>' +
+            '<div class="alert alert-info" style="margin-bottom:16px;">Cada correo <strong>enviado de verdad</strong> (no simulado) se factura una vez al precio unitario global. Costo = cant. de correos enviados x precio unitario.</div>' +
             '<div class="card mb-4"><div class="card-body">' +
-                '<div style="overflow-x:auto;margin-bottom:16px;"><table class="data-table"><thead><tr>' +
-                  '<th>Pais</th><th>Precio por correo</th><th>Estado</th><th class="text-right">Acciones</th>' +
-                '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
-                '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;border-top:1px solid var(--border-color,#E2E8F0);padding-top:16px;">' +
-                  '<div class="form-group"><label>Nuevo pais (MX / CO / PE / OTRO)</label><input id="ep-country" type="text" placeholder="Ej. MX" style="text-transform:uppercase;"></div>' +
-                  '<div class="form-group"><label>Precio por correo</label><input id="ep-new-price" type="number" step="any" min="0" value="0"></div>' +
-                  '<div><button class="btn btn-primary" onclick="createEmailPricing()">Agregar</button></div>' +
+                '<div class="form-row" style="display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:end;">' +
+                  '<div class="form-group"><label>Precio por correo</label><input id="ep-price" type="number" step="any" min="0" value="' + unit + '" style="max-width:220px;"></div>' +
+                  '<div><button class="btn btn-primary" onclick="saveEmailPricing()">Guardar</button></div>' +
                 '</div>' +
-                '<div id="ep-msg"></div>' +
+                '<div id="ep-msg" style="margin-top:10px;"></div>' +
             '</div></div>';
     } catch (e) {
         container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
     }
 }
 
-async function createEmailPricing() {
+async function saveEmailPricing() {
     var msg = document.getElementById('ep-msg');
     if (msg) msg.innerHTML = '';
-    var country = (document.getElementById('ep-country') || {}).value || '';
-    var price = (document.getElementById('ep-new-price') || {}).value || 0;
-    if (!country.trim()) { if (msg) msg.innerHTML = '<div class="alert alert-error">El pais es requerido.</div>'; return; }
+    var input = document.getElementById('ep-price');
     try {
-        await api('/api/config/email/pricing', { method: 'POST', body: { country: country.trim().toUpperCase(), unit_price: price } });
+        await api('/api/config/email/pricing', { method: 'POST', body: { unit_price: input.value } });
+        if (msg) msg.innerHTML = '<div class="alert alert-success">Precio actualizado.</div>';
         renderEmailPricing(document.getElementById('page-content'));
     } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
-}
-
-async function saveEmailPricing(id) {
-    var input = document.getElementById('ep-price-' + id);
-    try {
-        await api('/api/config/email/pricing/' + id, { method: 'PUT', body: { unit_price: input.value, is_active: true } });
-        renderEmailPricing(document.getElementById('page-content'));
-    } catch (e) { showToast(e.message || 'Error', 'error'); }
-}
-
-async function deleteEmailPricing(id) {
-    try {
-        await api('/api/config/email/pricing/' + id, { method: 'DELETE' });
-        renderEmailPricing(document.getElementById('page-content'));
-    } catch (e) { showToast(e.message || 'Error', 'error'); }
 }
 
 function renderEmailSendersCard(data) {

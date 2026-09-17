@@ -580,6 +580,7 @@ def init_db():
                 password VARCHAR(255) DEFAULT '',
                 from_email VARCHAR(255) DEFAULT '',
                 from_name VARCHAR(255) DEFAULT '',
+                unit_price NUMERIC(14,4) NOT NULL DEFAULT 0,
                 is_active BOOLEAN DEFAULT TRUE,
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
@@ -606,15 +607,6 @@ def init_db():
                 app_name VARCHAR(255) NOT NULL UNIQUE,
                 from_email VARCHAR(255) NOT NULL DEFAULT '',
                 from_name VARCHAR(255) DEFAULT '',
-                is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS email_pricing_configs (
-                id SERIAL PRIMARY KEY,
-                country VARCHAR(5) NOT NULL UNIQUE,
-                unit_price NUMERIC(14,4) NOT NULL DEFAULT 0,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -862,18 +854,9 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_job ON email_records(job_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_status ON email_records(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_creator ON email_records(created_by, created_at)")
-        cur.execute("""CREATE TABLE IF NOT EXISTS email_pricing_configs (
-                id SERIAL PRIMARY KEY,
-                country VARCHAR(5) NOT NULL UNIQUE,
-                unit_price NUMERIC(14,4) NOT NULL DEFAULT 0,
-                is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-            )""")
-        cur.execute("SELECT 1 FROM email_pricing_configs LIMIT 1")
-        if cur.fetchone() is None:
-            for cty in ('MX', 'CO', 'PE'):
-                cur.execute("INSERT INTO email_pricing_configs (country, unit_price) VALUES (%s, %s)", (cty, 0))
+        # email_config: global email unit price (facturacion global, no por pais).
+        if not pg_column_exists('email_config', 'unit_price'):
+            cur.execute("ALTER TABLE email_config ADD COLUMN unit_price NUMERIC(14,4) NOT NULL DEFAULT 0")
         cur.execute("""CREATE TABLE IF NOT EXISTS email_jobs (
                 job_id VARCHAR(40) PRIMARY KEY,
                 status VARCHAR(30) NOT NULL DEFAULT 'queued',
@@ -1276,6 +1259,7 @@ def init_db():
                 password TEXT DEFAULT '',
                 from_email TEXT DEFAULT '',
                 from_name TEXT DEFAULT '',
+                unit_price REAL NOT NULL DEFAULT 0,
                 is_active INTEGER DEFAULT 1,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -1303,15 +1287,6 @@ def init_db():
                 app_name TEXT NOT NULL UNIQUE,
                 from_email TEXT NOT NULL DEFAULT '',
                 from_name TEXT DEFAULT '',
-                is_active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-
-            CREATE TABLE IF NOT EXISTS email_pricing_configs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                country TEXT NOT NULL UNIQUE,
-                unit_price REAL NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -2030,20 +2005,26 @@ def init_db():
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                 )''')
-            # Email pricing configs (facturacion por pais), seed default countries.
-            db.execute('''
-                CREATE TABLE IF NOT EXISTS email_pricing_configs (
+            # email_config: global email unit price (facturacion global, no por pais).
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS email_config (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    country TEXT NOT NULL UNIQUE,
+                    provider TEXT DEFAULT 'custom',
+                    host TEXT DEFAULT '',
+                    port INTEGER DEFAULT 587,
+                    use_ssl INTEGER DEFAULT 0,
+                    use_tls INTEGER DEFAULT 1,
+                    username TEXT DEFAULT '',
+                    password TEXT DEFAULT '',
+                    from_email TEXT DEFAULT '',
+                    from_name TEXT DEFAULT '',
                     unit_price REAL NOT NULL DEFAULT 0,
-                    is_active INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    is_active INTEGER DEFAULT 1,
                     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-                )''')
-            row = db.execute("SELECT 1 FROM email_pricing_configs LIMIT 1").fetchone()
-            if row is None:
-                for cty in ('MX', 'CO', 'PE'):
-                    db.execute("INSERT INTO email_pricing_configs (country, unit_price) VALUES (?, ?)", (cty, 0))
+                )""")
+            ec_cols = [row[1] for row in db.execute("PRAGMA table_info(email_config)").fetchall()]
+            if 'unit_price' not in ec_cols:
+                db.execute("ALTER TABLE email_config ADD COLUMN unit_price REAL NOT NULL DEFAULT 0")
             # email_replies table (created for new DBs above; ensure it exists on old DBs too).
             db.execute('''
                 CREATE TABLE IF NOT EXISTS email_replies (
@@ -9702,15 +9683,15 @@ def resolve_app_sender(app_name, cfg=None):
     return ('', '')
 
 
-def resolve_email_country_price(country):
-    """Precio unitario por correo del pais (email_pricing_configs.unit_price). 0 si no hay."""
-    db = get_db()
-    row = db.execute(
-        "SELECT unit_price FROM email_pricing_configs "
-        "WHERE UPPER(TRIM(country))=UPPER(?) AND is_active=1",
-        ((country or '').strip(),)
-    ).fetchone()
-    return float(row['unit_price']) if row else 0.0
+def get_email_unit_price():
+    """Precio unitario global por correo (email_config.unit_price). 0 si no hay."""
+    row = get_email_config_row()
+    if row and 'unit_price' in row.keys() and row['unit_price'] is not None:
+        try:
+            return round(float(row['unit_price']), 6)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
 
 
 def send_email_via_smtp(cfg, to_email, subject, body_html):
@@ -9794,6 +9775,14 @@ def save_email_config_api():
     username = (data.get('username') or '').strip()
     from_email = (data.get('from_email') or '').strip()
     from_name = (data.get('from_name') or '').strip()
+    unit_price = 0.0
+    if data.get('unit_price') not in (None, ''):
+        try:
+            unit_price = round(float(data.get('unit_price')), 6)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'El precio debe ser un numero valido'}), 400
+        if unit_price < 0:
+            return jsonify({'error': 'El precio no puede ser negativo'}), 400
     is_active = bool(data.get('is_active', True))
     password = data.get('password')  # None/'' => keep existing
 
@@ -9806,17 +9795,17 @@ def save_email_config_api():
             new_pwd = password
         db.execute(
             "UPDATE email_config SET provider=?, host=?, port=?, use_ssl=?, use_tls=?, "
-            "username=?, password=?, from_email=?, from_name=?, is_active=?, updated_at=? "
+            "username=?, password=?, from_email=?, from_name=?, unit_price=?, is_active=?, updated_at=? "
             "WHERE id=?",
             (provider, host, port, use_ssl, use_tls, username, new_pwd,
-             from_email, from_name, is_active, now, row['id'])
+             from_email, from_name, unit_price, is_active, now, row['id'])
         )
     else:
         db.execute(
             "INSERT INTO email_config (provider, host, port, use_ssl, use_tls, username, password, "
-            "from_email, from_name, is_active, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "from_email, from_name, unit_price, is_active, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (provider, host, port, use_ssl, use_tls, username,
-             password or '', from_email, from_name, is_active, now)
+             password or '', from_email, from_name, unit_price, is_active, now)
         )
     db.commit()
     return jsonify({'message': 'Configuracion de correo guardada'})
@@ -9939,75 +9928,36 @@ def _email_scope_where(user, alias='r'):
     return f"{alias}.created_by=?", [uid]
 
 
-# --- Email pricing config (facturacion por pais) ---
+# --- Email pricing (facturacion global, no por pais) ---
 @app.route('/api/config/email/pricing', methods=['GET'])
 @admin_required
-def list_email_pricing():
-    db = get_db()
-    rows = db.execute(
-        "SELECT id, country, unit_price, is_active, updated_at "
-        "FROM email_pricing_configs ORDER BY country"
-    ).fetchall()
-    return jsonify({'configs': [
-        {'id': r['id'], 'country': r['country'] or '', 'unit_price': float(r['unit_price'] or 0),
-         'is_active': bool(r['is_active']), 'updated_at': r['updated_at']} for r in rows
-    ]})
+def get_email_pricing():
+    return jsonify({'unit_price': get_email_unit_price()})
 
 
 @app.route('/api/config/email/pricing', methods=['POST'])
 @admin_required
-def create_email_pricing():
+def set_email_pricing():
     data = request.get_json(silent=True) or {}
-    db = get_db()
-    country = (data.get('country') or '').strip().upper()
-    if not country:
-        return jsonify({'error': 'El pais es requerido'}), 400
     try:
         unit_price = round(float(data.get('unit_price') or 0), 6)
     except (TypeError, ValueError):
         return jsonify({'error': 'El precio debe ser un numero valido'}), 400
     if unit_price < 0:
         return jsonify({'error': 'El precio no puede ser negativo'}), 400
-    dup = db.execute(
-        "SELECT 1 FROM email_pricing_configs WHERE UPPER(country)=?", (country,)
-    ).fetchone()
-    if dup:
-        return jsonify({'error': 'Ya existe un precio para ese pais'}), 409
-    try:
-        db.execute(
-            "INSERT INTO email_pricing_configs (country, unit_price) VALUES (?, ?)",
-            (country, unit_price))
-        db.commit()
-    except Exception:
-        db.rollback()
-        return jsonify({'error': 'No se pudo crear el precio (pais duplicado?)'}), 409
-    return jsonify({'message': 'Precio creado'}), 201
-
-
-@app.route('/api/config/email/pricing/<int:pid>', methods=['PUT', 'DELETE'])
-@admin_required
-def update_delete_email_pricing(pid):
     db = get_db()
-    row = db.execute("SELECT 1 FROM email_pricing_configs WHERE id=?", (pid,)).fetchone()
-    if not row:
-        return jsonify({'error': 'Precio no encontrado'}), 404
-    if request.method == 'PUT':
-        data = request.get_json(silent=True) or {}
-        try:
-            unit_price = round(float(data.get('unit_price') or 0), 6)
-        except (TypeError, ValueError):
-            return jsonify({'error': 'El precio debe ser un numero valido'}), 400
-        if unit_price < 0:
-            return jsonify({'error': 'El precio no puede ser negativo'}), 400
-        is_active = data.get('is_active', True)
+    row = get_email_config_row()
+    now = datetime.now()
+    if row:
         db.execute(
-            "UPDATE email_pricing_configs SET unit_price=?, is_active=?, "
-            "updated_at=CURRENT_TIMESTAMP WHERE id=?", (unit_price, is_active, pid))
-        db.commit()
-        return jsonify({'message': 'Precio actualizado'})
-    db.execute("DELETE FROM email_pricing_configs WHERE id=?", (pid,))
+            "UPDATE email_config SET unit_price=?, updated_at=? WHERE id=?",
+            (unit_price, now, row['id']))
+    else:
+        db.execute(
+            "INSERT INTO email_config (unit_price, updated_at) VALUES (?, ?)",
+            (unit_price, now))
     db.commit()
-    return jsonify({'message': 'Precio eliminado'})
+    return jsonify({'message': 'Precio actualizado', 'unit_price': unit_price})
 
 
 @app.route('/api/email/send', methods=['POST'])
@@ -11043,41 +10993,24 @@ def email_statistics_api():
         f"SELECT DATE(r.created_at) AS d, COUNT(*) AS n FROM email_records r "
         f"WHERE {chart_where} GROUP BY DATE(r.created_at)", chart_params
     ).fetchall()
-    # Billing: a record is billed per segment (=1 per email) when actually sent
-    # (status='sent', NOT simulated). Cost = unit_price(country) * sent count,
-    # where the country comes from the sending account (users.country). The
-    # joined <pricing> map is pulled in Python to avoid a second query in the
-    # per-day rows; we precompute cost per (country).
-    # Fetch pricing rows once (admin sees all, but scope may restrict accounts).
-    pricing_rows = db.execute(
-        "SELECT UPPER(TRIM(country)) AS country, unit_price FROM email_pricing_configs"
-    ).fetchall()
-    price_map = {}
-    for pr in pricing_rows:
-        price_map[pr['country'] or ''] = float(pr['unit_price'] or 0)
-    cost_rows = db.execute(
-        f"SELECT UPPER(TRIM(u.country)) AS country, COUNT(*) AS n "
-        f"FROM email_records r LEFT JOIN users u ON u.id = r.created_by "
-        f"WHERE {where} AND r.status='sent' GROUP BY UPPER(TRIM(u.country))",
+    # Billing: a record is billed once (1 email = 1 billing unit) when actually
+    # sent (status='sent', NOT simulated). Cost = global unit_price * sent count
+    # (facturacion global, no por pais). Simulated/pending/failed/suppressed are
+    # excluded so pre-configuration test sends don't inflate the total.
+    unit_price = get_email_unit_price()
+    sent_count = db.execute(
+        f"SELECT COUNT(*) AS n FROM email_records r WHERE {where} AND r.status='sent'",
         params
-    ).fetchall()
-    total_cost = 0.0
-    by_country = []
-    for cr in cost_rows:
-        cty = cr['country'] or ''
-        unit = price_map.get(cty, 0.0)
-        cost = round(unit * int(cr['n'] or 0), 6)
-        total_cost = round(total_cost + cost, 6)
-        if cty:
-            by_country.append({'country': cty, 'count': int(cr['n'] or 0),
-                               'unit_price': unit, 'cost': cost})
+    ).fetchone()
+    sent_n = int(sent_count['n'] or 0)
+    total_cost = round(unit_price * sent_n, 6)
     return jsonify({
         'total': total, 'sent': sent, 'failed': failed,
         'pending': pending, 'suppressed': suppressed,
         'success_rate': round(sent * 100.0 / total, 1) if total else 0.0,
         'configured': is_email_configured(),
         'cost': total_cost,
-        'by_country': by_country,
+        'unit_price': unit_price,
         'last_7_days': [{'date': r['d'], 'count': int(r['n'] or 0)} for r in chart],
     })
 
