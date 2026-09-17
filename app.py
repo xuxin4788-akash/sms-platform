@@ -3664,6 +3664,45 @@ def delete_user_category(cat_id):
 # Users API (role-based access control)
 # ============================================================
 
+@app.route('/api/teams', methods=['GET'])
+@login_required
+def list_teams():
+    """List team units (team_admins) for the Equipo assignment dropdown.
+
+    Admin sees every team; team_admin sees only their own team; members/custom
+    roles see the team they belong to. Returns [{id, username, label}].
+    """
+    db = get_db()
+    current = g.user
+    visible = _scope_user_ids(current['id'], current['role'])
+    if visible == []:
+        # Admin sees all teams.
+        rows = db.execute(
+            "SELECT id, username, full_name FROM users WHERE role='team_admin' AND is_active=1 ORDER BY COALESCE(NULLIF(full_name,''), username)"
+        ).fetchall()
+    else:
+        # The team_admin themselves plus any team_admin visible in this scope.
+        # For non-admin callers the only relevant team is their own leader.
+        owner = _team_scope_owner_id(current['id'], current['role'])
+        if current['role'] == 'team_admin':
+            rows = db.execute(
+                "SELECT id, username, full_name FROM users WHERE id=? ORDER BY COALESCE(NULLIF(full_name,''), username)",
+                (current['id'],)
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT id, username, full_name FROM users WHERE id=? ORDER BY COALESCE(NULLIF(full_name,''), username)",
+                (owner,)
+            ).fetchall() if owner else []
+    teams = []
+    for r in rows:
+        if not r:
+            continue
+        label = (r['full_name'] or '').strip() or r['username']
+        teams.append({'id': r['id'], 'username': r['username'], 'label': label})
+    return jsonify({'teams': teams})
+
+
 @app.route('/api/users', methods=['GET'])
 @manager_required
 def list_users():
@@ -3725,13 +3764,19 @@ def list_users():
         # Admin always has all permissions
         if ud['role'] == 'admin':
             ud['permissions'] = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'api-config', 'email-senders', 'extensions']
-        # Team affiliation: show the direct superior (team creator) name as the
-        # team label; when there is no superior (the account itself is a team
-        # admin / leader), show its own name as the team identifier (Option B).
+        # Team affiliation (Equipo column):
+        # - A member / custom-role account shows its direct superior (the team
+        #   admin that owns the team). With no superior it is unattached -> None
+        #   (the UI renders "-" / "Sin equipo"), instead of echoing the member's
+        #   own name which was misleading.
+        # - A team_admin with no superior is itself the team, so it shows its own
+        #   name as the team identifier.
         if ud['team_creator_name']:
             ud['team_affiliation'] = ud['team_creator_fullname'] or ud['team_creator_name']
-        else:
+        elif ud['role'] == 'team_admin':
             ud['team_affiliation'] = ud['full_name'] or ud['username'] or None
+        else:
+            ud['team_affiliation'] = None
         result.append(ud)
     return jsonify({'users': result})
 
@@ -3755,6 +3800,12 @@ def create_user():
     if len(password) < 6:
         return jsonify({'error': 'La contrasena debe tener minimo 6 caracteres'}), 400
     # Role assignment rules
+    # Optional team assignment for non-team-admin accounts: the system admin can
+    # attach a team_member / custom-role account to an existing team (identified
+    # by its team_admin id), so the account appears under that Equipo and shares
+    # the team's data scope. Sent as `team_creator_id` or `equipo_id`.
+    requested_team_id = data.get('team_creator_id', data.get('equipo_id', None))
+    requested_team_id = int(requested_team_id) if str(requested_team_id or '').strip().isdigit() else None
     if current['role'] == 'admin':
         # System admin can create team_admins, team members, or any custom role
         # (e.g. data analysts). Any role value is allowed except assigning admin.
@@ -3764,7 +3815,18 @@ def create_user():
         rp = db.execute("SELECT role FROM role_permissions WHERE role = ?", (role,)).fetchone()
         if not rp:
             return jsonify({'error': 'El rol no existe'}), 400
-        team_creator_id = None
+        if role == 'team_admin':
+            # A team leader does not belong to another team.
+            team_creator_id = None
+        else:
+            # team_member / custom role: optionally attach to a real team.
+            if requested_team_id:
+                leader = db.execute("SELECT id FROM users WHERE id=? AND role='team_admin'", (requested_team_id,)).fetchone()
+                if not leader:
+                    return jsonify({'error': 'El equipo seleccionado no existe'}), 400
+                team_creator_id = requested_team_id
+            else:
+                team_creator_id = None
     elif current['role'] == 'team_admin':
         # Team admin can create team members OR any custom role (e.g. a data
         # agent). Both are placed under this team (team_creator_id = self), so
@@ -3864,6 +3926,26 @@ def update_user(user_id):
             return jsonify({'error': 'El rol no existe'}), 400
         updates.append("role=?")
         params.append(new_role)
+    # System admin can (re)assign a team_member / custom-role account to a team
+    # (team_creator_id), or detach it (equipo_id='' / null). team_admin rows are
+    # never attached to another team.
+    if current['role'] == 'admin' and ('team_creator_id' in data or 'equipo_id' in data):
+        raw_team = data.get('team_creator_id', data.get('equipo_id', None))
+        if raw_team is None or str(raw_team).strip() == '':
+            new_team = None
+        elif str(raw_team).strip().isdigit():
+            new_team = int(raw_team)
+            leader = db.execute("SELECT id FROM users WHERE id=? AND role='team_admin'", (new_team,)).fetchone()
+            if not leader:
+                return jsonify({'error': 'El equipo seleccionado no existe'}), 400
+        else:
+            new_team = None
+        # A team leader cannot be attached to a parent team.
+        target_role = (data.get('role') if (current['role'] == 'admin' and 'role' in data) else user['role'])
+        if target_role == 'team_admin':
+            new_team = None
+        updates.append("team_creator_id=?")
+        params.append(new_team)
     if is_active in (0, 1, True, False):
         updates.append("is_active=?")
         params.append(int(is_active))

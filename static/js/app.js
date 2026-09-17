@@ -1897,6 +1897,28 @@ function customRolesOptionHTML(roles) {
     return roles.map(function(r) { return '<option value="' + escapeHtml(r.role) + '">' + escapeHtml(r.role_label || r.label || r.role) + '</option>'; }).join('');
 }
 
+// Team units (team_admins) for the Equipo assignment dropdown.
+var TEAMS_CACHE = null;
+async function loadTeams(force) {
+    if (TEAMS_CACHE && !force) return TEAMS_CACHE;
+    try {
+        var data = await api('/api/teams');
+        TEAMS_CACHE = data.teams || [];
+    } catch (e) { TEAMS_CACHE = TEAMS_CACHE || []; }
+    return TEAMS_CACHE;
+}
+
+// Equipo dropdown for member/custom-role accounts (admin only). selectedId is
+// the currently assigned team_creator_id ('' = no team).
+async function equipoSelectHtml(selectedId) {
+    var teams = await loadTeams();
+    var opts = '<option value="">Sin equipo</option>';
+    opts += teams.map(function(t) {
+        return '<option value="' + t.id + '"' + (String(selectedId || '') === String(t.id) ? ' selected' : '') + '>' + escapeHtml(t.label) + '</option>';
+    }).join('');
+    return '<div class="form-group" id="equipo-field-group"><label>Equipo (Administrador de equipo)</label><select name="team_creator_id" id="user-equipo-select">' + opts + '</select><small class="text-secondary">Asigna esta cuenta a un equipo. Comparte el alcance de datos de ese equipo.</small></div>';
+}
+
 async function renderUsers(container) {
     if (!['admin', 'team_admin'].includes(state.user.role)) { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3><p>Solo administradores pueden ver esta seccion.</p></div>'; return; }
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
@@ -2003,7 +2025,13 @@ async function showAddUserModal() {
     var countryFieldHtml = '<div class="form-group"><label>Pais del agente</label><select name="country">' + agentCountryOptions + '</select><small class="text-secondary">Por defecto sigue el pais de tu equipo. Define de que pool de extensiones se asigna (Mexico/Colombia/Peru).</small></div>';
     var extFieldHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool del pais seleccionado. No se permite escribir el numero manualmente; si no hay extensiones libres, pida al administrador del sistema que agregue mas.</small></div>';
     var categoryHtml = await categoryFieldHtml(null);
-    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role" id="add-user-role" onchange="toggleApiConfig()">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div>' + apiConfigHtml + countryFieldHtml + categoryHtml + extFieldHtml + '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+    // Equipo assignment only for system admin creating member/custom-role accounts.
+    var equipoHtml = '';
+    if (myRole === 'admin') {
+        equipoHtml = await equipoSelectHtml('');
+    }
+    showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role" id="add-user-role" onchange="toggleApiConfig()">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div>' + apiConfigHtml + equipoHtml + countryFieldHtml + categoryHtml + extFieldHtml + '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
+    toggleApiConfig();
 }
 
 // Cache de categorias para los formularios de usuario (solo admin las asigna).
@@ -2036,6 +2064,13 @@ function toggleApiConfig() {
     var apiSelect = document.querySelector('select[name="api_config_id"]');
     if (apiSelect) {
         apiSelect.required = (roleSelect.value === 'team_admin');
+        var apiGroup = apiSelect.closest('.form-group');
+        if (apiGroup) apiGroup.style.display = (roleSelect.value === 'team_admin') ? '' : 'none';
+    }
+    // Equipo field: only meaningful for member/custom-role accounts, never for team_admin.
+    var equipoGroup = document.getElementById('equipo-field-group');
+    if (equipoGroup) {
+        equipoGroup.style.display = (roleSelect.value === 'team_admin') ? 'none' : '';
     }
 }
 
@@ -2047,6 +2082,8 @@ async function handleAddUser(event) {
     if (apiConfigSelect && apiConfigSelect.value) {
         body.api_config_id = parseInt(apiConfigSelect.value);
     }
+    var equipoSelect = form.querySelector('select[name="team_creator_id"]');
+    if (equipoSelect) { body.team_creator_id = equipoSelect.value ? parseInt(equipoSelect.value) : null; }
     try { await api('/api/users', { method: 'POST', body: body }); hideModal(); showToast('Usuario creado', 'success'); _userCategoriesCache = null; renderUsers(document.getElementById('page-content')); }
     catch (err) { showToast(err.message, 'error'); }
 }
@@ -2063,7 +2100,12 @@ async function showEditUserModal(id) {
     var currentCountry = u.country || '';
     var countryHtml = '<div class="form-group"><label>Pais del agente</label><select name="country"><option value=""' + (!currentCountry?' selected':'') + '>Sin pais especifico</option><option value="mx"' + (currentCountry==='mx'?' selected':'') + '>Mexico</option><option value="co"' + (currentCountry==='co'?' selected':'') + '>Colombia</option><option value="pe"' + (currentCountry==='pe'?' selected':'') + '>Peru</option></select><small class="text-secondary">Define de que pool se asigna la extension. Cambiar de pais no reasigna la extension actual (liberela primero si necesita otra).</small></div>';
     var categoryHtml = await categoryFieldHtml(u.category_id);
-    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Rol</label><input type="text" value="' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '" disabled style="background:var(--bg);"><small class="text-secondary">El rol no se puede cambiar despues de la creacion</small></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div>' + countryHtml + categoryHtml + extHtml + '<div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+    // Equipo assignment for system admin (member/custom-role accounts only).
+    var editEquipoHtml = '';
+    if (state.user.role === 'admin' && u.role !== 'team_admin' && u.role !== 'admin') {
+        editEquipoHtml = await equipoSelectHtml(u.team_creator_id);
+    }
+    showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Rol</label><input type="text" value="' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '" disabled style="background:var(--bg);"><small class="text-secondary">El rol no se puede cambiar despues de la creacion</small></div>' + editEquipoHtml + '<div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div>' + countryHtml + categoryHtml + extHtml + '<div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
 }
 
 async function handleEditUser(event, id) {
@@ -2073,6 +2115,8 @@ async function handleEditUser(event, id) {
         if (form.password.value) body.password = form.password.value;
         if (form.assign_extension) body.assign_extension = !!form.assign_extension.checked;
         if (form.category_id) { body.category_id = form.category_id.value ? parseInt(form.category_id.value) : null; }
+        var equipoSelect = form.querySelector('select[name="team_creator_id"]');
+        if (equipoSelect) { body.team_creator_id = equipoSelect.value ? parseInt(equipoSelect.value) : null; }
         await api('/api/users/' + id, { method: 'PUT', body: body });
         hideModal(); showToast('Usuario actualizado', 'success'); _userCategoriesCache = null; renderUsers(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }

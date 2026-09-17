@@ -61,8 +61,9 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | POST | /api/auth/login | Public | Login |
 | POST | /api/auth/logout | Public | Logout |
 | GET | /api/auth/me | User | Current user info |
-| GET/POST | /api/users | Admin/TeamAdmin | List/Create users (role-based scope) |
-| PUT/DELETE | /api/users/<id> | Admin/TeamAdmin | Update/Delete user (role-based scope) |
+| GET/POST | /api/users | Admin/TeamAdmin | List/Create users (role-based scope). Create accepts `team_creator_id`/`equipo_id` (admin only) to attach a member/custom-role account to a team; invalid leader → 400 |
+| GET | /api/teams | User | List team units (team_admins) for the Equipo dropdown: admin sees all, team_admin sees self, members/custom roles see their leader; returns `{teams:[{id,username,label}]}` |
+| PUT/DELETE | /api/users/<id> | Admin/TeamAdmin | Update/Delete user (role-based scope). Admin PUT accepts `team_creator_id`/`equipo_id` to reassign/detach (`''`/null) a member from a team; team_admin rows are never attached to a parent |
 | GET | /api/user-categories | User | List employee categories + retention days (counts for managers) |
 | POST/PUT/DELETE | /api/user-categories[/<id>] | Admin/TeamAdmin | CRUD employee categories (default category cannot be deleted; categories are shared across teams) |
 | GET/POST | /api/contacts | User | List/Create contacts (team: all, member: own) |
