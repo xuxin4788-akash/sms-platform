@@ -3719,7 +3719,7 @@ def list_users():
                u.category_id,
                c.name AS category_name, c.retention_days AS category_retention_days,
                tc.username AS team_creator_name, tc.full_name AS team_creator_fullname,
-               tc.role AS team_creator_role
+               tc.role AS team_creator_role, tc.country AS team_creator_country
         FROM users u
         LEFT JOIN users tc ON u.team_creator_id = tc.id
         LEFT JOIN user_categories c ON u.category_id = c.id
@@ -3753,7 +3753,13 @@ def list_users():
     for u in users:
         ud = dict(u)
         ud['role_label'] = ROLE_LABELS.get(ud['role'], ud['role'])
-        ud['country'] = normalize_country(ud.get('country'))
+        # Country (Pais column): show the account's own country, else inherit
+        # the country of its team admin (same chain as create_user:
+        # self -> team leader -> team default). This keeps e.g. a member whose
+        # team leader is Mexico (AK-MX/AG-MX) showing "Mexico" even when it has
+        # no country of its own (common for inactive accounts).
+        own_country = normalize_country(ud.get('country'))
+        ud['country'] = own_country or normalize_country(ud.get('team_creator_country'))
         ud['country_label'] = COUNTRY_LABELS.get(ud['country'], '') if ud['country'] else ''
         # Parse permissions
         import json as _json
