@@ -585,6 +585,15 @@ def init_db():
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
+            CREATE TABLE IF NOT EXISTS sms_billing_prices (
+                id SERIAL PRIMARY KEY,
+                country VARCHAR(20) NOT NULL UNIQUE,
+                country_name VARCHAR(40) DEFAULT '',
+                unit_price NUMERIC(14,4) NOT NULL DEFAULT 0,
+                is_active BOOLEAN DEFAULT TRUE,
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
             CREATE TABLE IF NOT EXISTS email_records (
                 id SERIAL PRIMARY KEY,
                 recipient_email VARCHAR(255) NOT NULL,
@@ -1259,6 +1268,15 @@ def init_db():
                 password TEXT DEFAULT '',
                 from_email TEXT DEFAULT '',
                 from_name TEXT DEFAULT '',
+                unit_price REAL NOT NULL DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS sms_billing_prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country TEXT NOT NULL UNIQUE,
+                country_name TEXT DEFAULT '',
                 unit_price REAL NOT NULL DEFAULT 0,
                 is_active INTEGER DEFAULT 1,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -2173,12 +2191,22 @@ def get_sms_unit_price(db=None):
     return DEFAULT_SMS_UNIT_PRICE
 
 def get_country_sms_unit_price(country, db=None):
-    """Precio por SMS del pais (sms_api_configs.unit_price). 0 si no esta configurado."""
+    """Precio por SMS del pais. Prioridad: sms_billing_prices (pestaña Facturacion)
+    > sms_api_configs.unit_price (config de API por pais). 0 si no esta configurado."""
     if not country:
         return 0.0
     own = db is None
     if own:
         db = get_db()
+    row = db.execute(
+        "SELECT unit_price FROM sms_billing_prices WHERE UPPER(country) = UPPER(?) "
+        "AND is_active = 1 ORDER BY id LIMIT 1", (str(country),)
+    ).fetchone()
+    if row and row['unit_price'] is not None:
+        try:
+            return round(float(row['unit_price']), 6)
+        except (ValueError, TypeError):
+            pass
     row = db.execute(
         "SELECT unit_price FROM sms_api_configs WHERE UPPER(country) = UPPER(?) "
         "ORDER BY id LIMIT 1", (str(country),)
@@ -9958,6 +9986,99 @@ def set_email_pricing():
             (unit_price, now))
     db.commit()
     return jsonify({'message': 'Precio actualizado', 'unit_price': unit_price})
+
+
+@app.route('/api/config/sms/pricing', methods=['GET'])
+@admin_required
+def list_sms_pricing():
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, country, country_name, unit_price, is_active, updated_at "
+        "FROM sms_billing_prices ORDER BY country"
+    ).fetchall()
+    configs = []
+    for r in rows:
+        up = r['updated_at']
+        upd = up.strftime('%Y-%m-%d %H:%M:%S') if hasattr(up, 'strftime') else str(up or '')
+        configs.append({
+            'id': r['id'],
+            'country': r['country'],
+            'country_name': r['country_name'] or '',
+            'unit_price': float(r['unit_price'] or 0),
+            'is_active': bool(r['is_active']),
+            'updated_at': upd
+        })
+    return jsonify({'configs': configs})
+
+
+@app.route('/api/config/sms/pricing', methods=['POST'])
+@admin_required
+def add_sms_pricing():
+    data = request.get_json(silent=True) or {}
+    country = str(data.get('country') or '').strip().upper()
+    country_name = str(data.get('country_name') or '').strip()
+    if not country:
+        return jsonify({'error': 'Debe seleccionar un pais'}), 400
+    try:
+        unit_price = round(float(data.get('unit_price') or 0), 6)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'El precio debe ser un numero valido'}), 400
+    if unit_price < 0:
+        return jsonify({'error': 'El precio no puede ser negativo'}), 400
+    db = get_db()
+    dup = db.execute(
+        "SELECT id FROM sms_billing_prices WHERE UPPER(country)=UPPER(?)",
+        (country,)).fetchone()
+    if dup:
+        return jsonify({'error': 'Ya existe un precio para ese pais'}), 409
+    now = datetime.now()
+    db.execute(
+        "INSERT INTO sms_billing_prices (country, country_name, unit_price, is_active, updated_at) "
+        "VALUES (?, ?, ?, 1, ?)",
+        (country, country_name, unit_price, now))
+    db.commit()
+    return jsonify({'message': 'Precio creado'})
+
+
+@app.route('/api/config/sms/pricing/<int:pid>', methods=['PUT'])
+@admin_required
+def update_sms_pricing(pid):
+    data = request.get_json(silent=True) or {}
+    db = get_db()
+    row = db.execute("SELECT id FROM sms_billing_prices WHERE id=?", (pid,)).fetchone()
+    if not row:
+        return jsonify({'error': 'No encontrado'}), 404
+    if 'is_active' in data:
+        is_active = 1 if data.get('is_active') else 0
+        db.execute("UPDATE sms_billing_prices SET is_active=?, updated_at=? WHERE id=?",
+                   (is_active, datetime.now(), pid))
+        db.commit()
+        return jsonify({'message': 'Estado actualizado'})
+    try:
+        unit_price = round(float(data.get('unit_price') if data.get('unit_price') not in (None, '') else 0), 6)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'El precio debe ser un numero valido'}), 400
+    if unit_price < 0:
+        return jsonify({'error': 'El precio no puede ser negativo'}), 400
+    country = str(data.get('country') or '').strip().upper()
+    country_name = str(data.get('country_name') or '').strip()
+    db.execute(
+        "UPDATE sms_billing_prices SET unit_price=?, country_name=?, updated_at=? WHERE id=?",
+        (unit_price, country_name, datetime.now(), pid))
+    db.commit()
+    return jsonify({'message': 'Precio actualizado'})
+
+
+@app.route('/api/config/sms/pricing/<int:pid>', methods=['DELETE'])
+@admin_required
+def delete_sms_pricing(pid):
+    db = get_db()
+    row = db.execute("SELECT id FROM sms_billing_prices WHERE id=?", (pid,)).fetchone()
+    if not row:
+        return jsonify({'error': 'No encontrado'}), 404
+    db.execute("DELETE FROM sms_billing_prices WHERE id=?", (pid,))
+    db.commit()
+    return jsonify({'message': 'Precio eliminado'})
 
 
 @app.route('/api/email/send', methods=['POST'])
