@@ -12,10 +12,10 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 - **Styling**: Custom CSS with Inter font, blue-white theme
 - **Deployment**: Docker + docker-compose (PostgreSQL + Gunicorn + Nginx)
 
-## Git Workflow (AUTO-PUSH POLICY)
+## Git Workflow (SINGLE-TRACK, AUTO-PUSH)
+- **唯一主干分支为 `develop`，不使用任何分支/功能线**：所有功能、修复、文档一律直接提交到 `develop`（不创建、不切换、不保留任何其他分支）。
 - **Every code change MUST be committed AND pushed to `origin/develop` automatically** — do not wait for the user to ask.
 - After finalizing any change and passing validation, `git push origin develop` is mandatory before reporting completion.
-- Branch: `develop` (default). Do not create feature branches unless explicitly requested.
 ```
 .
 ├── app.py                 # Main Flask application (all routes + DB abstraction)
