@@ -6617,7 +6617,7 @@ def get_unified_stats():
                     'admin_username': label, 'team_admin_username': label,
                     'member_count': 0, 'total': 0, 'sent': 0, 'failed': 0,
                     'billed_segments': 0, 'sent_segments': 0, 'failed_segments': 0,
-                    'today': 0, 'rate': 0,
+                    'today': 0, 'rate': 0, 'unit_price': 0,
                     'total_cost': 0, 'sent_cost': 0, 'failed_cost': 0,
                     'cost_total': 0, 'cost_sent': 0, 'cost_failed': 0,
                 }
@@ -6648,6 +6648,10 @@ def get_unified_stats():
             s_cost = _scope_cost("status='sent' OR status='delivered'")
             f_cost = _scope_cost("status='failed'")
             _seg_total, _seg_sent, _seg_failed = sms_segment_breakdown(user_ids, date_filter, date_params, db=db)
+            # Precio unitario medio ponderado del equipo (costo / segmentos). Solo
+            # tiene sentido cuando hay segmentos facturados; la columna COSTO es
+            # igual a 'precio x SMS Fact.' cuando todas las cuentas comparten pais.
+            t_unit_price = round(t_cost / _seg_total, 4) if _seg_total else 0
             return {
                 'unit_role': unit_role,
                 'team_name': name,
@@ -6664,6 +6668,7 @@ def get_unified_stats():
                 'failed_segments': _seg_failed,
                 'today': t_today,
                 'rate': t_rate,
+                'unit_price': t_unit_price,
                 'total_cost': t_cost,
                 'sent_cost': s_cost,
                 'failed_cost': f_cost,
