@@ -982,7 +982,7 @@ async function handleAddContact(event) {
     } catch (err) { showToast(err.message, 'error'); }
 }
 
-async function showEditContactModal(id) {
+async function showEditContactModal(id, onDone) {
     try {
         var contactData = await api('/api/contacts?per_page=1000');
         var groupsData = await api('/api/groups');
@@ -990,6 +990,7 @@ async function showEditContactModal(id) {
         if (!contact) return showToast('Contacto no encontrado', 'error');
         var groupOpts = groupsData.groups.map(function(g) { return '<option value="' + g.id + '"' + (contact.group_id == g.id ? ' selected' : '') + '>' + escapeHtml(g.name) + '</option>'; }).join('');
         var remarkOpts = ['No contactable', 'Promesa de pago', 'Dispuesto a pagar sin fondos', 'No dispuesto a pagar'].map(function(r) { return '<option value="' + r + '"' + (contact.remark === r ? ' selected' : '') + '>' + r + '</option>'; }).join('');
+        state.contactEditorDone = onDone || null;
         showModal('Editar Contacto', '<form onsubmit="handleEditContact(event, ' + id + ')"><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(contact.name) + '" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" value="' + escapeHtml(contact.phone) + '" required></div></div><div class="form-group"><label>Correo electronico</label><input type="email" name="email" value="' + escapeHtml(contact.email || '') + '" placeholder="cliente@correo.com"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + groupOpts + '</select></div><div class="form-group"><label>Nota</label><select name="remark"><option value="">Sin nota</option>' + remarkOpts + '</select></div></div><div class="form-group"><label>Nombre de APP</label><input type="text" name="app_name" value="' + escapeHtml(contact.app_name || '') + '" maxlength="255"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Monto</label><input type="number" name="amount" step="0.01" min="0" value="' + escapeHtml(contact.amount != null ? String(Number(contact.amount)) : '') + '"></div><div class="form-group"><label>Monto de descuento</label><input type="number" name="discount_amount" step="0.01" min="0" value="' + escapeHtml(contact.discount_amount != null ? String(Number(contact.discount_amount)) : '') + '"></div></div><div class="form-group"><label>Link de pago</label><input type="text" name="payment_link" value="' + escapeHtml(contact.payment_link || '') + '" placeholder="Ej: liga.com/pago"></div><div class="form-group"><label>Observaciones</label><textarea name="notes" rows="3">' + escapeHtml(contact.notes || '') + '</textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
     } catch (err) { showToast(err.message, 'error'); }
 }
@@ -999,13 +1000,16 @@ async function handleEditContact(event, id) {
     var form = event.target;
     try {
         await api('/api/contacts/' + id, { method: 'PUT', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), email: form.email.value.trim(), group_id: form.group_id.value || null, remark: form.remark.value, app_name: form.app_name.value.trim(), amount: form.amount.value || 0, discount_amount: form.discount_amount.value || 0, payment_link: form.payment_link.value.trim(), notes: form.notes.value.trim() } });
-        hideModal(); showToast('Contacto actualizado', 'success'); renderContacts(document.getElementById('page-content'));
+        hideModal();
+        var done = state.contactEditorDone; state.contactEditorDone = null;
+        if (typeof done === 'function') { done(); return; }
+        showToast('Contacto actualizado', 'success'); renderContacts(document.getElementById('page-content'));
     } catch (err) { showToast(err.message, 'error'); }
 }
 
-async function deleteContact(id) {
+async function deleteContact(id, onDone) {
     if (!confirm('Esta seguro de eliminar este contacto?')) return;
-    try { await api('/api/contacts/' + id, { method: 'DELETE' }); showToast('Contacto eliminado', 'success'); renderContacts(document.getElementById('page-content')); }
+    try { await api('/api/contacts/' + id, { method: 'DELETE' }); showToast('Contacto eliminado', 'success'); if (typeof onDone === 'function') { onDone(); return; } renderContacts(document.getElementById('page-content')); }
     catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -4976,13 +4980,8 @@ function renderEmailReplies(container) {
             </div>
             ${r.original_subject ? `<div class="reply-meta-line"><strong>Correo original:</strong> ${escapeHtml(r.original_subject)}${r.original_created_at ? ' · ' + formatDate(r.original_created_at) : ''}</div>` : ''}
             ${r.original_from_email ? `<div class="reply-meta-line"><strong>Enviado desde:</strong> ${escapeHtml(r.original_from_email)}${r.original_app_name ? ' <span class="badge">' + escapeHtml(r.original_app_name) + '</span>' : ''}${r.sent_by_username ? ' · por ' + escapeHtml(r.sent_by_username) : ''}</div>` : ''}
-            <div class="reply-contact-line">
-              ${r.contact_id ? `<span class="reply-contact-linked"><strong>Contacto:</strong> ${escapeHtml(r.contact_name || '')}${r.contact_phone ? ' · ' + escapeHtml(r.contact_phone) : ''}${r.contact_email ? ' · ' + escapeHtml(r.contact_email) : ''}${r.contact_app ? ' <span class="badge">' + escapeHtml(r.contact_app) + '</span>' : ''}</span>
-                <span style="display:inline-flex;gap:6px">
-                  ${r.contact_phone ? `<a class="btn btn-secondary btn-sm" href="tel:${escapeHtml(r.contact_phone)}">Llamar</a>` : ''}
-                  ${r.contact_phone ? `<a class="btn btn-secondary btn-sm" target="_blank" rel="noopener" href="https://wa.me/${escapeHtml(r.contact_phone).replace(/[^0-9]/g,'')}">WhatsApp</a>` : ''}
-                </span>`
-                : '<span class="reply-contact-none text-muted">Sin contacto asociado</span>'}
+            <div class="reply-contact-block" id="reply-contact-panel-${r.id}" data-replyid="${r.id}">
+              <div class="text-muted text-sm">Cargando contacto...</div>
             </div>
             <div class="reply-body">${bodyEsc || '<em>(sin contenido)</em>'}</div>
           </div></td></tr>` : '';
@@ -5030,11 +5029,72 @@ function renderEmailReplies(container) {
     </div>`;
 }
 
+async function loadReplyContactPanel(replyId) {
+    var el = document.getElementById('reply-contact-panel-' + replyId);
+    if (!el) return;
+    el.innerHTML = '<div class="text-muted text-sm">Cargando contacto...</div>';
+    try {
+        var data = await api('/api/email/replies/' + replyId + '/panel-contact');
+        var c = data.contact;
+        if (!c) {
+            el.innerHTML = '<div class="reply-contact-panel"><div class="reply-contact-none text-muted">Sin contacto asociado</div>' +
+                '<button class="btn btn-secondary btn-sm" onclick="dialZoiper(\'' + '' + '\',\'\')" style="display:none"></button></div>';
+            return;
+        }
+        el.innerHTML = renderInlineContactPanel(c, replyId);
+    } catch (e) {
+        el.innerHTML = '<div class="reply-contact-panel"><div class="text-danger">Error al cargar contacto</div></div>';
+    }
+}
+
+function renderInlineContactPanel(c, replyId) {
+    var remarkBadgeMap = {
+        'No contactable': 'badge-red', 'Promesa de pago': 'badge-green',
+        'Dispuesto a pagar sin fondos': 'badge-yellow', 'No dispuesto a pagar': 'badge-orange'
+    };
+    var remarkBadge = c.remark ? '<span class="badge ' + (remarkBadgeMap[c.remark] || 'badge-blue') + '">' + escapeHtml(c.remark) + '</span>' : '<span class="text-secondary text-sm">-</span>';
+    var amountVal = Number(c.amount || 0), discountVal = Number(c.discount_amount || 0);
+    var amountCell = (amountVal || discountVal)
+        ? '<div>$' + amountVal.toFixed(2) + '</div>' + (discountVal ? '<div style="font-size:12px;color:#10B981;">-$' + discountVal.toFixed(2) + '</div>' : '')
+        : '<span class="text-secondary text-sm">-</span>';
+    var phone = String(c.phone || '');
+    var waHref = phone ? 'https://wa.me/' + phone.replace(/[^0-9]/g, '') : '';
+    var linkCell = c.payment_link
+        ? '<a href="' + escapeHtml(normalizePaymentLink(c.payment_link)) + '" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" title="' + escapeHtml(c.payment_link) + '">Link de pago</a>'
+        : '<span class="text-secondary text-sm">-</span>';
+    return '<div class="reply-contact-panel">' +
+        '<div class="reply-contact-head">' +
+          '<div class="reply-contact-title">' + escapeHtml(c.name || 'Contacto') + '</div>' +
+          (c.app_name ? '<span class="badge">' + escapeHtml(c.app_name) + '</span>' : '') +
+        '</div>' +
+        '<div class="reply-contact-grid">' +
+          '<div class="rc-field"><span class="rc-label">Telefono</span><span>' + escapeHtml(phone || '-') + '</span></div>' +
+          '<div class="rc-field"><span class="rc-label">Correo</span><span>' + escapeHtml(c.email || '-') + '</span></div>' +
+          '<div class="rc-field"><span class="rc-label">APP</span><span>' + escapeHtml(c.app_name || '-') + '</span></div>' +
+          '<div class="rc-field"><span class="rc-label">Grupo</span><span>' + (c.group_name ? escapeHtml(c.group_name) : '-') + '</span></div>' +
+          '<div class="rc-field"><span class="rc-label">Nota</span><span>' + remarkBadge + '</span></div>' +
+          '<div class="rc-field"><span class="rc-label">Monto</span><span>' + amountCell + '</span></div>' +
+          '<div class="rc-field"><span class="rc-label">SMS</span><span>' + Number(c.sms_count || 0) + '</span></div>' +
+          '<div class="rc-field"><span class="rc-label">Llamadas</span><span>' + Number(c.call_count || 0) + '</span></div>' +
+          '<div class="rc-field"><span class="rc-label">Tiempo</span><span>' + formatDuration(Number(c.talk_time || 0)) + '</span></div>' +
+          '<div class="rc-field"><span class="rc-label">Observaciones</span><span>' + escapeHtml(c.notes || '-') + '</span></div>' +
+        '</div>' +
+        '<div class="reply-contact-actions">' +
+          (phone ? '<a class="btn btn-secondary btn-sm" href="tel:' + escapeHtml(phone) + '">Llamar</a>' : '') +
+          (phone ? '<button class="btn btn-secondary btn-sm" onclick="dialZoiper(\'' + escapeHtml(phone.replace(/'/g, '')) + '\',\'' + escapeHtml(String(c.name || '').replace(/'/g, '')) + '\')">Zoiper</button>' : '') +
+          (waHref ? '<a class="btn btn-secondary btn-sm" target="_blank" rel="noopener" href="' + waHref + '">WhatsApp</a>' : '') +
+          '<button class="btn btn-primary btn-sm" onclick="showEditContactModal(' + c.id + ', function(){ loadReplyContactPanel(' + replyId + '); })">Editar</button>' +
+          '<button class="btn btn-danger btn-sm" onclick="deleteContact(' + c.id + ', function(){ loadReplyContactPanel(' + replyId + '); })">Eliminar</button>' +
+        '</div>' +
+      '</div>';
+}
+
 async function toggleReply(id) {
     var st = state.emailReplies;
     if (st.expanded.has(id)) { st.expanded.delete(id); renderEmailReplies(document.getElementById('page-content')); return; }
     st.expanded.add(id);
     renderEmailReplies(document.getElementById('page-content'));
+    loadReplyContactPanel(id);
     var r = (state.emailRepliesData.replies || []).find(function(x) { return x.id === id; });
     if (r && !r.is_read) {
         try {

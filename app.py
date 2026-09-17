@@ -10792,6 +10792,57 @@ def email_reply_link_contact(reply_id):
     return jsonify({'message': 'ok', 'contact': dict(contact)})
 
 
+@app.route('/api/email/replies/<int:reply_id>/panel-contact', methods=['GET'])
+@login_required
+def email_reply_contact_panel(reply_id):
+    """Return the full contact card for a reply (auto-resolved by id or by
+    sender email), including group name and activity stats — so the SPA can
+    render the entire contact block inline (no navigation). Returns
+    {contact: {...}} or {contact: null}."""
+    db = get_db()
+    row, err = _reply_visible_or_404(db, g.user, reply_id)
+    if err:
+        return err
+    row = dict(row)
+    # Resolve: use the stored link if present, else auto by sender email.
+    cid = row.get('contact_id')
+    resolved_by_email = None
+    if not cid and row.get('sender_email'):
+        eml = row['sender_email'].strip().lower()
+        if eml:
+            cands = db.execute(
+                "SELECT id, name, phone, email, app_name FROM contacts "
+                "WHERE LOWER(email)=? ORDER BY id", [eml]).fetchall()
+            pref = row.get('original_app') or (row.get('original_app_name') or '')
+            if cands:
+                pick = cands[0]
+                for c in cands:
+                    if pref and (c['app_name'] or '') == pref:
+                        pick = c
+                        break
+                cid = pick['id']
+                resolved_by_email = pick
+    if not cid:
+        return jsonify({'contact': None})
+    # Fetch the contact with its group.
+    cwhere, cparams = _contact_visible_where("c")
+    c = db.execute(
+        "SELECT c.*, cg.name AS group_name FROM contacts c "
+        "LEFT JOIN contact_groups cg ON c.group_id = cg.id "
+        "WHERE c.id=? AND " + cwhere, [cid] + cparams).fetchone()
+    if not c:
+        return jsonify({'contact': None})
+    cd = dict(c)
+    stats = _contact_stats_map([cd])
+    key = _phone_digits_tail(cd.get('phone'))
+    s = stats.get(key, {})
+    cd['sms_count'] = int(s.get('sms') or 0)
+    cd['call_count'] = int(s.get('calls') or 0)
+    cd['talk_time'] = int(s.get('talk_time') or 0)
+    cd['resolved_by_email'] = bool(resolved_by_email)
+    return jsonify({'contact': _row_with_dates(cd, ('created_at',))})
+
+
 @app.route('/api/email/records', methods=['GET'])
 @login_required
 def email_records_api():

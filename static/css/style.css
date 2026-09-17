@@ -1840,6 +1840,20 @@ button.var-chip:active {
 .reply-meta-line { display: flex; flex-wrap: wrap; gap: 18px; font-size: 13px; color: #475569; margin-bottom: 8px; }
 .reply-body { margin-top: 10px; padding: 12px 14px; background-color: #fff; border: 1px solid #E2E8F0; border-radius: 10px; font-size: 14px; color: #1E293B; line-height: 1.55; white-space: normal; }
 
+.reply-contact-head {
+  display: flex; align-items: center; gap: 10px;
+  padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--border, #e4e8f0);
+}
+.reply-contact-title { font-weight: 700; font-size: 15px; color: var(--text, #1e293b); }
+.reply-contact-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 14px;
+  margin-bottom: 10px;
+}
+.rc-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rc-label { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: #94a3b8; }
+.rc-field > span:last-child { font-size: 13px; color: var(--text, #1e293b); word-break: break-word; }
+.reply-contact-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
 /* Email reply -> contact association (m121) */
 .reply-contact-line {
   display: flex; align-items: center; justify-content: space-between;
@@ -1856,3 +1870,8 @@ button.var-chip:active {
 .rc-pick-item:hover { background: var(--bg-soft, #f5f7fb); }
 .rc-pick-info { min-width: 0; }
 .rc-pick-info .text-muted { font-size: 12.5px; word-break: break-all; }
+.reply-contact-block { margin: 10px 0; }
+.reply-contact-panel {
+  border: 1px solid var(--border, #e4e8f0); border-radius: 10px;
+  padding: 12px 14px; background: #fbfcfe;
+}
