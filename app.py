@@ -9988,9 +9988,67 @@ def set_email_pricing():
     return jsonify({'message': 'Precio actualizado', 'unit_price': unit_price})
 
 
+_SMS_PRICING_ENGINE_HINT = get_db_type()
+
+def _ensure_sms_pricing_table():
+    """Idempotent self-healing guard: if the sms_billing_prices table is missing
+    (e.g. production Postgres that was never re-bootstrapped after the feature
+    shipped), create it on the fly so the Facturacion page works without waiting
+    for a container restart. Returns True when the table is guaranteed present."""
+    db = get_db()
+    try:
+        db.execute("SELECT 1 FROM sms_billing_prices LIMIT 1").fetchone()
+        return True
+    except Exception as e:
+        # Backends differ in the exception type; match on the message text.
+        msg = str(e).lower()
+        if 'does not exist' not in msg and 'no such table' not in msg and 'undefinedtable' not in msg:
+            return False
+    if _SMS_PRICING_ENGINE_HINT == 'postgres':
+        try:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS sms_billing_prices (
+                    id SERIAL PRIMARY KEY,
+                    country VARCHAR(20) NOT NULL UNIQUE,
+                    country_name VARCHAR(40) DEFAULT '',
+                    unit_price NUMERIC(14,4) NOT NULL DEFAULT 0,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            db.commit()
+            return True
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return False
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS sms_billing_prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country TEXT NOT NULL UNIQUE,
+                country_name TEXT DEFAULT '',
+                unit_price REAL NOT NULL DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        db.commit()
+        return True
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
+
+
 @app.route('/api/config/sms/pricing', methods=['GET'])
 @admin_required
 def list_sms_pricing():
+    _ensure_sms_pricing_table()
     db = get_db()
     rows = db.execute(
         "SELECT id, country, country_name, unit_price, is_active, updated_at "
@@ -10025,6 +10083,7 @@ def add_sms_pricing():
         return jsonify({'error': 'El precio debe ser un numero valido'}), 400
     if unit_price < 0:
         return jsonify({'error': 'El precio no puede ser negativo'}), 400
+    _ensure_sms_pricing_table()
     db = get_db()
     dup = db.execute(
         "SELECT id FROM sms_billing_prices WHERE UPPER(country)=UPPER(?)",
@@ -10044,6 +10103,7 @@ def add_sms_pricing():
 @admin_required
 def update_sms_pricing(pid):
     data = request.get_json(silent=True) or {}
+    _ensure_sms_pricing_table()
     db = get_db()
     row = db.execute("SELECT id FROM sms_billing_prices WHERE id=?", (pid,)).fetchone()
     if not row:
@@ -10072,6 +10132,7 @@ def update_sms_pricing(pid):
 @app.route('/api/config/sms/pricing/<int:pid>', methods=['DELETE'])
 @admin_required
 def delete_sms_pricing(pid):
+    _ensure_sms_pricing_table()
     db = get_db()
     row = db.execute("SELECT id FROM sms_billing_prices WHERE id=?", (pid,)).fetchone()
     if not row:
