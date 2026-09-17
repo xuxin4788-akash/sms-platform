@@ -10108,8 +10108,8 @@ def add_sms_pricing():
     try:
         db.execute(
             "INSERT INTO sms_billing_prices (country, country_name, unit_price, is_active, updated_at) "
-            "VALUES (?, ?, ?, 1, ?)",
-            (country, country_name, unit_price, now))
+            "VALUES (?, ?, ?, ?, ?)",
+            (country, country_name, unit_price, True, now))
         db.commit()
     except Exception as e:
         try:
