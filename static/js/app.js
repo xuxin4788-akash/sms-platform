@@ -4326,6 +4326,32 @@ async function addSmsConfigForCountry(country, countryLabel) {
     } catch (err) { showToast(err.message, 'error'); }
 }
 
+// Tab navigation for the unified config page. Switching only toggles the
+// visible body (opacity/display), keeping already-rendered DOM alive.
+function switchUnifiedTab(key) {
+    ['apis', 'email', 'senders'].forEach(function(k) {
+        var btn = document.getElementById('utab-' + k);
+        if (btn) btn.classList.toggle('active', k === key);
+        var body = document.getElementById('utab-body-' + k);
+        if (body) body.style.display = (k === key) ? '' : 'none';
+    });
+    window._unifiedTab = key;
+}
+
+// Render the "Envios por APP" block inside a unified-config tab (no page
+// chrome / standalone heading since it lives inside the tab area).
+async function renderEmailSendersTab(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var data = await api('/api/config/email/senders');
+        data = data || {};
+        container.innerHTML =
+            renderEmailSendersCard(data);
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
+    }
+}
+
 async function renderUnifiedConfig(container) {
     _configPageMode = 'unified';
     if (state.user.role !== 'admin') { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>'; return; }
@@ -4381,13 +4407,30 @@ async function renderUnifiedConfig(container) {
             return '<div class="card mb-4" style="border:1px solid var(--border,#E2E8F0);"><div class="card-header" style="display:flex;align-items:center;gap:10px;"><h3 style="margin:0;">' + escapeHtml(label) + ' <span class="badge badge-blue">' + escapeHtml(cc) + '</span></h3><span class="badge badge-secondary" style="margin-left:auto;">SMS + Voz</span></div><div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">' + (sms || voice ? '<div>' + smsHtml + '</div>' + '<div>' + voiceHtml + '</div>' : '<div class="text-secondary">Sin configuraciones para este pais.</div>') + '</div></div>';
         }).join('');
 
-        // Email block reuses the existing renderer (separate section).
+        // Config page with tabs: APIs (SMS+Voz) | Correo (SMTP) | Envios por APP.
+        // Each tab is a separate area that can be independently permissioned.
         container.innerHTML =
             '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Configuracion de APIs</h1></div>' +
-            '<div class="alert alert-info mb-4"><div class="card-body" style="padding:12px;">SMS y Voz se configuran juntos aqui, agrupados por <strong>pais</strong> (Mexico/Colombia/Peru). Cada pais usa sus propias credenciales e infiere el proveedor: con URL+AppID+AccessKey se activa <strong>Infinity</strong>; si faltan, queda en <strong>modo simulacion</strong>. El Correo (SMTP) se configura por separado abajo.</div></div>' +
-            countryBlocks +
-            '<div id="unified-email-body"></div>';
-        renderEmailConfig(document.getElementById('unified-email-body'));
+            '<div class="unified-tabs" role="tablist">' +
+              '<button type="button" class="unified-tab active" id="utab-apis" data-key="apis" onclick="switchUnifiedTab(\'apis\')">APIs (SMS + Voz)</button>' +
+              '<button type="button" class="unified-tab" id="utab-email" data-key="email" onclick="switchUnifiedTab(\'email\')">Correo (SMTP)</button>' +
+              '<button type="button" class="unified-tab" id="utab-senders" data-key="senders" onclick="switchUnifiedTab(\'senders\')">Envios por APP</button>' +
+            '</div>' +
+            '<div id="utab-body-apis">' +
+              '<div class="alert alert-info mb-4"><div class="card-body" style="padding:12px;">SMS y Voz se configuran juntos aqui, agrupados por <strong>pais</strong> (Mexico/Colombia/Peru). Cada pais usa sus propias credenciales e infiere el proveedor: con URL+AppID+AccessKey se activa <strong>Infinity</strong>; si faltan, queda en <strong>modo simulacion</strong>.</div></div>' +
+              countryBlocks +
+            '</div>' +
+            '<div id="utab-body-email" style="display:none;"></div>' +
+            '<div id="utab-body-senders" style="display:none;"></div>';
+
+        // Render Correo and Envios por APP tab bodies on demand (lazy).
+        renderEmailConfig(document.getElementById('utab-body-email'));
+        renderEmailSendersTab(document.getElementById('utab-body-senders'));
+
+        // Restore previously selected tab after a refresh (e.g. after saving).
+        if (window._unifiedTab && window._unifiedTab !== 'apis') {
+            switchUnifiedTab(window._unifiedTab);
+        }
     } catch (e) {
         container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
     }
@@ -5373,10 +5416,6 @@ async function renderEmailConfig(container) {
                 '<div id="em-msg"></div>' +
                 '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="submit" class="btn btn-primary">Guardar configuracion</button><button type="button" class="btn btn-secondary" onclick="handleTestEmailConfig()">Enviar correo de prueba</button></div>' +
               '</form>' +
-            '</div></div>' +
-            '<div class="card mb-4" style="border-style:dashed;"><div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">' +
-              '<div><h3 style="margin:0;margin-bottom:4px;">Direcciones de envio por APP</h3><p class="text-secondary text-sm" style="margin:0;">Cada APP puede enviar desde su propio correo remitente. Se gestiona en su propia pagina.</p></div>' +
-              '<a class="btn btn-primary btn-sm" href="#/email-senders">Gestionar direcciones por APP</a>' +
             '</div></div>' +
             '<div class="card"><div class="card-body"><h3 style="margin-bottom:8px;">Proveedores soportados</h3><p class="text-secondary text-sm" style="margin-bottom:8px;">Microsoft 365 / Google Workspace usan autenticacion de aplicacion: en Google activa la verificacion en 2 pasos y crea una "contrasena de aplicacion"; en Microsoft usa una cuenta con SMTP AUTH habilitado. Amazon SES, Mailgun y SendGrid generan credenciales SMTP dedicadas en su consola.</p></div></div>';
     } catch (e) {
