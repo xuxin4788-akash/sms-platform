@@ -5178,13 +5178,11 @@ var SMS_PRICING_COUNTRIES = [
 async function renderEmailPricing(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
-        var [pData, smsPricingData, billing] = await Promise.all([
+        var [pData, smsPricingData] = await Promise.all([
             api('/api/config/email/pricing'),
-            api('/api/config/sms/pricing').catch(function() { return { configs: [] }; }),
-            api('/api/settings/billing').catch(function() { return { sms_unit_price: 0 }; })
+            api('/api/config/sms/pricing').catch(function() { return { configs: [] }; })
         ]);
         var emailUnit = (pData.unit_price != null ? pData.unit_price : 0);
-        var smsDefault = (billing && billing.sms_unit_price != null) ? billing.sms_unit_price : 0;
         var smsConfigs = smsPricingData.configs || [];
         var existingCountries = {};
         smsConfigs.forEach(function(c) { existingCountries[(c.country || '').toUpperCase()] = true; });
@@ -5222,10 +5220,6 @@ async function renderEmailPricing(container) {
                 '<div style="overflow-x:auto;margin-bottom:16px;"><table class="data-table"><thead><tr>' +
                   '<th>Pais</th><th>Precio por SMS</th><th class="text-right">Accion</th>' +
                 '</tr></thead><tbody>' + smsRows + '</tbody></table></div>' +
-                '<div class="form-row" style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:end;border-top:1px solid var(--border-color,#E2E8F0);padding-top:16px;">' +
-                  '<div class="form-group"><label>Costo global por defecto (por SMS facturado)</label><input id="sms-unit-price" type="number" step="any" min="0" value="' + smsDefault + '" style="max-width:220px;"></div>' +
-                  '<div><button class="btn btn-primary" onclick="saveSmsDefaultPrice()">Guardar</button></div>' +
-                '</div>' +
                 '<div id="sp-msg" style="margin-top:10px;"></div>' +
             '</div></div>';
     } catch (e) {
@@ -5284,20 +5278,6 @@ async function deleteSmsPricing(configId) {
     try {
         await api('/api/config/sms/pricing/' + configId, { method: 'DELETE' });
         if (msg) msg.innerHTML = '<div class="alert alert-success">Precio por SMS eliminado.</div>';
-        renderEmailPricing(document.getElementById('page-content'));
-    } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
-}
-
-async function saveSmsDefaultPrice() {
-    var msg = document.getElementById('sp-msg');
-    if (msg) msg.innerHTML = '';
-    var input = document.getElementById('sms-unit-price');
-    if (!input) return;
-    var val = parseFloat(input.value);
-    if (isNaN(val) || val < 0) { if (msg) msg.innerHTML = '<div class="alert alert-error">Ingrese un costo valido.</div>'; return; }
-    try {
-        await api('/api/settings/billing', { method: 'PUT', body: { sms_unit_price: val } });
-        if (msg) msg.innerHTML = '<div class="alert alert-success">Costo global por SMS actualizado.</div>';
         renderEmailPricing(document.getElementById('page-content'));
     } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
 }
