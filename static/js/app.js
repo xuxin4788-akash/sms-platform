@@ -4978,9 +4978,11 @@ function renderEmailReplies(container) {
             ${r.original_from_email ? `<div class="reply-meta-line"><strong>Enviado desde:</strong> ${escapeHtml(r.original_from_email)}${r.original_app_name ? ' <span class="badge">' + escapeHtml(r.original_app_name) + '</span>' : ''}${r.sent_by_username ? ' · por ' + escapeHtml(r.sent_by_username) : ''}</div>` : ''}
             <div class="reply-contact-line">
               ${r.contact_id ? `<span class="reply-contact-linked"><strong>Contacto:</strong> ${escapeHtml(r.contact_name || '')}${r.contact_phone ? ' · ' + escapeHtml(r.contact_phone) : ''}${r.contact_email ? ' · ' + escapeHtml(r.contact_email) : ''}${r.contact_app ? ' <span class="badge">' + escapeHtml(r.contact_app) + '</span>' : ''}</span>
-                <button type="button" class="btn btn-secondary btn-sm" onclick="event.stopPropagation();unlinkReplyContact(${r.id})">Quitar vinculo</button>`
-                : `<span class="reply-contact-none text-muted">Sin contacto asociado</span>
-                <button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation();openReplyContactPicker(${r.id})">Asociar contacto</button>`}
+                <span style="display:inline-flex;gap:6px">
+                  ${r.contact_phone ? `<a class="btn btn-secondary btn-sm" href="tel:${escapeHtml(r.contact_phone)}">Llamar</a>` : ''}
+                  ${r.contact_phone ? `<a class="btn btn-secondary btn-sm" target="_blank" rel="noopener" href="https://wa.me/${escapeHtml(r.contact_phone).replace(/[^0-9]/g,'')}">WhatsApp</a>` : ''}
+                </span>`
+                : '<span class="reply-contact-none text-muted">Sin contacto asociado</span>'}
             </div>
             <div class="reply-body">${bodyEsc || '<em>(sin contenido)</em>'}</div>
           </div></td></tr>` : '';
@@ -5049,73 +5051,6 @@ function toggleEmailRepliesUnread(v) { state.emailReplies.unreadOnly = v; state.
 function clearEmailRepliesFilters() {
     state.emailReplies.search = ''; state.emailReplies.unreadOnly = false; state.emailReplies.page = 1;
     loadEmailReplies();
-}
-
-async function openReplyContactPicker(replyId) {
-    var overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal reply-contact-modal" onclick="event.stopPropagation()">
-      <div class="modal-header"><h3>Asociar contacto</h3>
-        <button type="button" class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button></div>
-      <div class="modal-body">
-        <div class="d-flex gap-2 mb-2">
-          <input type="text" class="form-input" id="rc-picker-search" placeholder="Buscar por nombre, telefono o correo..."
-            onkeydown="if(event.key==='Enter')searchReplyContacts(${replyId}, this.value)">
-          <button type="button" class="btn btn-primary btn-sm" onclick="searchReplyContacts(${replyId}, document.getElementById('rc-picker-search').value)">Buscar</button>
-        </div>
-        <div id="rc-picker-list" class="rc-picker-list"><div class="text-muted">Cargando coincidencias por correo...</div></div>
-      </div></div>`;
-    overlay.onclick = function() { overlay.remove(); };
-    document.body.appendChild(overlay);
-    setTimeout(function() { var inp = document.getElementById('rc-picker-search'); if (inp) inp.focus(); }, 50);
-    await loadReplyContactCandidates(replyId, '');
-}
-
-async function loadReplyContactCandidates(replyId, q) {
-    var box = document.getElementById('rc-picker-list');
-    if (!box) return;
-    box.innerHTML = '<div class="text-muted">Cargando...</div>';
-    try {
-        var url = '/api/email/replies/' + replyId + '/contacts';
-        if (q) url += '?q=' + encodeURIComponent(q);
-        var data = await api(url);
-        var list = data.contacts || [];
-        if (!list.length) {
-            box.innerHTML = '<div class="empty-state">No se encontraron contactos visibles.</div>';
-            return;
-        }
-        box.innerHTML = list.map(function(c) {
-            return `<div class="rc-pick-item">
-              <div class="rc-pick-info">
-                <div><strong>${escapeHtml(c.name || '')}</strong>${c.app_name ? ' <span class="badge">' + escapeHtml(c.app_name) + '</span>' : ''}</div>
-                <div class="text-muted">${escapeHtml(c.phone || '')}${c.email ? ' · ' + escapeHtml(c.email) : ''}</div>
-              </div>
-              <button type="button" class="btn btn-primary btn-sm" onclick="linkReplyContact(${replyId}, ${c.id})">Asociar</button>
-            </div>`;
-        }).join('');
-    } catch (e) {
-        box.innerHTML = '<div class="text-danger">' + escapeHtml(e.message || 'Error') + '</div>';
-    }
-}
-
-function searchReplyContacts(replyId, q) { loadReplyContactCandidates(replyId, (q || '').trim()); }
-
-async function linkReplyContact(replyId, contactId) {
-    try {
-        await api('/api/email/replies/' + replyId + '/contact', { method: 'POST', body: { contact_id: contactId } });
-        var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
-        await loadEmailReplies();
-        showToast('Contacto asociado', 'success');
-    } catch (e) { showToast(e.message, 'error'); }
-}
-
-async function unlinkReplyContact(replyId) {
-    if (!confirm('Quitar el vinculo con este contacto?')) return;
-    try {
-        await api('/api/email/replies/' + replyId + '/contact', { method: 'DELETE' });
-        await loadEmailReplies();
-        showToast('Vinculo eliminado', 'success');
-    } catch (e) { showToast(e.message, 'error'); }
 }
 
 // ---- Admin SMTP config ----

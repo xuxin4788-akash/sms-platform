@@ -10495,34 +10495,47 @@ def _store_email_reply(db, info):
     orig = None
     if to_lower:
         orig = db.execute(
-            "SELECT id, created_by FROM email_records "
+            "SELECT id, created_by, app_name FROM email_records "
             "WHERE LOWER(from_email)=? AND LOWER(recipient_email)=? "
             "ORDER BY id DESC LIMIT 1",
             (to_lower, sender)).fetchone()
     if not orig:
         # Fallback: single global sender / legacy rows with empty from_email.
         orig = db.execute(
-            "SELECT id, created_by FROM email_records "
+            "SELECT id, created_by, app_name FROM email_records "
             "WHERE LOWER(recipient_email)=? ORDER BY id DESC LIMIT 1",
             (sender,)).fetchone()
     original_record_id = orig['id'] if orig else None
     created_by = orig['created_by'] if orig else None
-    # Auto-link the contact whose email matches the reply sender. Prefer a
-    # contact owned by the same account that sent the original email; with no
-    # owner match, take the unique/most recent matching contact.
+    orig_app = (orig['app_name'] or '') if orig else ''
+    # Auto-link the contact whose email matches the reply sender. Order of
+    # preference: (1) same app as the original outbound email AND owned by the
+    # same account that sent it, (2) same app, (3) same owner, (4) most recent.
     contact_id = None
-    cands = db.execute(
-        "SELECT id, created_by FROM contacts WHERE LOWER(email)=? AND email<>'' "
-        "ORDER BY id DESC",
-        (sender,)).fetchall()
-    if cands:
-        if created_by is not None:
+    if sender:
+        cands = db.execute(
+            "SELECT id, created_by, app_name FROM contacts WHERE LOWER(email)=? AND email<>'' "
+            "ORDER BY id DESC",
+            (sender,)).fetchall()
+        if cands:
+            def _same_app(c):
+                return (c['app_name'] or '') == orig_app
             for c in cands:
-                if c['created_by'] == created_by:
+                if _same_app(c) and created_by is not None and c['created_by'] == created_by:
                     contact_id = c['id']
                     break
-        if contact_id is None:
-            contact_id = cands[0]['id']
+            if contact_id is None:
+                for c in cands:
+                    if _same_app(c):
+                        contact_id = c['id']
+                        break
+            if contact_id is None:
+                for c in cands:
+                    if created_by is not None and c['created_by'] == created_by:
+                        contact_id = c['id']
+                        break
+            if contact_id is None:
+                contact_id = cands[0]['id']
     now = datetime.now()
     cur = db.execute(
         "INSERT INTO email_replies (sender_email, sender_name, recipient_email, subject, body, "
@@ -10635,8 +10648,44 @@ def email_replies_api():
     unread = db.execute(
         "SELECT COUNT(*) AS n FROM email_replies x WHERE " + where + " AND x.is_read = ?",
         params + [False]).fetchone()['n']
+    # Auto-resolve a matching contact by sender email for replies not explicitly
+    # linked (so every reply surfaces its contact without manual action). Prefer a
+    # contact whose app matches the original outbound app, else the lowest id.
+    rows = [dict(r) for r in rows]
+    missing_ids = [r['id'] for r in rows if not r['contact_id'] and r['sender_email']]
+    resolved = {}
+    if missing_ids:
+        emails = sorted({(r['sender_email'] or '').strip().lower() for r in rows if not r['contact_id'] and r['sender_email']})
+        if emails:
+            ph = ','.join('?' * len(emails))
+            cands = db.execute(
+                f"SELECT id, name, phone, email, app_name FROM contacts "
+                f"WHERE LOWER(email) IN ({ph})", emails).fetchall()
+            by_email = {}
+            for c in cands:
+                by_email.setdefault((c['email'] or '').strip().lower(), []).append(c)
+            for r in rows:
+                if r['contact_id'] or not r['sender_email']:
+                    continue
+                eml = r['sender_email'].strip().lower()
+                pool = by_email.get(eml) or []
+                if not pool:
+                    continue
+                pick = pool[0]
+                for c in pool:
+                    if r.get('original_app_name') and (c['app_name'] or '') == r['original_app_name']:
+                        pick = c
+                        break
+                resolved[r['id']] = pick
     out = []
     for r in rows:
+        pc = resolved.get(r['id'])
+        if pc:
+            r['contact_id'] = pc['id']
+            r['contact_name'] = pc['name']
+            r['contact_phone'] = pc['phone']
+            r['contact_email'] = pc['email']
+            r['contact_app'] = pc['app_name']
         d = _row_with_dates(r, ('created_at', 'original_sent_at', 'original_created_at'))
         d['received_at'] = d.get('created_at')
         d['body_text'] = d.get('body')
