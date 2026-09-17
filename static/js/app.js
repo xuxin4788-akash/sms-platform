@@ -1945,7 +1945,17 @@ async function showAddUserModal() {
             apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais)</label><p class="text-secondary">No hay configuraciones API disponibles</p></div>';
         }
     }
-    var countryFieldHtml = '<div class="form-group"><label>Pais del agente</label><select name="country"><option value="">Sin pais especifico</option><option value="mx">Mexico</option><option value="co">Colombia</option><option value="pe">Peru</option></select><small class="text-secondary">Define de que pool de extensiones se asigna (Mexico/Colombia/Peru).</small></div>';
+    // Pais del agente. Por defecto sigue al del administrador que crea la
+    // cuenta (es decir, al del equipo); el miembro solo se sobreescribe si
+    // pertenece a otro pais. El backend hereda este default igualmente.
+    var defaultAgentCountry = (state.user && state.user.country) ? normalizeCountryInput(state.user.country) : '';
+    var agentCountryOptions = '';
+    ['', 'mx', 'co', 'pe'].forEach(function(cc) {
+        var label = cc === '' ? 'Sin pais especifico' : ({mx: 'Mexico', co: 'Colombia', pe: 'Peru'})[cc];
+        var sel = (cc === defaultAgentCountry) ? ' selected' : '';
+        agentCountryOptions += '<option value="' + cc + '"' + sel + '>' + label + '</option>';
+    });
+    var countryFieldHtml = '<div class="form-group"><label>Pais del agente</label><select name="country">' + agentCountryOptions + '</select><small class="text-secondary">Por defecto sigue el pais de tu equipo. Define de que pool de extensiones se asigna (Mexico/Colombia/Peru).</small></div>';
     var extFieldHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool del pais seleccionado. No se permite escribir el numero manualmente; si no hay extensiones libres, pida al administrador del sistema que agregue mas.</small></div>';
     var categoryHtml = await categoryFieldHtml(null);
     showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role" id="add-user-role" onchange="toggleApiConfig()">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div>' + apiConfigHtml + countryFieldHtml + categoryHtml + extFieldHtml + '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
