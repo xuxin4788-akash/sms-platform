@@ -2061,9 +2061,7 @@ var PERM_ITEMS = [
     { key: 'my-account', label: 'Mi Cuenta', icon: 'user' },
     { key: 'my-team', label: 'Mi Equipo', icon: 'users' },
     { key: 'all-teams', label: 'Todos los Equipos', icon: 'bar-chart' },
-    { key: 'config', label: 'Configuracion API SMS', icon: 'settings' },
     { key: 'api-config', label: 'Configuracion de APIs', icon: 'settings' },
-    { key: 'voice-config', label: 'Configuracion Voz', icon: 'settings' },
     { key: 'extensions', label: 'Extensiones', icon: 'phone' },
     { key: 'retention', label: 'Retencion de Contactos', icon: 'shield' },
     { key: 'team-api-select', label: 'Seleccionar API de Equipo', icon: 'server' }

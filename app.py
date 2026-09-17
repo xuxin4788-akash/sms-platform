@@ -3268,7 +3268,7 @@ def get_me():
         role = g.user['role']
         if role == 'admin':
             # Admin always has all permissions
-            permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'voice-config', 'email', 'email-records', 'email-config', 'retention', 'role-permissions']
+            permissions = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'api-config', 'extensions', 'email', 'email-records', 'email-config', 'retention', 'role-permissions']
             perms_configured = True
         else:
             # Get permissions from role_permissions table
@@ -3581,7 +3581,7 @@ def list_users():
             ud['permissions'] = []
         # Admin always has all permissions
         if ud['role'] == 'admin':
-            ud['permissions'] = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'config', 'voice-config']
+            ud['permissions'] = ['dashboard', 'contacts', 'groups', 'templates', 'send', 'records', 'calls', 'content-search', 'users', 'my-account', 'my-team', 'all-teams', 'api-config', 'extensions']
         # Team affiliation: show the direct superior (team creator) name as the
         # team label; when there is no superior (the account itself is a team
         # admin / leader), show its own name as the team identifier (Option B).
@@ -4529,8 +4529,8 @@ AVAILABLE_PAGES = [
     {'id': 'my-account', 'label': 'Mi Cuenta', 'icon': 'user'},
     {'id': 'my-team', 'label': 'Mi Equipo', 'icon': 'users'},
     {'id': 'all-teams', 'label': 'Todos los Equipos', 'icon': 'bar-chart'},
-    {'id': 'config', 'label': 'Configuracion API SMS', 'icon': 'settings'},
-    {'id': 'voice-config', 'label': 'Configuracion Voz', 'icon': 'settings'},
+    {'id': 'api-config', 'label': 'Configuracion de APIs', 'icon': 'settings'},
+    {'id': 'extensions', 'label': 'Extensiones', 'icon': 'phone'},
     {'id': 'retention', 'label': 'Retencion de Contactos', 'icon': 'shield'},
     {'id': 'email-pricing', 'label': 'Facturacion', 'icon': 'mail'},
 ]
