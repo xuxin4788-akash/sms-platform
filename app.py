@@ -702,8 +702,9 @@ def init_db():
             );
 
             CREATE TABLE IF NOT EXISTS role_permissions (
-                role VARCHAR(20) PRIMARY KEY,
-                permissions TEXT NOT NULL DEFAULT ''
+                role VARCHAR(40) PRIMARY KEY,
+                permissions TEXT NOT NULL DEFAULT '',
+                label VARCHAR(120) NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS short_links (
@@ -986,10 +987,14 @@ def init_db():
             cur.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL")
         if not pg_column_exists('users', 'session_token'):
             cur.execute("ALTER TABLE users ADD COLUMN session_token TEXT DEFAULT ''")
-        # Update role check constraint - drop old constraint, add new one
+        # role_permissions: add display label (custom roles created by admin)
+        if not pg_column_exists('role_permissions', 'label'):
+            cur.execute("ALTER TABLE role_permissions ADD COLUMN label VARCHAR(120) NOT NULL DEFAULT ''")
+        # Update role check constraint - allow custom roles (e.g. data analysts)
+        # created by the system admin. Drop the legacy 3-role CHECK so custom
+        # role keys (like 'data_specialist') can be stored.
         try:
             cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
-            cur.execute("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'team_admin', 'team_member'))")
             cur.execute("UPDATE users SET role='team_member' WHERE role='employee'")
         except Exception:
             pass
@@ -1220,7 +1225,7 @@ def init_db():
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 full_name TEXT NOT NULL DEFAULT '',
-                role TEXT NOT NULL DEFAULT 'team_member' CHECK(role IN ('admin', 'team_admin', 'team_member')),
+                role TEXT NOT NULL DEFAULT 'team_member',
                 team_creator_id INTEGER,
                 category_id INTEGER,
                 is_active INTEGER NOT NULL DEFAULT 1,
@@ -1395,7 +1400,8 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS role_permissions (
                 role TEXT PRIMARY KEY,
-                permissions TEXT NOT NULL DEFAULT ''
+                permissions TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS voice_config (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2120,6 +2126,86 @@ def init_db():
             db.commit()
         except Exception as e:
             print(f"Migration error: {e}")
+
+        # role_permissions: add display label (custom roles created by admin)
+        try:
+            rp_cols = [row[1] for row in db.execute("PRAGMA table_info(role_permissions)").fetchall()]
+            if 'label' not in rp_cols:
+                db.execute("ALTER TABLE role_permissions ADD COLUMN label TEXT NOT NULL DEFAULT ''")
+                db.commit()
+        except Exception as e:
+            print(f"Migration role_permissions.label error: {e}")
+
+        # Rebuild users table without the 3-role CHECK constraint so custom
+        # roles (created by the system admin, e.g. data analysts) can be stored.
+        # Use an explicit, fixed schema to avoid dynamic-DDL bugs. Handles both
+        # (a) the original live users table having the legacy CHECK and
+        # (b) a half-migrated state where users_old exists but users is missing.
+        def _users_has_role_check(conn):
+            try:
+                row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+                s = (row[0] or '') if row else ''
+                return 'role' in s and 'CHECK' in s
+            except Exception:
+                return False
+
+        USERS_DDL_NO_CHECK = (
+            'CREATE TABLE users ('
+            'id INTEGER PRIMARY KEY AUTOINCREMENT,'
+            'username TEXT UNIQUE NOT NULL,'
+            'password_hash TEXT NOT NULL,'
+            'full_name TEXT NOT NULL DEFAULT \'\','
+            'role TEXT NOT NULL DEFAULT \'team_member\','
+            'team_creator_id INTEGER,'
+            'category_id INTEGER,'
+            'is_active INTEGER NOT NULL DEFAULT 1,'
+            'daily_limit INTEGER DEFAULT 0,'
+            'permissions TEXT DEFAULT \'\','
+            'extnumber TEXT DEFAULT NULL,'
+            'country TEXT DEFAULT NULL,'
+            'last_login_ip TEXT DEFAULT \'\','
+            'last_login_at TEXT DEFAULT NULL,'
+            'session_token TEXT DEFAULT \'\','
+            'created_at TEXT NOT NULL DEFAULT (datetime(\'now\')),'
+            'updated_at TEXT NOT NULL DEFAULT (datetime(\'now\')),'
+            'FOREIGN KEY (team_creator_id) REFERENCES users(id) ON DELETE SET NULL,'
+            'FOREIGN KEY (category_id) REFERENCES user_categories(id) ON DELETE SET NULL'
+            ')'
+        )
+        try:
+            has_users = any(r[0] == 'users' for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall())
+            if not has_users:
+                # Recover: a previous rebuild renamed users -> users_old but failed.
+                db.execute("PRAGMA foreign_keys=OFF")
+                db.execute(USERS_DDL_NO_CHECK)
+                old_cols = [r[1] for r in db.execute("PRAGMA table_info(users_old)").fetchall()]
+                cols = [c for c in ['id','username','password_hash','full_name','role','team_creator_id','category_id','is_active','daily_limit','permissions','extnumber','country','last_login_ip','last_login_at','session_token','created_at','updated_at'] if c in old_cols]
+                sel = ','.join('"' + c + '"' if c != 'role' else "CASE WHEN role='employee' THEN 'team_member' ELSE role END" for c in cols)
+                db.execute("INSERT INTO users (" + ','.join('"' + c + '"' for c in cols) + ") SELECT " + sel + " FROM users_old")
+                db.execute("DROP TABLE users_old")
+                db.execute("PRAGMA foreign_keys=ON")
+                db.commit()
+                print("Recovered users table from users_old")
+            elif _users_has_role_check(db):
+                # Normal case: live users table still has the 3-role CHECK.
+                db.execute("PRAGMA foreign_keys=OFF")
+                db.execute("DROP TABLE IF EXISTS users_old")
+                db.execute("ALTER TABLE users RENAME TO users_old")
+                db.execute(USERS_DDL_NO_CHECK)
+                old_cols = [r[1] for r in db.execute("PRAGMA table_info(users_old)").fetchall()]
+                cols = [c for c in ['id','username','password_hash','full_name','role','team_creator_id','category_id','is_active','daily_limit','permissions','extnumber','country','last_login_ip','last_login_at','session_token','created_at','updated_at'] if c in old_cols]
+                sel = ','.join('"' + c + '"' if c != 'role' else "CASE WHEN role='employee' THEN 'team_member' ELSE role END" for c in cols)
+                db.execute("INSERT INTO users (" + ','.join('"' + c + '"' for c in cols) + ") SELECT " + sel + " FROM users_old")
+                db.execute("DROP TABLE users_old")
+                db.execute("PRAGMA foreign_keys=ON")
+                db.commit()
+                print("Rebuilt users table without role CHECK (custom roles enabled)")
+        except Exception as e:
+            print(f"Migration users rebuild (drop role CHECK) error: {e}")
+            try:
+                db.execute("PRAGMA foreign_keys=ON")
+            except Exception:
+                pass
 
         # Performance indexes (idempotent). Critical for large teams:
         # the send_logs page and SMS records/statistics pages sort/filter by
@@ -3621,6 +3707,7 @@ def list_users():
 def create_user():
     data = request.get_json()
     current = g.user
+    db = get_db()
     username = data.get('username', '').strip()
     password = (data.get('password') or '').strip()
     full_name = (data.get('full_name') or '').strip()
@@ -3636,9 +3723,14 @@ def create_user():
         return jsonify({'error': 'La contrasena debe tener minimo 6 caracteres'}), 400
     # Role assignment rules
     if current['role'] == 'admin':
-        # System admin can create team_admins or team members (e.g. data analysts)
-        if role not in ('team_admin', 'team_member'):
-            return jsonify({'error': 'El Administrador del Sistema solo puede crear Administradores de Equipo o Miembros de Equipo'}), 400
+        # System admin can create team_admins, team members, or any custom role
+        # (e.g. data analysts). Any role value is allowed except assigning admin.
+        if role == 'admin':
+            return jsonify({'error': 'El Administrador del Sistema no puede crear otra cuenta de administrador'}), 400
+        # Ensure the role exists in role_permissions (built-ins or custom).
+        rp = db.execute("SELECT role FROM role_permissions WHERE role = ?", (role,)).fetchone()
+        if not rp:
+            return jsonify({'error': 'El rol no existe'}), 400
         team_creator_id = None
     elif current['role'] == 'team_admin':
         # Team admin can only create team_member
@@ -3723,9 +3815,13 @@ def update_user(user_id):
     # Only system admin can change roles
     if current['role'] == 'admin' and 'role' in data:
         new_role = data['role']
-        if new_role in ('admin', 'team_admin', 'team_member'):
-            updates.append("role=?")
-            params.append(new_role)
+        if new_role == 'admin':
+            return jsonify({'error': 'No puede asignar el rol de Administrador del Sistema'}), 400
+        rp = db.execute("SELECT role FROM role_permissions WHERE role = ?", (new_role,)).fetchone()
+        if not rp:
+            return jsonify({'error': 'El rol no existe'}), 400
+        updates.append("role=?")
+        params.append(new_role)
     if is_active in (0, 1, True, False):
         updates.append("is_active=?")
         params.append(int(is_active))
@@ -4592,7 +4688,7 @@ def get_role_permissions():
 
     # Get all roles and their permissions
     roles = db.execute("""
-        SELECT role, permissions FROM role_permissions
+        SELECT role, permissions, label FROM role_permissions
         ORDER BY role
     """).fetchall()
 
@@ -4603,9 +4699,16 @@ def get_role_permissions():
             perms = _json.loads(perms_raw) if perms_raw else []
         except Exception:
             perms = []
+        label = ''
+        try:
+            label = (r['label'] or '') if 'label' in r.keys() else ''
+        except Exception:
+            label = ''
         role_perms.append({
             'role': r['role'],
-            'role_label': ROLE_LABELS.get(r['role'], r['role']),
+            'role_label': ROLE_LABELS.get(r['role'], label or r['role']),
+            'is_builtin': r['role'] in ('admin', 'team_admin', 'team_member'),
+            'label': label,
             'permissions': perms
         })
 
@@ -4646,7 +4749,57 @@ def update_role_permissions(role):
 
     return jsonify({'success': True, 'role': role, 'permissions': permissions})
 
-@app.route('/api/permissions', methods=['GET'])
+@app.route('/api/role-permissions', methods=['POST'])
+@admin_required
+def create_role_permission():
+    """Create a custom role (e.g. a data analyst) with a display label."""
+    import json as _json, re as _re
+    db = get_db()
+    data = request.get_json() or {}
+    role = (data.get('role') or '').strip().lower()
+    label = (data.get('label') or '').strip()
+    permissions = data.get('permissions', []) or []
+
+    if not role or not _re.match(r'^[a-z0-9_]+$', role):
+        return jsonify({'error': 'El identifador del rol solo admite minusculas, numeros y guiones bajos'}), 400
+    if len(role) > 40:
+        return jsonify({'error': 'El identifador del rol no puede superar 40 caracteres'}), 400
+    if not label:
+        return jsonify({'error': 'El nombre del rol es requerido'}), 400
+    if role in ('admin', 'team_admin', 'team_member'):
+        return jsonify({'error': 'No puede crear un rol con un identifador reservado'}), 400
+
+    valid_ids = [p['id'] for p in AVAILABLE_PAGES]
+    for p in permissions:
+        if p not in valid_ids:
+            return jsonify({'error': 'Invalid permission: ' + p}), 400
+
+    existing = db.execute("SELECT role FROM role_permissions WHERE role = ?", (role,)).fetchone()
+    if existing:
+        return jsonify({'error': 'Ya existe un rol con ese identifador'}), 409
+
+    db.execute("INSERT INTO role_permissions (role, permissions, label) VALUES (?, ?, ?)",
+               (role, _json.dumps(permissions), label))
+    db.commit()
+    return jsonify({'success': True, 'role': role, 'label': label, 'permissions': permissions}), 201
+
+@app.route('/api/role-permissions/<role>', methods=['DELETE'])
+@admin_required
+def delete_role_permission(role):
+    """Delete a custom role. Reserved roles (admin/team_admin/team_member)
+    cannot be deleted. If any user currently holds the role, refuse."""
+    db = get_db()
+    if role in ('admin', 'team_admin', 'team_member'):
+        return jsonify({'error': 'No puede eliminar un rol del sistema'}), 400
+    rp = db.execute("SELECT role FROM role_permissions WHERE role = ?", (role,)).fetchone()
+    if not rp:
+        return jsonify({'error': 'El rol no existe'}), 404
+    in_use = db.execute("SELECT COUNT(*) AS c FROM users WHERE role = ?", (role,)).fetchone()['c']
+    if in_use:
+        return jsonify({'error': 'El rol esta asignado a ' + str(in_use) + ' usuarios. Reasignelos antes de eliminar.'}), 409
+    db.execute("DELETE FROM role_permissions WHERE role = ?", (role,))
+    db.commit()
+    return jsonify({'success': True, 'role': role})
 @admin_required
 def get_permissions():
     """Get all available pages and current permissions for all users"""

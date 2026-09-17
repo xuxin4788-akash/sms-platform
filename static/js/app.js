@@ -1864,6 +1864,18 @@ function highlightText(text, keyword) {
 // ============================================================
 var ROLE_LABELS = { admin: 'Administrador del Sistema', team_admin: 'Administrador de Equipo', team_member: 'Miembro de Equipo' };
 var ROLE_BADGE = { admin: 'badge-blue', team_admin: 'badge-green', team_member: 'badge-gray' };
+var CUSTOM_ROLES_CACHE = null;
+async function loadCustomRoles(force) {
+    if (CUSTOM_ROLES_CACHE && !force) return CUSTOM_ROLES_CACHE;
+    try {
+        var data = await api('/api/role-permissions');
+        CUSTOM_ROLES_CACHE = (data.roles || []).filter(function(r) { return !r.is_builtin; });
+    } catch (e) { CUSTOM_ROLES_CACHE = CUSTOM_ROLES_CACHE || []; }
+    return CUSTOM_ROLES_CACHE;
+}
+function customRolesOptionHTML(roles) {
+    return roles.map(function(r) { return '<option value="' + escapeHtml(r.role) + '">' + escapeHtml(r.role_label || r.label || r.role) + '</option>'; }).join('');
+}
 
 async function renderUsers(container) {
     if (!['admin', 'team_admin'].includes(state.user.role)) { container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3><p>Solo administradores pueden ver esta seccion.</p></div>'; return; }
@@ -1904,13 +1916,15 @@ async function renderUsers(container) {
                     categoryCell = '<span class="text-sm text-secondary">Por defecto</span>';
                 }
             }
-            return '<tr><td style="width:40px;">' + checkbox + '</td><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '</span></td><td>' + teamCell + '</td><td>' + extCell + '</td><td>' + countryCell + '</td>' + ((myRole === 'admin' || myRole === 'team_admin') ? '<td>' + categoryCell + '</td>' : '') + '<td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + roleBtn + deleteBtn + '</td></tr>';
+            return '<tr><td style="width:40px;">' + checkbox + '</td><td><strong>' + escapeHtml(u.username) + '</strong></td><td>' + escapeHtml(u.full_name || '-') + '</td><td><span class="badge ' + (ROLE_BADGE[u.role]||'badge-gray') + '">' + escapeHtml(u.role_label || ROLE_LABELS[u.role] || u.role) + '</span></td><td>' + teamCell + '</td><td>' + extCell + '</td><td>' + countryCell + '</td>' + ((myRole === 'admin' || myRole === 'team_admin') ? '<td>' + categoryCell + '</td>' : '') + '<td><span class="badge ' + (u.is_active ? 'badge-green' : 'badge-red') + '">' + (u.is_active ? 'Activo' : 'Desactivado') + '</span></td><td class="text-sm text-secondary">' + formatDate(u.created_at) + '</td><td style="white-space:nowrap;">' + editBtn + roleBtn + deleteBtn + '</td></tr>';
         }).join('');
 
         // Role filter options based on current user role
+        var customRoles = await loadCustomRoles();
         var roleOptions = '<option value="">Todos los roles</option>';
         if (myRole === 'admin') {
             roleOptions += '<option value="admin">Administrador del Sistema</option><option value="team_admin">Administrador de Equipo</option><option value="team_member">Miembro de Equipo</option>';
+            roleOptions += customRolesOptionHTML(customRoles);
         } else {
             roleOptions += '<option value="team_member">Miembro de Equipo</option>';
         }
@@ -1933,12 +1947,14 @@ async function showAddUserModal() {
     var myRole = state.user.role;
     var roleOptions = '';
     if (myRole === 'admin') {
+        var customRoles = await loadCustomRoles();
         roleOptions = '<option value="team_admin">Administrador de Equipo</option><option value="team_member">Miembro de Equipo</option>';
+        roleOptions += customRolesOptionHTML(customRoles);
     } else if (myRole === 'team_admin') {
         roleOptions = '<option value="team_member">Miembro de Equipo</option>';
     }
     var infoText = myRole === 'admin'
-        ? 'Se creara un Administrador de Equipo o un Miembro de Equipo (todas las cuentas son gestionadas por el sistema).'
+        ? 'Se creara un Administrador de Equipo, un Miembro de Equipo o un rol personalizado (todas las cuentas son gestionadas por el sistema).'
         : 'Se creara un Miembro de Equipo bajo tu gestion.';
     // Fetch API configs for team_admin creation
     var apiConfigHtml = '';
@@ -3145,12 +3161,13 @@ async function renderRolePermissions(container) {
         var pages = data.available_pages || [];
         var roles = data.roles || [];
 
-        var html = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Permisos por Rol</h1></div>';
+        var html = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">Permisos por Rol</h1><button class="btn btn-primary btn-sm" onclick="showCreateRoleModal()">+ Crear Rol</button></div>';
         html += '<p class="text-secondary mb-4">Configura que menus puede ver cada rol. Los cambios se aplican inmediatamente al iniciar sesion.</p>';
 
         roles.forEach(function(role) {
             var rolePerms = role.permissions || [];
-            html += '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">' + escapeHtml(role.role_label) + '</h3></div><div class="card-body">';
+            var isBuiltin = role.is_builtin;
+            html += '<div class="card mb-4"><div class="card-header flex-between"><h3 style="margin:0;">' + escapeHtml(role.role_label) + '</h3>' + (isBuiltin ? '' : '<button class="btn btn-ghost btn-sm btn-icon" onclick="deleteRole(\'' + escapeHtml(role.role) + '\')" title="Eliminar rol" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>') + '</div><div class="card-body">';
             html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">';
 
             pages.forEach(function(page) {
@@ -3182,6 +3199,36 @@ async function saveRolePermissions(role) {
         await api('/api/role-permissions/' + role, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({permissions: permissions}) });
         showToast('Permisos actualizados para ' + role);
     } catch (err) { showToast('Error: ' + err.message, 'error'); }
+}
+
+function showCreateRoleModal() {
+    var checkboxes = PERM_ITEMS.map(function(item) {
+        return '<label style="display:flex;align-items:center;gap:8px;padding:8px 0;cursor:pointer;border-bottom:1px solid var(--border);"><input type="checkbox" class="new-role-perm" value="' + item.key + '" style="width:16px;height:16px;accent-color:var(--primary);"><span style="font-size:14px;">' + item.label + '</span></label>';
+    }).join('');
+    showModal('Crear Rol', '<form onsubmit="createRole(event)"><div class="form-group"><label>Identifador del rol</label><input type="text" name="role" required placeholder="ej. data_specialist" pattern="[a-z0-9_]+" title="Solo minusculas, numeros y guiones bajos"><small class="text-secondary">Clave unica del rol (minusculas, sin espacios).</small></div><div class="form-group"><label>Nombre del rol</label><input type="text" name="label" required placeholder="ej. Analista de Datos"><small class="text-secondary">Nombre que se muestra en la lista de usuarios.</small></div><div class="form-group"><label style="font-weight:600;">Permisos</label><div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:0 12px;">' + checkboxes + '</div><small class="text-secondary">Selecciona los menus a los que este rol tendra acceso.</small></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear Rol</button></div></form>');
+}
+
+async function createRole(e) {
+    e.preventDefault();
+    var form = e.target;
+    var role = form.role.value.trim();
+    var label = form.label.value.trim();
+    var permissions = [];
+    form.querySelectorAll('.new-role-perm:checked').forEach(function(cb) { permissions.push(cb.value); });
+    try {
+        await api('/api/role-permissions', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({role: role, label: label, permissions: permissions}) });
+        hideModal(); showToast('Rol creado', 'success');
+        renderRolePermissions(document.getElementById('page-content'));
+    } catch (err) { showToast('Error: ' + err.message, 'error'); }
+}
+
+async function deleteRole(role) {
+    if (!confirm('Esta seguro de eliminar el rol "' + role + '"?')) return;
+    try {
+        await api('/api/role-permissions/' + role, { method: 'DELETE' });
+        showToast('Rol eliminado', 'success');
+        renderRolePermissions(document.getElementById('page-content'));
+    } catch (err) { showToast(err.message, 'error'); }
 }
 
 // ============================================================

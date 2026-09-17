@@ -125,7 +125,9 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | Miembro de Equipo | `team_member` | None | Self only | Own data only |
 
 ### Key Rules
-- System Admin creates Team Admin accounts (NOT Team Members)
+- System Admin creates Team Admin & Team Member accounts, plus any **custom role** (e.g. data analyst) defined in `role_permissions`. Asserting the `admin` role to someone else is forbidden, and the target role must already exist in `role_permissions` (built-ins + custom).
+- Admin can create/delete custom roles from `#/role-permissions` (`GET/POST/PUT/DELETE /api/role-permissions[/<role>]`). `role_permissions` gained a `label` column (display name); `GET` returns `role_label`, `is_builtin`; a role in use by any user cannot be deleted (409). The `users.role` CHECK constraint was removed (PG: `DROP CONSTRAINT users_role_check`; SQLite: users table rebuilt without the role CHECK) to allow arbitrary custom role values.
+- Custom roles behave like team members for data scope (own data only) unless given team-wide permissions via menu checkboxes; role scope is driven by `get_me` reading `role_permissions` for the user's role.
 - Team Admin creates Team Member accounts under their management (`team_creator_id`)
 - Team Admin cannot create same-level or higher accounts
 - Team Admin sees all team data; Team Member sees only their own data
