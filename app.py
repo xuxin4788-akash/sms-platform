@@ -4999,10 +4999,60 @@ def _scope_where(alias: str, uid: int, role, mode: str = 'auto') -> tuple[str, l
         # falling back to the user themself when there is no team.
         owner = _team_scope_owner_id(uid, role)
     if owner is not None:
-        # whole team (the team_admin themself + members under that admin)
         return (f"({alias}.created_by = ? OR {alias}.created_by IN "
                 f"(SELECT id FROM users WHERE team_creator_id = ?))", [owner, owner])
     return f"{alias}.created_by = ?", [uid]
+
+
+def _resolve_team_scope_filter(team_id: str, sender_id: str, uid: int, role) -> tuple[str, list]:
+    """Resolve optional team / sender filters to a SQL WHERE fragment, always
+    constrained to the current user's visible scope of users.
+
+    - team_id: a team_admin user id -> restrict to that team_admin + their members.
+    - sender_id: a single account user id -> restrict to that account.
+    Any requested filter not inside the visible scope is ignored (no filter
+    applied), so a team_admin cannot spy on other teams.
+    """
+    if not team_id and not sender_id:
+        return "", []
+    db = get_db()
+    visible = _scope_user_ids(uid, role)   # [] means admin sees everything
+    # Build the set of user ids that can appear.
+    if team_id:
+        try:
+            team_admin = int(team_id)
+        except (TypeError, ValueError):
+            return "", []
+        # team unit = the admin + members under them
+        unit = [team_admin] + [r['id'] for r in db.execute(
+            "SELECT id FROM users WHERE team_creator_id=?", (team_admin,)).fetchall()]
+        # team_admin must be a real team_admin (or admin-as-own-unit omitted here)
+        owner_role = db.execute("SELECT role FROM users WHERE id=?",
+                                (team_admin,)).fetchone()
+        if not owner_role:
+            return "", []
+        if owner_role['role'] == 'team_admin':
+            visible_check = unit
+        elif owner_role['role'] == 'admin':
+            # admin "team" = just the admin account itself
+            visible_check = [team_admin]
+        else:
+            return "", []
+        if visible and not set(visible_check) <= set(visible):
+            return "", []
+        ids = visible_check
+        if len(ids) == 1:
+            return "r.created_by = ?", [ids[0]]
+        return ("r.created_by IN (" + ",".join("?" * len(ids)) + ")", ids)
+    if sender_id:
+        try:
+            sender = int(sender_id)
+        except (TypeError, ValueError):
+            return "", []
+        if visible and sender not in visible:
+            return "", []
+        return "r.created_by = ?", [sender]
+    return "", []
 
 
 def _scope_where_unnamed(uid: int, role, mode: str = 'auto') -> tuple[str, list]:
@@ -5861,6 +5911,59 @@ def send_sms():
 
     return jsonify({'message': result_msg, 'records': records, 'errors': errors[:10]})
 
+@app.route('/api/records/filters', methods=['GET'])
+@login_required
+def records_filters_api():
+    """Options for the team / account (sender) filter dropdowns used on the
+    team-scoped pages (Buscar Contenido, Correos del Equipo). Only exposes
+    teams and accounts inside the current user's visible scope, so a
+    team_admin / data agent only gets their own team."""
+    db = get_db()
+    uid = g.user['id']
+    role = g.user['role']
+    visible = _scope_user_ids(uid, role)   # [] for admin => all
+    teams = []
+    accounts = []
+
+    if role == 'admin':
+        # teams: each team_admin unit (+ the admin account itself), accounts: all users
+        team_rows = db.execute(
+            "SELECT u.id, u.username, u.full_name FROM users u "
+            "WHERE u.role='team_admin' ORDER BY u.full_name, u.username").fetchall()
+        for t in team_rows:
+            teams.append({'id': t['id'], 'label': (t['full_name'] or t['username'])})
+        all_users = db.execute(
+            "SELECT id, username, full_name, role FROM users "
+            "WHERE is_active=1 ORDER BY full_name, username").fetchall()
+    else:
+        # non-admin: only their own team unit
+        if role == 'team_admin':
+            owner = uid
+        else:
+            owner = _team_scope_owner_id(uid, role)
+        if owner is not None:
+            owner_row = db.execute(
+                "SELECT id, username, full_name FROM users WHERE id=?", (owner,)).fetchone()
+            if owner_row:
+                teams.append({'id': owner, 'label': (owner_row['full_name'] or owner_row['username'])
+                              + (' (Equipo)' if role == 'team_admin' else '')})
+            all_users = db.execute(
+                "SELECT id, username, full_name, role FROM users WHERE is_active=1 "
+                "AND (id=? OR team_creator_id=?)", (owner, owner)).fetchall()
+        else:
+            all_users = db.execute(
+                "SELECT id, username, full_name, role FROM users WHERE id=?", (uid,)).fetchall()
+
+    for u in all_users:
+        accounts.append({
+            'id': u['id'],
+            'username': u['username'],
+            'label': (u['full_name'] or u['username'])
+                     + (' [' + (u['role'] or '') + ']' if u['role'] in ('admin', 'team_admin') else ''),
+        })
+    return jsonify({'teams': teams, 'accounts': accounts, 'role': role})
+
+
 @app.route('/api/sms/records', methods=['GET'])
 @login_required
 def list_sms_records():
@@ -5887,6 +5990,13 @@ def list_sms_records():
         query += " AND " + scope_where
         count_query += " AND " + scope_where.replace('r.created_by', 'created_by')
         params.extend(scope_params)
+    team_where, team_params = _resolve_team_scope_filter(
+        request.args.get('team', '').strip(), request.args.get('sender', '').strip(),
+        g.user['id'], g.user['role'])
+    if team_where:
+        query += " AND " + team_where
+        count_query += " AND " + team_where.replace('r.created_by', 'created_by')
+        params.extend(team_params)
     if status:
         query += " AND r.status = ?"
         count_query += " AND status = ?"
@@ -11513,6 +11623,12 @@ def email_records_api():
     scope = request.args.get('scope', 'auto').strip()
     mode = scope if scope in ('own', 'team') else 'auto'
     where, params = _email_scope_where(user, 'r', mode)
+    team_where, team_params = _resolve_team_scope_filter(
+        request.args.get('team', '').strip(), request.args.get('sender', '').strip(),
+        user['id'], user['role'])
+    if team_where:
+        where += " AND " + team_where
+        params += team_params
     if search:
         where += " AND (r.recipient_email LIKE ? OR r.contact_name LIKE ? OR r.subject LIKE ?)"
         params += [f'%{search}%'] * 3

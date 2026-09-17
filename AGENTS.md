@@ -74,7 +74,7 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET/POST | /api/templates | User | List/Create templates (shared across all users) |
 | PUT/DELETE | /api/templates/<id> | User | Update/Delete template |
 | POST | /api/sms/send | User | Send SMS (real API or simulation) |
-| GET | /api/sms/records | User | List send records. Accepts `scope`=own (only the current account's rows) or team (all rows in the role's managed scope); default auto (role rule: admin all / team_admin own+team / member+custom role own). `#/records` (Registros SMS) requests own, `#/content-search` (Buscar Contenido) requests team |
+| GET | /api/sms/records | User | List send records. Accepts `scope`=own (only the current account's rows) or team (all rows in the role's managed scope); default auto (role rule: admin all / team_admin own+team / member+custom role own). `#/records` (Registros SMS) requests own, `#/content-search` (Buscar Contenido) requests team. Also accepts `team`=<team_admin_id> (restrict to that team unit: the team_admin + their members) and `sender`=<user_id> (restrict to one account); both are clamped to the caller's visible scope via `_resolve_team_scope_filter`. `GET /api/records/filters` returns `{teams:[{id,label}], accounts:[{id,label}], role}` for the team/account dropdowns on those pages |
 | GET | /api/sms/records/export | User | Download current filter as UTF-8-BOM CSV (same role scope + status/date/search + `scope` filters; streamed in batches via a dedicated DB connection because the generator runs after request teardown; capped at SMS_EXPORT_MAX_ROWS=100000, X-Total-Rows/X-Exported-Rows/X-Export-Truncated headers) |
 | GET | /api/sms/statistics | User | Dashboard stats (team: all, member: own) |
 | POST | /api/sms/query-status | User | Query delivery status via API |
@@ -99,7 +99,7 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | GET/POST | /api/config/email/pricing | Admin | Get/set the global email unit price (`unit_price`, single value; facturacion global, not per-country) |
 | POST | /api/email/send | User | Enqueue a bulk email job to selected contacts or a group (only contacts with an email; same template vars as SMS; one `email_records` row per recipient with `job_id`; skips suppression list; simulates when SMTP is unconfigured). Returns `job_id` immediately |
 | GET | /api/email/jobs/&lt;job_id&gt; | User | Bulk send job progress (owner/team/admin scoped; total/sent/failed/suppressed/progress/status) |
-| GET | /api/email/records | User | List email records (team scoped; search/status[sent/simulated/failed/pending/suppressed]/date/pagination) |
+| GET | /api/email/records | User | List email records (team scoped; search/status[sent/simulated/failed/pending/suppressed]/date/pagination; plus `team`/`sender` filters same as sms records, clamped to visible scope; `#/email-records` requests own, `#/email-records-team` requests team) |
 | GET | /api/email/statistics | User | Email stats (total/sent/failed/pending/suppressed/success_rate/last_7_days/configured) |
 | GET/POST | /api/email/suppressions | Admin | List/search or add a suppressed email (bounce/complaint/manual) |
 | DELETE | /api/email/suppressions/&lt;id&gt; | Admin | Remove an address from the suppression list |

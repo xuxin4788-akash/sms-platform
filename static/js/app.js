@@ -1819,15 +1819,27 @@ async function exportSmsRecords() {
 // ============================================================
 // Content Search
 // ============================================================
-if (!state.contentSearch) state.contentSearch = { keyword: '', dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE, page: 1, perPage: 20, total: 0, totalPages: 0 };
+if (!state.contentSearch) state.contentSearch = { keyword: '', dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE, page: 1, perPage: 20, total: 0, totalPages: 0, team: '', sender: '' };
+var RECORDS_FILTERS_CACHE = null;
+async function loadRecordsFilters() {
+    if (RECORDS_FILTERS_CACHE) return RECORDS_FILTERS_CACHE;
+    try { RECORDS_FILTERS_CACHE = await api('/api/records/filters'); }
+    catch (e) { RECORDS_FILTERS_CACHE = { teams: [], accounts: [] }; }
+    return RECORDS_FILTERS_CACHE;
+}
 
 async function renderContentSearch(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
+        var filters = await loadRecordsFilters();
+        var teamOpts = filters.teams || [];
+        var senderOpts = filters.accounts || [];
         var params = new URLSearchParams({ page: state.contentSearch.page, per_page: state.contentSearch.perPage, scope: 'team' });
         if (state.contentSearch.keyword) params.set('search', state.contentSearch.keyword);
         if (state.contentSearch.dateFrom) params.set('date_from', state.contentSearch.dateFrom);
         if (state.contentSearch.dateTo) params.set('date_to', state.contentSearch.dateTo);
+        if (state.contentSearch.team) params.set('team', state.contentSearch.team);
+        if (state.contentSearch.sender) params.set('sender', state.contentSearch.sender);
         var data = await api('/api/sms/records?' + params.toString());
         state.contentSearch.total = data.total;
         state.contentSearch.totalPages = data.total_pages;
@@ -1845,14 +1857,19 @@ async function renderContentSearch(container) {
 
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Buscar por Contenido</h1>' +
-            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar"><input type="text" class="search-input" placeholder="Ingrese palabra clave del mensaje o nombre de usuario..." value="' + escapeHtml(state.contentSearch.keyword) + '" onkeyup="handleContentSearch(event)" style="flex:2;"><input type="date" lang="es" value="' + state.contentSearch.dateFrom + '" onchange="handleContentDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.contentSearch.dateTo + '" onchange="handleContentDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setContentToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearContentSearch()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th title="Segmentos de facturacion">Segm.</th><th>Detalles</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contentSearch') + '</div>';
+            '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar">' +
+            '<select onchange="handleContentTeam(this.value)"><option value="">Todos los equipos</option>' + teamOpts.map(function(t) { return '<option value="' + t.id + '"' + (String(state.contentSearch.team) === String(t.id) ? ' selected' : '') + '>' + escapeHtml(t.label) + '</option>'; }).join('') + '</select>' +
+            '<select onchange="handleContentSender(this.value)"><option value="">Todas las cuentas</option>' + senderOpts.map(function(a) { return '<option value="' + a.id + '"' + (String(state.contentSearch.sender) === String(a.id) ? ' selected' : '') + '>' + escapeHtml(a.label) + '</option>'; }).join('') + '</select>' +
+            '<input type="text" class="search-input" placeholder="Ingrese palabra clave del mensaje o nombre de usuario..." value="' + escapeHtml(state.contentSearch.keyword) + '" onkeyup="handleContentSearch(event)" style="flex:2;"><input type="date" lang="es" value="' + state.contentSearch.dateFrom + '" onchange="handleContentDateFrom(this.value)" title="Fecha desde"><input type="date" lang="es" value="' + state.contentSearch.dateTo + '" onchange="handleContentDateTo(this.value)" title="Fecha hasta"><button class="btn btn-primary btn-sm" onclick="setContentToday()">Hoy</button><button class="btn btn-secondary btn-sm" onclick="clearContentSearch()">Limpiar</button></div></div><div class="table-container"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Telefono</th><th>Nombre</th><th>Contenido</th><th>Estado</th><th title="Segmentos de facturacion">Segm.</th><th>Detalles</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + renderPagination(data, 'contentSearch') + '</div>';
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
 function handleContentSearch(event) { if (event.key === 'Enter') { state.contentSearch.keyword = event.target.value; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); } }
 function handleContentDateFrom(date) { state.contentSearch.dateFrom = date; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); }
 function handleContentDateTo(date) { state.contentSearch.dateTo = date; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); }
-function clearContentSearch() { state.contentSearch = { keyword: '', dateFrom: '', dateTo: '', page: 1, perPage: 20, total: 0, totalPages: 0 }; renderContentSearch(document.getElementById('page-content')); }
+function handleContentTeam(team) { state.contentSearch.team = team; state.contentSearch.sender = ''; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); }
+function handleContentSender(sender) { state.contentSearch.sender = sender; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); }
+function clearContentSearch() { state.contentSearch = { keyword: '', dateFrom: '', dateTo: '', page: 1, perPage: 20, total: 0, totalPages: 0, team: '', sender: '' }; renderContentSearch(document.getElementById('page-content')); }
 function setContentToday() { state.contentSearch.dateFrom = DEFAULT_LIST_DATE; state.contentSearch.dateTo = DEFAULT_LIST_DATE; state.contentSearch.page = 1; renderContentSearch(document.getElementById('page-content')); }
 
 function highlightText(text, keyword) {
@@ -4984,7 +5001,7 @@ function deleteCategory(id) {
 // Email (Correo empresarial)
 // ============================================================
 state.emailSend = { mode: 'contacts', contactList: [], filtered: [], selected: new Set(), search: '' };
-state.emailRecords = { page: 1, search: '', status: '', dateFrom: todayLocalStr(), dateTo: todayLocalStr() };
+state.emailRecords = { page: 1, search: '', status: '', dateFrom: todayLocalStr(), dateTo: todayLocalStr(), team: '', sender: '' };
 state.emailReplies = { page: 1, search: '', unreadOnly: false, expanded: new Set() };
 
 async function renderEmailSend(container) {
@@ -5186,9 +5203,18 @@ function pollEmailJob(jobId) {
 async function renderEmailRecords(container, opts) {
     state.emailRecordsScope = (opts && opts.scope) || 'own';
     state.emailRecordsTitle = (opts && opts.title) || 'Mis Registros de Correo';
+    var filters = await loadRecordsFilters();
+    var teamOpts = filters.teams || [];
+    var senderOpts = filters.accounts || [];
+    state.emailRecordsShowFilters = state.emailRecordsScope === 'team';
+    var filterHtml = state.emailRecordsShowFilters
+        ? '<select onchange="handleEmailRecordTeam(this.value)"><option value="">Todos los equipos</option>' + teamOpts.map(function(t) { return '<option value="' + t.id + '"' + (String(state.emailRecords.team) === String(t.id) ? ' selected' : '') + '>' + escapeHtml(t.label) + '</option>'; }).join('') + '</select>' +
+          '<select onchange="handleEmailRecordSender(this.value)"><option value="">Todas las cuentas</option>' + senderOpts.map(function(a) { return '<option value="' + a.id + '"' + (String(state.emailRecords.sender) === String(a.id) ? ' selected' : '') + '>' + escapeHtml(a.label) + '</option>'; }).join('') + '</select>'
+        : '';
     container.innerHTML =
         '<h1 class="mb-4" style="font-size:22px;font-weight:700;">' + escapeHtml(state.emailRecordsTitle) + '</h1>' +
         '<div class="card"><div class="card-body" style="padding-bottom:0;"><div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            filterHtml +
             '<input type="text" class="search-input" placeholder="Buscar correo, nombre o asunto..." value="' + escapeHtml(state.emailRecords.search) + '" onkeydown="if(event.key===\'Enter\')triggerEmailRecordSearch()" style="flex:1;min-width:200px;">' +
             '<button class="btn btn-primary btn-sm" onclick="triggerEmailRecordSearch()">Buscar</button>' +
             '<select onchange="handleEmailRecordStatus(this.value)"><option value="">Todos los estados</option><option value="sent"' + (state.emailRecords.status === 'sent' ? ' selected' : '') + '>Enviado</option><option value="pending"' + (state.emailRecords.status === 'pending' ? ' selected' : '') + '>Pendiente</option><option value="simulated"' + (state.emailRecords.status === 'simulated' ? ' selected' : '') + '>Simulado</option><option value="failed"' + (state.emailRecords.status === 'failed' ? ' selected' : '') + '>Fallido</option><option value="suppressed"' + (state.emailRecords.status === 'suppressed' ? ' selected' : '') + '>Suprimido</option></select>' +
@@ -5200,6 +5226,9 @@ async function renderEmailRecords(container, opts) {
     loadEmailRecords();
 }
 
+function handleEmailRecordTeam(team) { state.emailRecords.team = team; state.emailRecords.sender = ''; state.emailRecords.page = 1; loadEmailRecords(); }
+function handleEmailRecordSender(sender) { state.emailRecords.sender = sender; state.emailRecords.page = 1; loadEmailRecords(); }
+
 function emailRecordQuery() {
     var s = state.emailRecords;
     var p = new URLSearchParams();
@@ -5209,6 +5238,8 @@ function emailRecordQuery() {
     if (s.status) p.set('status', s.status);
     if (s.dateFrom) p.set('date_from', s.dateFrom);
     if (s.dateTo) p.set('date_to', s.dateTo);
+    if (state.emailRecordsShowFilters && s.team) p.set('team', s.team);
+    if (state.emailRecordsShowFilters && s.sender) p.set('sender', s.sender);
     return p.toString();
 }
 
@@ -5245,7 +5276,7 @@ function handleEmailRecordStatus(v) { state.emailRecords.status = v; state.email
 function handleEmailRecordDateFrom(v) { state.emailRecords.dateFrom = v; state.emailRecords.page = 1; loadEmailRecords(); }
 function handleEmailRecordDateTo(v) { state.emailRecords.dateTo = v; state.emailRecords.page = 1; loadEmailRecords(); }
 function setEmailRecordsToday() { state.emailRecords.dateFrom = todayLocalStr(); state.emailRecords.dateTo = todayLocalStr(); state.emailRecords.page = 1; navigateRefreshSafe(); }
-function clearEmailRecordFilters() { state.emailRecords = { page: 1, search: '', status: '', dateFrom: '', dateTo: '' }; navigateRefreshSafe(); }
+function clearEmailRecordFilters() { state.emailRecords = { page: 1, search: '', status: '', dateFrom: '', dateTo: '', team: '', sender: '' }; navigateRefreshSafe(); }
 // Re-render current records page after a filter reset/today action
 function navigateRefreshSafe() {
     var c = document.getElementById('page-content');
