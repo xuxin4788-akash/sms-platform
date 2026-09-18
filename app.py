@@ -1225,6 +1225,30 @@ def init_db():
             cur.execute("SELECT pg_advisory_unlock(hashtext('sms_platform_init_db'))")
         except Exception:
             pass
+        # Migration (legacy SMS country): normalise any sms_api_configs.country
+        # that stored a display name / empty value instead of the ISO code, so
+        # the country-driven lookup (get_sms_config_for_country) can always
+        # resolve them. Idempotent; only touches rows whose value is not an
+        # ISO code. Mirrors the JS _countryFromNameOrCode inference.
+        _sms_country_norm_pg = (
+            "UPDATE sms_api_configs SET country = CASE %s END WHERE 1=1"
+            % " ".join(
+                "WHEN LOWER(BTRIM(country)) IN (%s) THEN '%s'" % (
+                    ','.join("'" + a + "'" for a in aliases), iso
+                ) for iso, aliases in (
+                    ('mx', ('mexico', 'mex', 'méx')),
+                    ('co', ('colombia', 'col')),
+                    ('pe', ('peru', 'per')),
+                    ('ar', ('argentina', 'arg')),
+                )
+            ) + ""
+        )
+        try:
+            cur.execute(_sms_country_norm_pg)
+            conn.commit()
+        except Exception as e:
+            print(f"Normalise SMS country (PG) warning: {e}")
+            db.rollback()
 
         cur.close()
         conn.close()
@@ -2320,6 +2344,25 @@ def init_db():
             print(f"Backfill member country (SQLite) warning: {e}")
             db.rollback()
 
+        # Migration (legacy SMS country, SQLite): normalise any
+        # sms_api_configs.country that stored a display name / empty value
+        # instead of the ISO code (see PG branch above). Idempotent.
+        try:
+            db.execute("""
+                UPDATE sms_api_configs SET country = CASE
+                    WHEN LOWER(TRIM(country)) IN ('mexico','mex','méx') THEN 'mx'
+                    WHEN LOWER(TRIM(country)) IN ('colombia','col')       THEN 'co'
+                    WHEN LOWER(TRIM(country)) IN ('peru','per')           THEN 'pe'
+                    WHEN LOWER(TRIM(country)) IN ('argentina','arg')      THEN 'ar'
+                    ELSE country
+                END
+                WHERE LOWER(TRIM(country)) IN ('mexico','mex','méx','colombia','col','peru','per','argentina','arg')
+            """)
+            db.commit()
+        except Exception as e:
+            print(f"Normalise SMS country (SQLite) warning: {e}")
+            db.rollback()
+
         db.close()
 
 # ============================================================
@@ -2703,16 +2746,47 @@ def get_user_api_country(user_row):
     return normalize_country(row['country'] if row else '')
 
 
+# Country-name normalisation for legacy SMS config rows. Mirrors the JS
+# helper _countryFromNameOrCode used by the unified config page: rows that
+# stored a non-ISO value in `country` (e.g. empty, "Mexico", "Colombia ") are
+# displayed under the right country block there, so the server-side lookup
+# must accept the same forms to avoid "No hay configuracion SMS para el pais".
+_SMS_COUNTRY_NAME_ALIASES = {
+    'mx': ('mexico', 'méx', 'mex'),
+    'co': ('colombia', 'col', 'colomb'),
+    'pe': ('peru', 'per', 'perú'),
+    'ar': ('argentina', 'arg', 'argent'),
+}
+
+
+def _sms_row_matches_country(config, cc):
+    """True when an sms_api_configs row belongs to country code `cc`.
+
+    Accepts an exact ISO code (uppercase-insensitive), or any documented
+    country-name alias (Mexico/Colombia/Peru/Argentina + short forms) so
+    legacy rows with a name-ish/in-empty `country` still resolve.
+    """
+    stored = (config['country'] or '').strip().lower()
+    if stored == cc:
+        return True
+    aliases = _SMS_COUNTRY_NAME_ALIASES.get(cc, ())
+    if stored and any(a == stored for a in aliases):
+        return True
+    # Some legacy rows only carry the country in the display `name`.
+    name = (config['name'] or '').strip().lower()
+    return bool(name and any(a == name for a in aliases))
+
+
 def get_sms_config_for_country(country):
     """Return the sms_api_configs row (as dict) matching `country`, or None."""
     db = get_db()
     cc = normalize_country(country)
     if not cc:
         return None
-    config = db.execute(
-        "SELECT * FROM sms_api_configs WHERE UPPER(country)=UPPER(?) ORDER BY id LIMIT 1",
-        (cc,)
-    ).fetchone()
+    rows = db.execute(
+        "SELECT * FROM sms_api_configs ORDER BY id"
+    ).fetchall()
+    config = next((c for c in rows if _sms_row_matches_country(c, cc)), None)
     if not config:
         return None
     try:
