@@ -10523,13 +10523,16 @@ def _sender_team_clause(own_team_id):
 
 def _sender_can_edit(db, sid, own_team_id, is_admin):
     """Whether the current user may modify the given sender row.
-    admin:yes; team_admin: only rows owned by their team (team_creator_id = own id)."""
+    admin:yes; team_admin: rows owned by their team (team_creator_id = own id)
+    plus the global system-default rows (team_creator_id IS NULL), so they can
+    maintain every row they see in their list."""
     row = db.execute("SELECT team_creator_id FROM email_app_senders WHERE id=?", (sid,)).fetchone()
     if not row:
         return None, False
     if is_admin:
         return row, True
-    return row, (row['team_creator_id'] == own_team_id)
+    tc = row['team_creator_id']
+    return row, (tc == own_team_id or tc is None)
 
 
 @app.route('/api/config/email/senders', methods=['GET'])

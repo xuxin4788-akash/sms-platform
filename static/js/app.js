@@ -5699,21 +5699,21 @@ function renderEmailSendersPage(container) {
 function renderEmailSendersCard(data) {
     var senders = data.senders || [];
     var defaultFrom = data.default_from_email || '';
-    var isAdmin = state.user && state.user.role === 'admin';
-    // For a team_admin, NULL-team rows are the global system defaults: visible
-    // read-only (they act as fallback). Own-team rows are editable.
+    // Every visible row is editable/deletable. For a team_admin, NULL-team rows
+    // are the global system defaults (act as fallback); they stay editable so
+    // each team can manage the APP->sender mappings it sees. A Sistema badge
+    // simply marks the shared global rows for clarity.
     var rows = senders.length ? senders.map(function(s) {
         var badge = s.is_active === false
             ? '<span class="badge badge-secondary">Inactiva</span>'
             : '<span class="badge badge-success">Activa</span>';
-        var isGlobal = !s.team_creator_id && !isAdmin;
+        var isGlobal = !s.team_creator_id;
         var scopeTxt = isGlobal
             ? ' <span class="badge badge-info">Sistema</span>'
             : '';
-        var actions = isGlobal
-            ? '<span class="text-secondary text-sm">Solo lectura</span>'
-            : '<button class="btn btn-secondary btn-sm" onclick="editEmailSender(' + s.id + ')">Editar</button> ' +
-              '<button class="btn btn-danger btn-sm" onclick="deleteEmailSender(' + s.id + ')">Eliminar</button>';
+        var actions =
+            '<button class="btn btn-secondary btn-sm" onclick="editEmailSender(' + s.id + ')">Editar</button> ' +
+            '<button class="btn btn-danger btn-sm" onclick="deleteEmailSender(' + s.id + ')">Eliminar</button>';
         return '<tr>' +
             '<td><strong>' + escapeHtml(s.app_name) + '</strong>' + scopeTxt + '</td>' +
             '<td>' + escapeHtml(s.from_email) + (s.from_name ? ' <span class="text-secondary text-sm">(' + escapeHtml(s.from_name) + ')</span>' : '') + '</td>' +
@@ -5723,7 +5723,7 @@ function renderEmailSendersCard(data) {
     return '<div class="card mb-4"><div class="card-body">' +
         '<h3 style="margin-bottom:4px;">Direcciones de envio por APP</h3>' +
         '<p class="text-secondary text-sm" style="margin-bottom:14px;">Los contactos de cada APP de su equipo se envian desde una direccion distinta. ' +
-        'Las APP sin una direccion configurada usan el remitente global' +
+        'Las APP con etiqueta Sistema son los remitentes globales; las APP sin una direccion configurada usan el remitente global' +
         (defaultFrom ? ' (<strong>' + escapeHtml(defaultFrom) + '</strong>)' : '') + '.</p>' +
         '<div style="overflow-x:auto;margin-bottom:16px;"><table class="data-table"><thead><tr>' +
           '<th>APP</th><th>Correo remitente</th><th>Estado</th><th class="text-right">Acciones</th>' +
