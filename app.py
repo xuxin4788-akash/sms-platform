@@ -2703,8 +2703,11 @@ def get_team_sms_config(user_id):
     if not user or user['role'] == 'admin':
         return get_sms_api_config()
     country = get_user_api_country(user)
+    # Cuentas no-admin sin pais de equipo (p.ej. un Administrador de Equipo
+    # historico sin pais): NO caen a la config global -> el emisor devuelve 404
+    # para obligar a asignar el pais del equipo.
     if not country:
-        return get_sms_api_config()
+        return None
     return get_sms_config_for_country(country)
 
 def normalize_phone(phone, default_country='+52'):
@@ -3923,6 +3926,10 @@ def create_user():
     assign_extension = bool(data.get('assign_extension', False))
     extnumber = None
     raw_country = normalize_country(data.get('country'))
+    # El Administrador de Equipo DEBE tener pais: todas las cuentas de su equipo
+    # siguen su pais para resolver la API SMS/voz; sin pais no habria match.
+    if role == 'team_admin' and not raw_country:
+        return jsonify({'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru)'}), 400
     # Categoria del empleado (define los dias de retencion de sus contactos).
     # Si no se especifica, se asigna la categoria por defecto.
     category_id = resolve_category_id(data.get('category_id'))
@@ -4024,6 +4031,11 @@ def update_user(user_id):
     # si tenia una y el pais cambia, el admin debe liberarla y reasignar.
     if 'country' in data:
         new_country = normalize_country(data.get('country'))
+        # El Administrador de Equipo debe conservar siempre un pais valido:
+        # todas las cuentas de su equipo siguen su pais para la API SMS/voz.
+        target_role = (data.get('role') if (current['role'] == 'admin' and 'role' in data) else user['role'])
+        if target_role == 'team_admin' and not new_country:
+            return jsonify({'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru)'}), 400
         updates.append("country=?")
         params.append(new_country or None)
     # Categoria del empleado (retencion de contactos). Se permite asignar o
@@ -4189,6 +4201,11 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
         full_name = (u.get('full_name') or '').strip()
         # Pais del agente: fila -> default de la tanda -> pais del lider/equipo -> mx.
         country = normalize_country(u.get('country')) or default_country or fallback_country
+        # Al crear Administradores de Equipo en lote el pais es obligatorio (todas
+        # las cuentas siguen su pais para la API SMS/voz).
+        if role == 'team_admin' and not country:
+            errors.append({'index': idx, 'username': username, 'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru)'})
+            continue
         # Las extensiones nunca se leen del archivo: se asignan automaticamente.
         extnumber = None
 
@@ -6113,12 +6130,16 @@ def send_sms():
                 }), 429
     api_configured = is_sms_api_configured(g.user['id'])
     sms_config = get_team_sms_config(g.user['id'])
-    # El pais de la cuenta (sigue al administrador de equipo) DEBE tener su
-    # propia configuracion SMS. Si el pais es explicito pero no esta
-    # configurado, no se cae en simulacion: se rechaza con 404.
+    # El pais de la cuenta SIEMPRE sigue al Administrador de Equipo. Si el equipo
+    # no tiene pais asignado, o ese pais no tiene configuracion SMS, no se cae en
+    # simulacion ni en la config global: se rechaza con 404.
     if g.user['role'] != 'admin':
         country = get_user_api_country(g.user)
-        if country and not sms_config:
+        if not country:
+            return jsonify({
+                'error': 'Este equipo no tiene un pais asignado. El Administrador del Sistema debe definir el pais del Administrador de Equipo (Mexico/Colombia/Peru).'
+            }), 404
+        if not sms_config:
             return jsonify({
                 'error': 'No hay configuracion SMS para el pais (%s) de este equipo. Contacta al Administrador del Sistema.' % country.upper()
             }), 404
@@ -9589,9 +9610,14 @@ def voice_place_call_route():
     # call ALWAYS follows the team admin (administrador de equipo) that manages
     # the account; the system admin has no team and uses the global config.
     caller_country = get_user_api_country(g.user) if hasattr(g, 'user') else ''
-    # El pais de la cuenta DEBE tener su propia configuracion de voz. Si el pais
-    # es explicito pero no tiene fila configurada, no se cae en fallback: 404.
-    if caller_country:
+    # Las cuentas no-admin deben seguir el pais de su Administrador de Equipo.
+    # Si el equipo no tiene pais, o ese pais no tiene fila de voz configurada,
+    # no se cae en fallback ni en la config global: se rechaza con 404.
+    if g.user.get('role') != 'admin':
+        if not caller_country:
+            return jsonify({
+                'error': 'Este equipo no tiene un pais asignado. El Administrador del Sistema debe definir el pais del Administrador de Equipo (Mexico/Colombia/Peru).'
+            }), 404
         row = get_db().execute(
             "SELECT 1 FROM voice_configs WHERE country = ? LIMIT 1", (caller_country,)
         ).fetchone()
@@ -9599,6 +9625,12 @@ def voice_place_call_route():
             return jsonify({
                 'error': 'No hay configuracion de voz para el pais (%s) de este equipo. Contacta al Administrador del Sistema.' % caller_country.upper()
             }), 404
+    elif caller_country:
+        row = get_db().execute(
+            "SELECT 1 FROM voice_configs WHERE country = ? LIMIT 1", (caller_country,)
+        ).fetchone()
+        if not row:
+            caller_country = ''
     cfg = resolve_voice_config(caller_country)
     simulated = not is_voice_configured(caller_country)
     provider = (cfg or {}).get('provider', 'simulation')

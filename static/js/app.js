@@ -2051,7 +2051,7 @@ async function showAddUserModal() {
         var sel = (cc === defaultAgentCountry) ? ' selected' : '';
         agentCountryOptions += '<option value="' + cc + '"' + sel + '>' + label + '</option>';
     });
-    var countryFieldHtml = '<div class="form-group"><label>Pais del agente</label><select name="country">' + agentCountryOptions + '</select><small class="text-secondary">Por defecto sigue el pais de tu equipo. Define de que pool de extensiones se asigna (Mexico/Colombia/Peru).</small></div>';
+    var countryFieldHtml = '<div class="form-group" id="add-country-group"><label id="add-country-label">Pais del agente</label><select name="country" id="add-user-country">' + agentCountryOptions + '</select><small class="text-secondary" id="add-country-hint">Por defecto sigue el pais de tu equipo. Define de que pool de extensiones se asigna (Mexico/Colombia/Peru).</small></div>';
     var extFieldHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool del pais seleccionado. No se permite escribir el numero manualmente; si no hay extensiones libres, pida al administrador del sistema que agregue mas.</small></div>';
     var categoryHtml = await categoryFieldHtml(null);
     // Equipo assignment only for system admin creating member/custom-role accounts.
@@ -2090,16 +2090,34 @@ async function categoryFieldHtml(selectedId) {
 
 function toggleApiConfig() {
     var roleSelect = document.getElementById('add-user-role');
-    var apiSelect = document.querySelector('select[name="api_config_id"]');
-    if (apiSelect) {
-        apiSelect.required = (roleSelect.value === 'team_admin');
-        var apiGroup = apiSelect.closest('.form-group');
-        if (apiGroup) apiGroup.style.display = (roleSelect.value === 'team_admin') ? '' : 'none';
+    if (!roleSelect) return;
+    var isTeamAdmin = (roleSelect.value === 'team_admin');
+    // Pais: obligatorio para el Administrador de Equipo (todas las cuentas del
+    // equipo siguen su pais para la API SMS/voz); opcional/heredado para miembros.
+    var countrySelect = document.getElementById('add-user-country');
+    var countryLabel = document.getElementById('add-country-label');
+    var countryHint = document.getElementById('add-country-hint');
+    if (countrySelect) {
+        countrySelect.required = isTeamAdmin;
+        if (isTeamAdmin) {
+            if (!countrySelect.value) {
+                // Insert a mandatory placeholder so the user must choose.
+                var ph = document.createElement('option');
+                ph.value = ''; ph.textContent = 'Seleccionar pais...'; ph.disabled = true; ph.selected = true;
+                countrySelect.insertBefore(ph, countrySelect.firstChild);
+            } else if (countrySelect.options[0] && countrySelect.options[0].textContent === 'Sin pais especifico') {
+                // keep normal flow
+            }
+        }
+        if (countryLabel) countryLabel.textContent = isTeamAdmin ? 'Pais del administrador *' : 'Pais del agente';
+        if (countryHint) countryHint.textContent = isTeamAdmin
+            ? 'Obligatorio. Todas las cuentas de este equipo usan la configuracion SMS y voz de este pais. Sin configuracion para ese pais, la funcion devuelve error 404.'
+            : 'Por defecto sigue el pais de tu equipo. Define de que pool de extensiones se asigna (Mexico/Colombia/Peru).';
     }
     // Equipo field: only meaningful for member/custom-role accounts, never for team_admin.
     var equipoGroup = document.getElementById('equipo-field-group');
     if (equipoGroup) {
-        equipoGroup.style.display = (roleSelect.value === 'team_admin') ? 'none' : '';
+        equipoGroup.style.display = isTeamAdmin ? 'none' : '';
     }
 }
 
@@ -2127,7 +2145,20 @@ async function showEditUserModal(id) {
         extHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool del pais. Si no hay disponibles, pida al administrador del sistema que agregue mas.</small></div>';
     }
     var currentCountry = u.country || '';
-    var countryHtml = '<div class="form-group"><label>Pais del agente</label><select name="country"><option value=""' + (!currentCountry?' selected':'') + '>Sin pais especifico</option><option value="mx"' + (currentCountry==='mx'?' selected':'') + '>Mexico</option><option value="co"' + (currentCountry==='co'?' selected':'') + '>Colombia</option><option value="pe"' + (currentCountry==='pe'?' selected':'') + '>Peru</option></select><small class="text-secondary">Define de que pool se asigna la extension. Cambiar de pais no reasigna la extension actual (liberela primero si necesita otra).</small></div>';
+    var countryOpts = function(selected) {
+        return '<option value="mx"' + (selected==='mx'?' selected':'') + '>Mexico</option>' +
+               '<option value="co"' + (selected==='co'?' selected':'') + '>Colombia</option>' +
+               '<option value="pe"' + (selected==='pe'?' selected':'') + '>Peru</option>';
+    };
+    var countryHtml;
+    if (u.role === 'team_admin') {
+        // El Administrador de Equigo DEBE tener pais: todas las cuentas del equipo
+        // siguen su pais para la API SMS/voz. Si aun no tiene, se exige elegir.
+        var placeholder = currentCountry ? '' : '<option value="" selected disabled>Seleccionar pais...</option>';
+        countryHtml = '<div class="form-group"><label>Pais del administrador *</label><select name="country" required>' + placeholder + countryOpts(currentCountry) + '</select><small class="text-secondary">Obligatorio. Todas las cuentas de este equipo usan la configuracion SMS y voz de este pais. Si ese pais no esta configurado, esa funcion devuelve error 404.</small></div>';
+    } else {
+        countryHtml = '<div class="form-group"><label>Pais del agente</label><select name="country"><option value=""' + (!currentCountry?' selected':'') + '>Sin pais especifico (hereda del equipo)</option>' + countryOpts(currentCountry) + '</select><small class="text-secondary">Define de que pool se asigna la extension. Cambiar de pais no reasigna la extension actual (liberela primero si necesita otra).</small></div>';
+    }
     var categoryHtml = await categoryFieldHtml(u.category_id);
     // Equipo assignment for system admin (member/custom-role accounts only).
     var editEquipoHtml = '';
@@ -2294,9 +2325,11 @@ async function showBulkCreateModal() {
             '<div style="margin-bottom:12px;">' +
                 '<a href="/api/users/template" download="plantilla_usuarios.xlsx" class="btn btn-secondary" style="font-size:13px;padding:6px 12px;">⬇ Descargar plantilla Excel</a>' +
             '</div>' +
-            '<div class="form-group"><label>Pais por defecto (para asignar extensiones)</label>' +
-                '<select id="bulk-country" style="max-width:280px;"><option value="">Sin pais especifico</option><option value="mx">Mexico</option><option value="co">Colombia</option><option value="pe">Peru</option></select>' +
-                '<small class="text-secondary">Cada nuevo usuario se asocia a este pais para tomar una extension del pool correspondiente. Puede indicar el pais por linea como 4a columna (mx/co/pe), que tiene prioridad.</small>' +
+            '<div class="form-group"><label>' + (myRole === 'admin' ? 'Pais por defecto * (obligatorio para administradores)' : 'Pais por defecto (para asignar extensiones)') + '</label>' +
+                '<select id="bulk-country" style="max-width:280px;">' + (myRole === 'admin' ? '<option value="">-- Seleccione pais --</option>' : '<option value="">Sin pais especifico</option>') + '<option value="mx">Mexico</option><option value="co">Colombia</option><option value="pe">Peru</option></select>' +
+                (myRole === 'admin'
+                    ? '<small class="text-secondary">Obligatorio: cada Administrador de Equipo debe tener pais (puede indicarse por linea, 4a columna mx/co/pe). Todas las cuentas del equipo usan la configuracion SMS y voz de ese pais; si el pais no esta configurado, esa funcion devuelve error 404.</small>'
+                    : '<small class="text-secondary">Cada nuevo usuario se asocia a este pais para tomar una extension del pool correspondiente. Puede indicar el pais por linea como 4a columna (mx/co/pe), que tiene prioridad.</small>') +
             '</div>' +
             '<div class="form-group"><label>Lista de usuarios *</label>' +
                 '<textarea name="users_text" id="bulk-users-text" rows="10" style="width:100%;font-family:monospace;font-size:13px;" placeholder="usuario,contrasena,nombre_completo,pais&#10;jperez,,Juan Perez,mx&#10;mlopez,,Maria Lopez,co&#10;garcia,,," required></textarea>' +
@@ -2367,6 +2400,12 @@ async function handleBulkCreate(event) {
     var apiConfigSelect = document.getElementById('bulk-api-config');
     var apiConfigId = apiConfigSelect ? parseInt(apiConfigSelect.value) : null;
     var assignExtensions = document.getElementById('bulk-assign-ext') ? document.getElementById('bulk-assign-ext').checked : false;
+
+    // Al crear Administradores de Equipo el pais es obligatorio (default o por linea).
+    if (state.user.role === 'admin' && !defaultCountry) {
+        showToast('Selecciona un pais por defecto para los Administradores de Equipo (o indiquelo por linea)', 'error');
+        return;
+    }
 
     var parsed = parseBulkUsersText(text, defaultPassword, defaultCountry);
 
@@ -2446,9 +2485,11 @@ async function showBulkImportModal() {
                 '<input type="file" name="users_file" id="bulk-import-file" accept=".xlsx" required style="padding:8px;border:1px solid var(--border);border-radius:8px;width:100%;">' +
                 '<small class="text-secondary">Columnas esperadas: <strong>usuario</strong> (obligatorio), <strong>contrasena</strong> (opcional), <strong>nombre_completo</strong> (opcional), <strong>pais</strong> (opcional: mx/co/pe). La primera fila se usa como encabezado. Maximo 500 usuarios. Las extensiones no se leen del archivo: se asignan automaticamente marcando la opcion inferior segun el pais del agente.</small>' +
             '</div>' +
-            '<div class="form-group"><label>Pais por defecto (cuando la fila no trae pais)</label>' +
-                '<select id="bulk-import-country" style="max-width:280px;"><option value="">Sin pais especifico</option><option value="mx">Mexico</option><option value="co">Colombia</option><option value="pe">Peru</option></select>' +
-                '<small class="text-secondary">Define de que pool de extensiones se asigna cuando la fila no trae pais.</small>' +
+            '<div class="form-group"><label>' + (myRole === 'admin' ? 'Pais por defecto * (obligatorio para administradores)' : 'Pais por defecto (cuando la fila no trae pais)') + '</label>' +
+                '<select id="bulk-import-country" style="max-width:280px;">' + (myRole === 'admin' ? '<option value="">-- Seleccione pais --</option>' : '<option value="">Sin pais especifico</option>') + '<option value="mx">Mexico</option><option value="co">Colombia</option><option value="pe">Peru</option></select>' +
+                (myRole === 'admin'
+                    ? '<small class="text-secondary">Obligatorio: cada Administrador de Equipo debe tener pais (la fila puede traer pais, que tiene prioridad). Todas las cuentas siguen ese pais para SMS/voz; si no esta configurado, esa funcion devuelve 404.</small>'
+                    : '<small class="text-secondary">Define de que pool de extensiones se asigna cuando la fila no trae pais.</small>') +
             '</div>' +
             '<div class="form-group"><label>Contrasena por defecto (opcional)</label>' +
                 '<input type="text" name="default_password" id="bulk-import-default-pwd" minlength="6" placeholder="Se usa cuando la fila no trae contrasena">' +
@@ -2477,6 +2518,11 @@ async function handleBulkImport(event) {
     var assignExt = document.getElementById('bulk-import-assign-ext');
     if (assignExt && assignExt.checked) formData.append('assign_extensions', 'true');
     var importCountry = document.getElementById('bulk-import-country');
+    // Al importar Administradores de Equipo el pais es obligatorio (default o por fila).
+    if (state.user.role === 'admin' && (!importCountry || !importCountry.value)) {
+        showToast('Selecciona un pais por defecto para los Administradores de Equipo (o indiquelo por fila)', 'error');
+        return;
+    }
     if (importCountry && importCountry.value) formData.append('country', importCountry.value);
 
     var resultEl = document.getElementById('bulk-import-result');
