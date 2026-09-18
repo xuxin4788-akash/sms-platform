@@ -2901,6 +2901,21 @@ def resolve_extension_pool_country(member_country=None, team_admin_id=None, db=N
     return 'mx'
 
 
+def _leader_country(db, leader_id):
+    """Pais del Administrador de Equipo (team_admin) que gestiona una cuenta.
+
+    Las cuentas de Miembro y roles personalizados (data agent) siempre lo
+    heredan de su lider de equipo, no se eligen manualmente.
+    """
+    if not leader_id:
+        return None
+    row = db.execute("SELECT country FROM users WHERE id = ?", (leader_id,)).fetchone()
+    if not row:
+        return None
+    c = normalize_country(row['country'] if not isinstance(row, tuple) else row[0])
+    return c or None
+
+
 def allocate_extension(exclude_id=None, country=None):
     """Auto-assign a free extension for a country.
 
@@ -3939,9 +3954,16 @@ def create_user():
     category_id = resolve_category_id(data.get('category_id'))
     if category_id is None and not (data.get('category_id') is not None and str(data.get('category_id')).strip() != ''):
         category_id = get_default_category_id()
-    # Pais para la extension: si el miembro no trae pais, se hereda del lider
-    # (team_admin) o del pais por defecto del equipo, con fallback a Mexico.
-    country = resolve_extension_pool_country(raw_country, team_admin_id=team_creator_id)
+    # Pais del agente. Regla estricta:
+    #   - team_admin: se toma de la seleccion del usuario (obligatorio).
+    #   - Miembro de Equipo / rol personalizado (data agent): se hereda SIEMPRE
+    #     del Administrador de Equipo que lo gestiona (team_creator_id). El pais
+    #     recibido en el formulario se ignora para estas cuentas, no se puede
+    #     elegir manualmente (la API SMS/voz sigue el pais del lider).
+    if role == 'team_admin':
+        country = raw_country
+    else:
+        country = _leader_country(db, team_creator_id) or None
     if assign_extension:
         extnumber = allocate_extension(country=country)
         if not extnumber:
@@ -4033,15 +4055,34 @@ def update_user(user_id):
         params.append(int(is_active))
     # Pais del agente (mx/co/pe). Cambiar de pais no reasigna la extension:
     # si tenia una y el pais cambia, el admin debe liberarla y reasignar.
-    if 'country' in data:
-        new_country = normalize_country(data.get('country'))
-        # El Administrador de Equipo debe conservar siempre un pais valido:
-        # todas las cuentas de su equipo siguen su pais para la API SMS/voz.
-        target_role = (data.get('role') if (current['role'] == 'admin' and 'role' in data) else user['role'])
-        if target_role == 'team_admin' and not new_country:
-            return jsonify({'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru/Argentina)'}), 400
+    # Regla estricta de herencia:
+    #   - team_admin: pais seleccionado por el usuario (obligatorio).
+    #   - Miembro de Equipo / rol personalizado (data agent): SIEMPRE se hereda
+    #     del Administrador de Equipo que lo gestiona (team_creator_id, incluido
+    #     el que se asigne en esta misma edicion). El pais del formulario se
+    #     ignora para estas cuentas: no pueden elegirlo manualmente.
+    target_role = (data.get('role') if (current['role'] == 'admin' and 'role' in data) else user['role'])
+    if target_role == 'team_admin':
+        if 'country' in data:
+            new_country = normalize_country(data.get('country'))
+            if not new_country:
+                return jsonify({'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru/Argentina)'}), 400
+            updates.append("country=?")
+            params.append(new_country)
+    else:
+        # Miembro / rol personalizado: el pais quedara atado al lider del equipo.
+        # Resolvemos el team_creator_id final (el asignado en esta edicion si el
+        # admin lo cambio, si no el que tiene ahora guardado).
+        final_leader = None
+        if current['role'] == 'admin' and ('team_creator_id' in data or 'equipo_id' in data):
+            raw_team = data.get('team_creator_id', data.get('equipo_id', None))
+            if raw_team is not None and str(raw_team).strip().isdigit():
+                final_leader = int(raw_team)
+        if final_leader is None:
+            final_leader = user['team_creator_id']
+        leader_country = _leader_country(db, final_leader)
         updates.append("country=?")
-        params.append(new_country or None)
+        params.append(leader_country or None)
     # Categoria del empleado (retencion de contactos). Se permite asignar o
     # desasignar (category_id=null -> usa la default en la practica).
     if 'category_id' in data:
@@ -4091,6 +4132,15 @@ def update_user(user_id):
         _extensions_release(released_ext)
     if new_ext:
         _extensions_mark_assigned(new_ext, user_id, new_ext_country)
+    # Regla estricta de herencia: si el pais de un Administrador de Equipo cambia,
+    # todos los Miembros de Equipo y roles personalizados que gestiona siguen SIEMPRE
+    # ese pais. Se actualiza en cascada para mantener la vinculacion estricta.
+    if current['role'] == 'admin' and target_role == 'team_admin':
+        old_country = user['country'] if 'country' in user.keys() else None
+        new_leader_country = normalize_country(data.get('country')) if 'country' in data else None
+        if new_leader_country and new_leader_country != old_country:
+            db.execute("UPDATE users SET country=? WHERE team_creator_id=?", (new_leader_country, user_id))
+            db.commit()
     return jsonify({'message': 'Usuario actualizado'})
 
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
@@ -4203,13 +4253,18 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
             continue
         username = (u.get('username') or '').strip()
         full_name = (u.get('full_name') or '').strip()
-        # Pais del agente: fila -> default de la tanda -> pais del lider/equipo -> mx.
-        country = normalize_country(u.get('country')) or default_country or fallback_country
-        # Al crear Administradores de Equipo en lote el pais es obligatorio (todas
-        # las cuentas siguen su pais para la API SMS/voz).
-        if role == 'team_admin' and not country:
-            errors.append({'index': idx, 'username': username, 'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru/Argentina)'})
-            continue
+        # Pais del agente. Regla estricta:
+        #   - Administradores de Equipo: fila -> default de la tanda; obligatorio.
+        #   - Miembro / rol personalizado (data agent): SIEMPRE se hereda del
+        #     Administrador de Equipo que los gestiona (team_creator_id); el pais
+        #     de la fila o de la tanda se ignora para estas cuentas.
+        if role == 'team_admin':
+            country = normalize_country(u.get('country')) or default_country
+            if not country:
+                errors.append({'index': idx, 'username': username, 'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru/Argentina)'})
+                continue
+        else:
+            country = _leader_country(db, team_creator_id) or None
         # Las extensiones nunca se leen del archivo: se asignan automaticamente.
         extnumber = None
 

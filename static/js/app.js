@@ -2051,7 +2051,7 @@ async function showAddUserModal() {
         var sel = (cc === defaultAgentCountry) ? ' selected' : '';
         agentCountryOptions += '<option value="' + cc + '"' + sel + '>' + label + '</option>';
     });
-    var countryFieldHtml = '<div class="form-group" id="add-country-group"><label id="add-country-label">Pais del agente</label><select name="country" id="add-user-country">' + agentCountryOptions + '</select><small class="text-secondary" id="add-country-hint">Por defecto sigue el pais de tu equipo. Define de que pool de extensiones se asigna (Mexico/Colombia/Peru/Argentina).</small></div>';
+    var countryFieldHtml = '<div class="form-group" id="add-country-group"><label id="add-country-label">Pais del agente</label><select name="country" id="add-user-country">' + agentCountryOptions + '</select><span id="add-country-inherit" style="display:none;"></span><small class="text-secondary" id="add-country-hint">Por defecto sigue el pais de tu equipo. Define de que pool de extensiones se asigna (Mexico/Colombia/Peru/Argentina).</small></div>';
     var extFieldHtml = '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="assign_extension" style="width:16px;height:16px;accent-color:var(--primary);"><span>Asignar una extension/telefono automaticamente</span></label><small class="text-secondary">El sistema elige una extension libre del pool del pais seleccionado. No se permite escribir el numero manualmente; si no hay extensiones libres, pida al administrador del sistema que agregue mas.</small></div>';
     var categoryHtml = await categoryFieldHtml(null);
     // Equipo assignment only for system admin creating member/custom-role accounts.
@@ -2061,6 +2061,17 @@ async function showAddUserModal() {
     }
     showModal('Nuevo Usuario', '<form onsubmit="handleAddUser(event)"><div class="form-group"><label>Nombre de usuario *</label><input type="text" name="username" required></div><div class="form-group"><label>Nombre completo</label><input type="text" name="full_name"></div><div class="form-group"><label>Contrasena *</label><input type="password" name="password" required minlength="6"><small class="text-secondary">Minimo 6 caracteres</small></div><div class="form-group"><label>Rol</label><select name="role" id="add-user-role" onchange="toggleApiConfig()">' + roleOptions + '</select><small class="text-secondary">' + infoText + '</small></div>' + apiConfigHtml + equipoHtml + countryFieldHtml + categoryHtml + extFieldHtml + '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear</button></div></form>');
     toggleApiConfig();
+    // Pais heredado: para member/custom la fuente del lider es el usuario actual
+    // (team_admin crea a su miembro) o el equipo seleccionado (admin).
+    var initialInherit = null;
+    if (myRole === 'team_admin') {
+        initialInherit = { leaderId: state.user.id, leaderCountry: state.user.country || '' };
+    }
+    updateInheritCountry(initialInherit);
+    var addEqSel = document.querySelector('#modal-container select[name="team_creator_id"]');
+    if (addEqSel) {
+        addEqSel.onchange = function() { updateInheritCountry(initialInherit); };
+    }
 }
 
 // Cache de categorias para los formularios de usuario (solo admin las asigna).
@@ -2088,6 +2099,42 @@ async function categoryFieldHtml(selectedId) {
     return '<div class="form-group"><label>Categoria de empleado</label><select name="category_id"><option value="">Por defecto</option>' + options + '</select><small class="text-secondary">Define cuantos dias se conservan los contactos de este empleado. Se configura en "Retencion de Contactos".</small></div>';
 }
 
+var COUNTRY_LABELS_UI = {mx: 'Mexico', co: 'Colombia', pe: 'Peru', ar: 'Argentina'};
+function countryName(cc) { return COUNTRY_LABELS_UI[cc] || (cc ? cc.toUpperCase() : ''); }
+// Pais del Administrador de Equipo dado su user id (desde la lista cargada).
+function leaderCountryOf(leaderId) {
+    var found = (window._users || []).find(function(u) { return String(u.id) === String(leaderId); });
+    return found ? (found.country || '') : '';
+}
+function updateInheritCountry(initial) {
+    var roleVal = (document.getElementById('add-user-role'))
+        ? document.getElementById('add-user-role').value : (initial && initial.roleForced) ? initial.roleForced : '';
+    if (roleVal === 'team_admin') return;
+    // Miembro / rol personalizado: el pais lo hereda SIEMPRE del Administrador
+    // de Equipo asignado (team_creator_id), no se elige manualmente.
+    var leaderId = null;
+    var eqSel = document.querySelector('select[name="team_creator_id"]');
+    if (eqSel && eqSel.value) leaderId = eqSel.value;
+    if (!leaderId && initial && initial.leaderId) leaderId = initial.leaderId;
+    var leaderCountry = leaderCountryOf(leaderId) || (initial && initial.leaderCountry) || '';
+    var inheritEl = document.getElementById('add-country-inherit');
+    var selEl = document.getElementById('add-user-country');
+    var hintEl = document.getElementById('add-country-hint');
+    if (inheritEl) {
+        if (leaderId && leaderCountry) {
+            inheritEl.style.display = 'block';
+            inheritEl.innerHTML = '<strong>' + escapeHtml(countryName(leaderCountry)) + '</strong> <span class="text-secondary">(heredado del Administrador de Equipo)</span>';
+        } else if (initial && initial.leaderCountry) {
+            inheritEl.style.display = 'block';
+            inheritEl.innerHTML = '<strong>' + escapeHtml(countryName(initial.leaderCountry)) + '</strong> <span class="text-secondary">(heredado del Administrador de Equipo)</span>';
+        } else {
+            inheritEl.style.display = 'block';
+            inheritEl.innerHTML = '<span class="text-secondary">Se hereda del Administrador de Equipo que gestiona esta cuenta.</span>';
+        }
+    }
+    if (selEl) selEl.style.display = 'none';
+    if (hintEl) hintEl.innerHTML = 'El pais de esta cuenta se hereda automaticamente del Administrador de Equipo asignado y no se puede elegir manualmente. Determina que pool de extensiones y configuracion SMS/voz se usa.';
+}
 function toggleApiConfig() {
     var roleSelect = document.getElementById('add-user-role');
     if (!roleSelect) return;
@@ -2097,6 +2144,7 @@ function toggleApiConfig() {
     var countrySelect = document.getElementById('add-user-country');
     var countryLabel = document.getElementById('add-country-label');
     var countryHint = document.getElementById('add-country-hint');
+    var inheritEl = document.getElementById('add-country-inherit');
     if (countrySelect) {
         countrySelect.required = isTeamAdmin;
         if (isTeamAdmin) {
@@ -2109,10 +2157,18 @@ function toggleApiConfig() {
                 // keep normal flow
             }
         }
-        if (countryLabel) countryLabel.textContent = isTeamAdmin ? 'Pais del administrador *' : 'Pais del agente';
+        // Ocultar el select para miembros/roles personalizados: pais heredado.
+        if (!isTeamAdmin) {
+            countrySelect.style.display = 'none';
+            if (inheritEl) inheritEl.style.display = 'block';
+        } else {
+            countrySelect.style.display = '';
+            if (inheritEl) inheritEl.style.display = 'none';
+        }
+        if (countryLabel) countryLabel.textContent = isTeamAdmin ? 'Pais del administrador *' : 'Pais del agente (heredado)';
         if (countryHint) countryHint.textContent = isTeamAdmin
             ? 'Obligatorio. Todas las cuentas de este equipo usan la configuracion SMS y voz de este pais. Sin configuracion para ese pais, la funcion devuelve error 404.'
-            : 'Por defecto sigue el pais de tu equipo. Define de que pool de extensiones se asigna (Mexico/Colombia/Peru/Argentina).';
+            : 'El pais de esta cuenta se hereda automaticamente del Administrador de Equipo que la gestiona y no se puede elegir manualmente.';
     }
     // Equipo field: only meaningful for member/custom-role accounts, never for team_admin.
     var equipoGroup = document.getElementById('equipo-field-group');
@@ -2158,7 +2214,12 @@ async function showEditUserModal(id) {
         var placeholder = currentCountry ? '' : '<option value="" selected disabled>Seleccionar pais...</option>';
         countryHtml = '<div class="form-group"><label>Pais del administrador *</label><select name="country" required>' + placeholder + countryOpts(currentCountry) + '</select><small class="text-secondary">Obligatorio. Todas las cuentas de este equipo usan la configuracion SMS y voz de este pais. Si ese pais no esta configurado, esa funcion devuelve error 404.</small></div>';
     } else {
-        countryHtml = '<div class="form-group"><label>Pais del agente</label><select name="country"><option value=""' + (!currentCountry?' selected':'') + '>Sin pais especifico (hereda del equipo)</option>' + countryOpts(currentCountry) + '</select><small class="text-secondary">Define de que pool se asigna la extension. Cambiar de pais no reasigna la extension actual (liberela primero si necesita otra).</small></div>';
+        // Miembro de Equipo / rol personalizado: el pais se hereda SIEMPRE del
+        // Administrador de Equipo. No se elige manualmente (la API SMS/voz sigue
+        // al lider). Se muestra de forma informativa y se mantiene el valor como
+        // hidden para que el backend recalcule la herencia.
+        var inheritLabel = currentCountry ? countryName(currentCountry) : 'Se hereda del Administrador de Equipo';
+        countryHtml = '<div class="form-group"><label>Pais del agente (heredado)</label><div><input type="hidden" name="country" id="edit-user-country-hidden" value="' + escapeHtml(u.country || '') + '"><strong id="edit-user-country-inherit">' + escapeHtml(inheritLabel) + '</strong> <span class="text-secondary">(heredado del Administrador de Equipo)</span></div><small class="text-secondary">El pais de esta cuenta se hereda automaticamente del Administrador de Equipo que la gestiona y no se puede elegir manualmente. Determina el pool de extensiones y la configuracion SMS/voz usada.</small></div>';
     }
     var categoryHtml = await categoryFieldHtml(u.category_id);
     // Equipo assignment for system admin (member/custom-role accounts only).
@@ -2167,6 +2228,24 @@ async function showEditUserModal(id) {
         editEquipoHtml = await equipoSelectHtml(u.team_creator_id);
     }
     showModal('Editar Usuario', '<form onsubmit="handleEditUser(event, ' + id + ')"><div class="form-group"><label>Nombre de usuario</label><input type="text" value="' + escapeHtml(u.username) + '" disabled style="background:var(--bg);"></div><div class="form-group"><label>Rol</label><input type="text" value="' + escapeHtml(ROLE_LABELS[u.role]||u.role) + '" disabled style="background:var(--bg);"><small class="text-secondary">El rol no se puede cambiar despues de la creacion</small></div>' + editEquipoHtml + '<div class="form-group"><label>Nombre completo</label><input type="text" name="full_name" value="' + escapeHtml(u.full_name || '') + '"></div>' + countryHtml + categoryHtml + extHtml + '<div class="form-group"><label>Nueva contrasena (dejar vacio para no cambiar)</label><input type="password" name="password" minlength="6"></div><div class="form-group"><label>Estado</label><select name="is_active"><option value="1"' + (u.is_active?' selected':'') + '>Activo</option><option value="0"' + (!u.is_active?' selected':'') + '>Desactivado</option></select></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+    // Al reasignar el equipo (admin) de un miembro/rol personalizado, el pais
+    // heredado se actualiza en vivo con el del nuevo Administrador de Equipo.
+    var editEqSel = document.querySelector('#modal-container select[name="team_creator_id"]');
+    if (editEqSel) {
+        editEqSel.onchange = function() {
+            var inh = document.getElementById('edit-user-country-inherit');
+            var hidden = document.getElementById('edit-user-country-hidden');
+            if (!inh || !hidden) return;
+            var lc = leaderCountryOf(editEqSel.value);
+            if (editEqSel.value && lc) {
+                inh.textContent = countryName(lc);
+                hidden.value = lc;
+            } else {
+                inh.textContent = 'Se hereda del Administrador de Equipo';
+                hidden.value = '';
+            }
+        };
+    }
 }
 
 async function handleEditUser(event, id) {
