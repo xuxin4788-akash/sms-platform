@@ -990,12 +990,16 @@ function resetContactFilters() {
 }
 
 function showAddContactModal() {
-    Promise.all([api('/api/groups'), api('/api/apps')]).then(function(results) {
-        var data = results[0]; var appsData = results[1] || {};
-        var opts = data.groups.map(function(g) { return '<option value="' + g.id + '">' + escapeHtml(g.name) + '</option>'; }).join('');
+    Promise.all([api('/api/groups').catch(function(){ return {groups: []}; }), api('/api/apps').catch(function(){ return {apps: []}; })]).then(function(results) {
+        var data = results[0] || {groups: []}; var appsData = results[1] || {};
+        var groups = data.groups || [];
+        var opts = groups.map(function(g) { return '<option value="' + g.id + '">' + escapeHtml(g.name) + '</option>'; }).join('');
         var appOpts = (appsData.apps || []).map(function(a) { return '<option value="' + escapeHtml(a) + '">' + escapeHtml(a) + '</option>'; }).join('');
         var remarkOpts = '<option value="">Sin nota</option><option value="No contactable">No contactable</option><option value="Promesa de pago">Promesa de pago</option><option value="Dispuesto a pagar sin fondos">Dispuesto a pagar sin fondos</option><option value="No dispuesto a pagar">No dispuesto a pagar</option>';
         showModal('Nuevo Contacto', '<form id="add-contact-form" onsubmit="handleAddContact(event)"><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Nombre *</label><input type="text" name="name" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" required placeholder="+34 600 000 000"></div></div><div class="form-group"><label>Correo electronico</label><input type="email" name="email" placeholder="cliente@correo.com"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + opts + '</select></div><div class="form-group"><label>Nota</label><select name="remark">' + remarkOpts + '</select></div></div><div class="form-group"><label>APP</label><select name="app_name"><option value="">Sin APP</option>' + appOpts + '</select></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Monto</label><input type="number" name="amount" step="0.01" min="0" placeholder="0.00"></div><div class="form-group"><label>Monto de descuento</label><input type="number" name="discount_amount" step="0.01" min="0" placeholder="0.00"></div></div><div class="form-group"><label>Link de pago</label><input type="text" name="payment_link" placeholder="Ej: liga.com/pago"></div><div class="form-group"><label>Observaciones</label><textarea name="notes" rows="3"></textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Guardar</button></div></form>');
+    }).catch(function(err) {
+        // Never let a lookup failure (groups/apps) block the contact form.
+        showToast('No se pudo cargar grupos/APP: ' + (err && err.message ? err.message : 'error'), 'error');
     });
 }
 

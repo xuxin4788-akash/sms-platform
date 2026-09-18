@@ -5820,8 +5820,8 @@ def list_apps():
     own_team_id = _sender_scope(g.user)[0]
     clause, params = _sender_team_clause(own_team_id)
     rows = db.execute(
-        "SELECT LOWER(TRIM(app_name)) AS k, app_name FROM email_app_senders "
-        "WHERE app_name <> '' AND " + clause + " GROUP BY k ORDER BY LOWER(app_name)",
+        "SELECT LOWER(TRIM(app_name)) AS k, MAX(app_name) AS app_name FROM email_app_senders "
+        "WHERE app_name <> '' AND " + clause + " GROUP BY LOWER(TRIM(app_name)) ORDER BY LOWER(app_name)",
         params
     ).fetchall()
     apps = [r['app_name'] for r in rows]
