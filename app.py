@@ -5614,6 +5614,67 @@ def download_contact_template():
     )
 
 
+@app.route('/api/contacts/template-xlsx', methods=['GET'])
+@login_required
+def download_contact_template_xlsx():
+    """Download an Excel (.xlsx) template for bulk contact import. The APP column
+    carries a data-validation dropdown restricted to the configured apps visible
+    to the current user, so uploaders can only pick a valid APP name."""
+    from openpyxl import Workbook
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from flask import send_file
+    import io as _io
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Contactos'
+    headers = ['name', 'phone', 'email', 'notes', 'remark', 'app_name',
+               'amount', 'discount_amount', 'payment_link']
+    ws.append(headers)
+    ws.append(['Juan Perez', '5215512345678', 'juan.perez@ejemplo.com',
+               'Cliente interesado en promo MXN', 'Dispuesto a pagar sin fondos',
+               '', '150.00', '20.00', 'https://pago.ejemplo.com/juan'])
+    ws.append(['Maria Lopez', '', 'maria.lopez@ejemplo.com', '', 'No contactable',
+               '', '', '', ''])
+
+    # remark dropdown
+    dv_remark = DataValidation(type='list', formula1='"No contactable,Promesa de pago,Dispuesto a pagar sin fondos,No dispuesto a pagar"', allow_blank=True, showErrorMessage=True)
+    dv_remark.error = 'Valor de nota no valido'
+    dv_remark.errorTitle = 'Nota invalida'
+    ws.add_data_validation(dv_remark)
+    dv_remark.add('E2:E200')
+
+    # app_name dropdown from configured apps (visible scope)
+    db = get_db()
+    own_team_id = _sender_scope(g.user)[0]
+    clause, params = _sender_team_clause(own_team_id)
+    rows = db.execute(
+        "SELECT app_name FROM email_app_senders WHERE app_name <> '' AND "
+        + clause + " ORDER BY LOWER(app_name)", params).fetchall()
+    apps = [r['app_name'] for r in rows if r['app_name']]
+    if apps:
+        # Excel list formula limited to 255 chars; add all that fit.
+        form = '"' + ','.join(str(a) for a in apps)[:250] + '"'
+        dv_app = DataValidation(type='list', formula1=form, allow_blank=True, showErrorMessage=True)
+        dv_app.error = 'APP no configurada. Elija una de la lista.'
+        dv_app.errorTitle = 'APP invalida'
+        ws.add_data_validation(dv_app)
+        dv_app.add('F2:F200')
+
+    for col, w in zip('ABCDEFGHI', [20, 18, 24, 30, 26, 18, 12, 16, 28]):
+        ws.column_dimensions[col].width = w
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name='plantilla_contactos.xlsx',
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
 @app.route('/api/contacts/import', methods=['POST'])
 @login_required
 def import_contacts():
@@ -5622,8 +5683,8 @@ def import_contacts():
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'Archivo vacio'}), 400
-    if not file.filename.endswith('.csv'):
-        return jsonify({'error': 'Solo se aceptan archivos CSV'}), 400
+    if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx')):
+        return jsonify({'error': 'Solo se aceptan archivos CSV o Excel (.xlsx)'}), 400
     group_id = (request.form.get('group_id') or '').strip() or None
     if group_id:
         try:
@@ -5640,12 +5701,37 @@ def import_contacts():
         if not grp:
             return jsonify({'error': 'El grupo seleccionado no existe o no tienes acceso'}), 400
     try:
-        content = file.stream.read().decode('utf-8-sig')
-        reader = csv.DictReader(io.StringIO(content))
+        is_xlsx = file.filename.lower().endswith('.xlsx')
+        if is_xlsx:
+            from openpyxl import load_workbook
+            wb = load_workbook(file.stream, data_only=True, read_only=True)
+            ws = wb.active
+            wb_rows = ws.iter_rows(values_only=True)
+            header_row = next(wb_rows, None)
+            # Take the first non-empty row as header (tolerate a title row above).
+            while header_row is not None and not any((c is not None and str(c).strip() for c in header_row)):
+                header_row = next(wb_rows, None)
+            headers = [str(c).strip() if c is not None else '' for c in (header_row or [])]
+            def _cell_text(v):
+                return '' if v is None else str(v).strip()
+            reader = ({headers[j]: _cell_text(cell) for j, cell in enumerate(row)}
+                      for row in wb_rows)
+        else:
+            content = file.stream.read().decode('utf-8-sig')
+            reader = csv.DictReader(io.StringIO(content))
         db = get_db()
         owner_id = g.user['id']
         imported = 0
         errors = []
+        # Legal APP names for data validation: the app_name column must match one
+        # of the configured (visible) APP->sender mappings, mirroring the /api/apps
+        # dropdown and the Excel template data-validation list.
+        own_team_id = _sender_scope(g.user)[0]
+        _clause, _params = _sender_team_clause(own_team_id)
+        _app_rows = db.execute(
+            "SELECT LOWER(TRIM(app_name)) AS k FROM email_app_senders "
+            "WHERE app_name <> '' AND " + _clause, _params).fetchall()
+        legal_apps = {r['k'] for r in _app_rows}
         for i, row in enumerate(reader, start=2):
             name = (row.get('name') or row.get('nombre') or '').strip()
             phone = normalize_phone((row.get('phone') or row.get('telefono') or row.get('tel') or '').strip())
@@ -5658,6 +5744,9 @@ def import_contacts():
             email = (row.get('email') or row.get('correo') or row.get('e-mail') or '').strip()[:255]
             if not name or not phone:
                 errors.append(f"Fila {i}: nombre y telefono son requeridos")
+                continue
+            if app_name and legal_apps and app_name.lower() not in legal_apps:
+                errors.append(f"Fila {i}: APP '{app_name}' no es valida (use una APP configurada en Direcciones de envio por APP)")
                 continue
             db.execute(
                 "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, created_by) "
@@ -5672,6 +5761,26 @@ def import_contacts():
         return jsonify(result), 201
     except Exception as e:
         return jsonify({'error': f'Error al procesar el archivo: {str(e)}'}), 400
+
+
+@app.route('/api/apps', methods=['GET'])
+@login_required
+def list_apps():
+    """List the APP names visible to the current user, for the APP dropdown in
+    the contact editor and CSV/Excel templates. Scope mirrors the APP->sender
+    mappings: admin sees all apps; team_admin/member sees the apps of their own
+    team plus the global (NULL team) system apps."""
+    db = get_db()
+    own_team_id = _sender_scope(g.user)[0]
+    clause, params = _sender_team_clause(own_team_id)
+    rows = db.execute(
+        "SELECT LOWER(TRIM(app_name)) AS k, app_name FROM email_app_senders "
+        "WHERE app_name <> '' AND " + clause + " GROUP BY k ORDER BY LOWER(app_name)",
+        params
+    ).fetchall()
+    apps = [r['app_name'] for r in rows]
+    return jsonify({'apps': apps})
+
 
 # ============================================================
 # Groups API
