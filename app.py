@@ -2846,15 +2846,18 @@ def _get_extension_pool(country=None):
     return []
 
 
+_SUPPORTED_COUNTRIES = ('mx', 'co', 'pe', 'ar')
+
+
 def normalize_country(country):
-    """Normalize a country code to one of mx/co/pe or ''."""
+    """Normalize a country code to one of mx/co/pe/ar or ''."""
     c = (country or '').strip().lower()
-    return c if c in ('mx', 'co', 'pe') else ''
+    return c if c in _SUPPORTED_COUNTRIES else ''
 
 
 # International calling codes used to strip a leading country code before
 # applying a per-trunk dial-plan prefix (see infin8linx_make_call).
-_COUNTRY_CALLING_CODES = {'mx': '52', 'co': '57', 'pe': '51'}
+_COUNTRY_CALLING_CODES = {'mx': '52', 'co': '57', 'pe': '51', 'ar': '54'}
 
 
 def resolve_extension_pool_country(member_country=None, team_admin_id=None, db=None):
@@ -2945,7 +2948,7 @@ def allocate_extension(exclude_id=None, country=None):
 # Extensions catalog (separate management page)
 # ---------------------------------------------------------------------------
 
-EXT_COUNTRIES = ('', 'mx', 'co', 'pe')
+EXT_COUNTRIES = ('', 'mx', 'co', 'pe', 'ar')
 
 
 def _extensions_table_ready():
@@ -3397,7 +3400,8 @@ ROLE_LABELS = {
 COUNTRY_LABELS = {
     'mx': 'Mexico',
     'co': 'Colombia',
-    'pe': 'Peru'
+    'pe': 'Peru',
+    'ar': 'Argentina'
 }
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -3929,7 +3933,7 @@ def create_user():
     # El Administrador de Equipo DEBE tener pais: todas las cuentas de su equipo
     # siguen su pais para resolver la API SMS/voz; sin pais no habria match.
     if role == 'team_admin' and not raw_country:
-        return jsonify({'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru)'}), 400
+        return jsonify({'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru/Argentina)'}), 400
     # Categoria del empleado (define los dias de retencion de sus contactos).
     # Si no se especifica, se asigna la categoria por defecto.
     category_id = resolve_category_id(data.get('category_id'))
@@ -3941,7 +3945,7 @@ def create_user():
     if assign_extension:
         extnumber = allocate_extension(country=country)
         if not extnumber:
-            label = {'mx': 'Mexico', 'co': 'Colombia', 'pe': 'Peru'}.get(country, 'el pool')
+            label = {'mx': 'Mexico', 'co': 'Colombia', 'pe': 'Peru', 'ar': 'Argentina'}.get(country, 'el pool')
             return jsonify({'error': f'No hay extensiones disponibles para {label}. Pida al administrador del sistema que agregue mas extensiones en Configuracion de Voz.'}), 409
     cur = db.execute(
         "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, country, category_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -4035,7 +4039,7 @@ def update_user(user_id):
         # todas las cuentas de su equipo siguen su pais para la API SMS/voz.
         target_role = (data.get('role') if (current['role'] == 'admin' and 'role' in data) else user['role'])
         if target_role == 'team_admin' and not new_country:
-            return jsonify({'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru)'}), 400
+            return jsonify({'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru/Argentina)'}), 400
         updates.append("country=?")
         params.append(new_country or None)
     # Categoria del empleado (retencion de contactos). Se permite asignar o
@@ -4075,7 +4079,7 @@ def update_user(user_id):
             target_country = resolve_extension_pool_country(member_country, team_admin_id=leader_id)
             new_ext = allocate_extension(exclude_id=user_id, country=target_country)
             if not new_ext:
-                label = {'mx': 'Mexico', 'co': 'Colombia', 'pe': 'Peru'}.get(target_country, 'el pool')
+                label = {'mx': 'Mexico', 'co': 'Colombia', 'pe': 'Peru', 'ar': 'Argentina'}.get(target_country, 'el pool')
                 return jsonify({'error': f'No hay extensiones disponibles para {label}. Pida al administrador del sistema que agregue mas extensiones en la pagina de Extensiones.'}), 409
             new_ext_country = target_country
             updates.append("extnumber=?")
@@ -4175,7 +4179,7 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
         taken_extensions.add(_normalize_extnumber(r['extnumber'] if not isinstance(r, tuple) else r[0]).lower())
     # Build per-country free pools (catalog first, legacy pool string fallback).
     pools_by_country = {}
-    for _cc in ('mx', 'co', 'pe', ''):
+    for _cc in ('mx', 'co', 'pe', 'ar', ''):
         if use_catalog:
             rows = db.execute("SELECT extnumber FROM extensions WHERE country=?", (_cc,)).fetchall()
             all_pool = [_normalize_extnumber(r['extnumber'] if not isinstance(r, tuple) else r[0]) for r in rows]
@@ -4204,7 +4208,7 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
         # Al crear Administradores de Equipo en lote el pais es obligatorio (todas
         # las cuentas siguen su pais para la API SMS/voz).
         if role == 'team_admin' and not country:
-            errors.append({'index': idx, 'username': username, 'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru)'})
+            errors.append({'index': idx, 'username': username, 'error': 'El Administrador de Equipo debe tener un pais asignado (Mexico/Colombia/Peru/Argentina)'})
             continue
         # Las extensiones nunca se leen del archivo: se asignan automaticamente.
         extnumber = None
@@ -4354,6 +4358,8 @@ def _parse_excel_users(file_storage):
             return 'co'
         if s in ('pe', 'peru', 'perú', '51', '+51'):
             return 'pe'
+        if s in ('ar', 'argentina', '54', '+54'):
+            return 'ar'
         return ''
 
     first = rows[0]
@@ -6137,7 +6143,7 @@ def send_sms():
         country = get_user_api_country(g.user)
         if not country:
             return jsonify({
-                'error': 'Este equipo no tiene un pais asignado. El Administrador del Sistema debe definir el pais del Administrador de Equipo (Mexico/Colombia/Peru).'
+                'error': 'Este equipo no tiene un pais asignado. El Administrador del Sistema debe definir el pais del Administrador de Equipo (Mexico/Colombia/Peru/Argentina).'
             }), 404
         if not sms_config:
             return jsonify({
