@@ -5644,7 +5644,10 @@ def download_contact_template_xlsx():
     ws.add_data_validation(dv_remark)
     dv_remark.add('E2:E200')
 
-    # app_name dropdown from configured apps (visible scope)
+    # app_name dropdown from configured apps (visible scope). Options are written
+    # to a hidden auxiliary sheet and referenced by range, so the validation list
+    # follows app additions/removals automatically and is not limited to the
+    # Excel 255-char inline-formula limit.
     db = get_db()
     own_team_id = _sender_scope(g.user)[0]
     clause, params = _sender_team_clause(own_team_id)
@@ -5652,10 +5655,17 @@ def download_contact_template_xlsx():
         "SELECT app_name FROM email_app_senders WHERE app_name <> '' AND "
         + clause + " ORDER BY LOWER(app_name)", params).fetchall()
     apps = [r['app_name'] for r in rows if r['app_name']]
+
     if apps:
-        # Excel list formula limited to 255 chars; add all that fit.
-        form = '"' + ','.join(str(a) for a in apps)[:250] + '"'
-        dv_app = DataValidation(type='list', formula1=form, allow_blank=True, showErrorMessage=True)
+        ws_apps = wb.create_sheet('_APPS')
+        ws_apps.sheet_state = 'hidden'
+        for i, a in enumerate(apps, start=1):
+            ws_apps.cell(row=i, column=1, value=a)
+        last = len(apps)
+        dv_app = DataValidation(
+            type='list',
+            formula1='=_APPS!$A$1:$A${}'.format(last),
+            allow_blank=True, showErrorMessage=True)
         dv_app.error = 'APP no configurada. Elija una de la lista.'
         dv_app.errorTitle = 'APP invalida'
         ws.add_data_validation(dv_app)
