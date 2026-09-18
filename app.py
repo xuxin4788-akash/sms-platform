@@ -3451,6 +3451,14 @@ def get_me():
         permissions = []
         perms_configured = False
 
+    # Hard security boundary: never let a non-admin carry an admin-only page in
+    # their effective permissions, regardless of any stored role/user override.
+    # This cleans stale configs (e.g. an older release let admins tick
+    # "Envios por APP" for team_admin, which then showed a menu that bounced to
+    # the dashboard instead of the real page).
+    if g.user.get('role') != 'admin':
+        permissions = [p for p in permissions if p not in ADMIN_ONLY_PAGES]
+
     # Auto-grant newly rolled-out pages (e.g. email) to all non-admin roles,
     # even when an explicit/older permission set is stored. Admin pages excluded.
     if g.user.get('role') != 'admin':
@@ -4786,6 +4794,16 @@ AVAILABLE_PAGES = [
     {'id': 'email-pricing', 'label': 'Facturacion', 'icon': 'mail'},
 ]
 
+# Pages that are strictly reserved for the system administrator. Their backend
+# endpoints are @admin_required and their frontend routes reject non-admins, so
+# granting them to a team role is meaningless (the menu shows but the page
+# bounces to the dashboard). They are therefore hidden for non-admin roles in
+# the permission editors and always stripped from non-admin effective
+# permissions, even if a stale/older stored permission set still contains them.
+ADMIN_ONLY_PAGES = {'api-config', 'email-senders', 'extensions',
+                    'email-pricing', 'email-config', 'voice-config',
+                    'role-permissions', 'team-api-select'}
+
 # Default permissions per role when the role_permissions table has no explicit
 # configuration (empty string or missing row). This avoids blank sidebars on
 # fresh installations or after role_permissions were reset. Admins always get
@@ -4843,7 +4861,8 @@ def get_role_permissions():
         })
 
     return jsonify({
-        'available_pages': AVAILABLE_PAGES,
+        'available_pages': [dict(p, admin_only=(p['id'] in ADMIN_ONLY_PAGES))
+                            for p in AVAILABLE_PAGES],
         'roles': role_perms
     })
 
@@ -4866,6 +4885,10 @@ def update_role_permissions(role):
     # Admin role always has all permissions
     if role == 'admin':
         permissions = [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions']
+    else:
+        # Admin-only pages can never be granted to a non-admin role, even if a
+        # stale client sends them.
+        permissions = [p for p in permissions if p not in ADMIN_ONLY_PAGES]
 
     perms_json = _json.dumps(permissions)
 
@@ -4903,6 +4926,8 @@ def create_role_permission():
     for p in permissions:
         if p not in valid_ids:
             return jsonify({'error': 'Invalid permission: ' + p}), 400
+    # Custom roles are always non-admin -> admin-only pages cannot be granted.
+    permissions = [p for p in permissions if p not in ADMIN_ONLY_PAGES]
 
     existing = db.execute("SELECT role FROM role_permissions WHERE role = ?", (role,)).fetchone()
     if existing:
@@ -4951,6 +4976,9 @@ def get_permissions():
         # Admin always has all permissions
         if u['role'] == 'admin':
             perms = [p['id'] for p in AVAILABLE_PAGES]
+        else:
+            # Never surface admin-only pages as granted for non-admin users.
+            perms = [p for p in perms if p not in ADMIN_ONLY_PAGES]
         user_perms.append({
             'id': u['id'],
             'username': u['username'],
@@ -4961,7 +4989,8 @@ def get_permissions():
         })
 
     return jsonify({
-        'available_pages': AVAILABLE_PAGES,
+        'available_pages': [dict(p, admin_only=(p['id'] in ADMIN_ONLY_PAGES))
+                            for p in AVAILABLE_PAGES],
         'users': user_perms
     })
 
@@ -4985,6 +5014,8 @@ def update_permissions(user_id):
     # Validate permissions
     valid_ids = [p['id'] for p in AVAILABLE_PAGES]
     permissions = [p for p in permissions if p in valid_ids]
+    # Non-admin accounts can never be granted system-admin-only pages.
+    permissions = [p for p in permissions if p not in ADMIN_ONLY_PAGES]
 
     db.execute("UPDATE users SET permissions=?, updated_at=datetime('now') WHERE id=?",
                (_json.dumps(permissions), user_id))

@@ -541,6 +541,14 @@ window.addEventListener('resize', function() {
 // ============================================================
 // Router
 // ============================================================
+function renderAccessDenied(content) {
+    content.innerHTML =
+        '<div class="empty-state" style="margin-top:48px;">' +
+            '<h3>Acceso denegado</h3>' +
+            '<p class="text-secondary">Este modulo esta reservado para el Administrador del Sistema.</p>' +
+        '</div>';
+}
+
 function navigateTo(page) {
     state.currentPage = page;
     document.querySelectorAll('.nav-item').forEach(function(el) {
@@ -565,27 +573,27 @@ function navigateTo(page) {
         case 'email-replies':
             renderEmailReplies(content); loadEmailReplies(); break;
         case 'email-config':
-            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             _configPageMode = 'sms';
             renderEmailConfig(content); break;
         case 'email-senders':
-            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderEmailSendersPage(content); break;
         case 'email-pricing':
-            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderEmailPricing(content); break;
         case 'voice-config':
-            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             _configPageMode = 'sms';
             renderVoiceConfig(content); break;
         case 'api-config':
-            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderUnifiedConfig(content); break;
         case 'extensions':
-            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderExtensions(content); break;
         case 'retention':
-            if (state.user.role !== 'admin' && state.user.role !== 'team_admin') { renderDashboard(content); break; }
+            if (state.user.role !== 'admin' && state.user.role !== 'team_admin') { renderAccessDenied(content); break; }
             renderRetention(content); break;
         case 'content-search': renderContentSearch(content); break;
         case 'users': renderUsers(content); break;
@@ -594,7 +602,7 @@ function navigateTo(page) {
         case 'all-teams': renderAllTeams(content); break;
         case 'team-stats': renderTeamStats(content); break;
         case 'team-api-select':
-            if (state.user.role !== 'admin') { renderDashboard(content); break; }
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderTeamApiConfig(content); break;
         case 'role-permissions': renderRolePermissions(content); break;
         case 'config':
@@ -2147,18 +2155,23 @@ var PERM_ITEMS = [
     { key: 'my-account', label: 'Mi Cuenta', icon: 'user' },
     { key: 'my-team', label: 'Mi Equipo', icon: 'users' },
     { key: 'all-teams', label: 'Todos los Equipos', icon: 'bar-chart' },
-    { key: 'api-config', label: 'Configuracion de APIs', icon: 'settings' },
-    { key: 'email-senders', label: 'Direcciones envio por APP', icon: 'mail' },
-    { key: 'extensions', label: 'Extensiones', icon: 'phone' },
+    { key: 'api-config', label: 'Configuracion de APIs', icon: 'settings', adminOnly: true },
+    { key: 'email-senders', label: 'Direcciones envio por APP', icon: 'mail', adminOnly: true },
+    { key: 'extensions', label: 'Extensiones', icon: 'phone', adminOnly: true },
     { key: 'retention', label: 'Retencion de Contactos', icon: 'shield' },
-    { key: 'team-api-select', label: 'Seleccionar API de Equipo', icon: 'server' }
+    { key: 'team-api-select', label: 'Seleccionar API de Equipo', icon: 'server', adminOnly: true }
 ];
 
 function showPermModal(id) {
     var u = (window._users || []).find(function(usr) { return usr.id === id; });
     if (!u) return;
     var currentPerms = u.permissions || [];
-    var checkboxes = PERM_ITEMS.map(function(item) {
+    // Admin-only modules are reserved for the system administrator and cannot be
+    // granted to a non-admin account, so they are hidden in this editor.
+    var assignable = PERM_ITEMS.filter(function(item) {
+        return u.role === 'admin' || !item.adminOnly;
+    });
+    var checkboxes = assignable.map(function(item) {
         var checked = currentPerms.indexOf(item.key) !== -1 ? ' checked' : '';
         return '<label style="display:flex;align-items:center;gap:8px;padding:8px 0;cursor:pointer;border-bottom:1px solid var(--border);"><input type="checkbox" value="' + item.key + '"' + checked + ' style="width:16px;height:16px;accent-color:var(--primary);"><span style="font-size:14px;">' + item.label + '</span></label>';
     }).join('');
@@ -3234,10 +3247,15 @@ async function renderRolePermissions(container) {
         roles.forEach(function(role) {
             var rolePerms = role.permissions || [];
             var isBuiltin = role.is_builtin;
+            // Admin-only pages (system-wide config) cannot be granted to any
+            // non-admin role, so do not even show them for those role cards.
+            var assignablePages = role.role === 'admin'
+                ? pages
+                : pages.filter(function(p) { return !p.admin_only; });
             html += '<div class="card mb-4"><div class="card-header flex-between"><h3 style="margin:0;">' + escapeHtml(role.role_label) + '</h3>' + (isBuiltin ? '' : '<button class="btn btn-ghost btn-sm btn-icon" onclick="deleteRole(\'' + escapeHtml(role.role) + '\')" title="Eliminar rol" style="color:var(--danger);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>') + '</div><div class="card-body">';
             html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">';
 
-            pages.forEach(function(page) {
+            assignablePages.forEach(function(page) {
                 var checked = rolePerms.indexOf(page.id) >= 0 ? 'checked' : '';
                 var disabled = role.role === 'admin' ? 'disabled' : '';
                 html += '<label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;cursor:pointer;">';
@@ -3269,7 +3287,7 @@ async function saveRolePermissions(role) {
 }
 
 function showCreateRoleModal() {
-    var checkboxes = PERM_ITEMS.map(function(item) {
+    var checkboxes = PERM_ITEMS.filter(function(item) { return !item.adminOnly; }).map(function(item) {
         return '<label style="display:flex;align-items:center;gap:8px;padding:8px 0;cursor:pointer;border-bottom:1px solid var(--border);"><input type="checkbox" class="new-role-perm" value="' + item.key + '" style="width:16px;height:16px;accent-color:var(--primary);"><span style="font-size:14px;">' + item.label + '</span></label>';
     }).join('');
     showModal('Crear Rol', '<form onsubmit="createRole(event)"><div class="form-group"><label>Identifador del rol</label><input type="text" name="role" required placeholder="ej. data_specialist" pattern="[a-z0-9_]+" title="Solo minusculas, numeros y guiones bajos"><small class="text-secondary">Clave unica del rol (minusculas, sin espacios).</small></div><div class="form-group"><label>Nombre del rol</label><input type="text" name="label" required placeholder="ej. Analista de Datos"><small class="text-secondary">Nombre que se muestra en la lista de usuarios.</small></div><div class="form-group"><label style="font-weight:600;">Permisos</label><div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:0 12px;">' + checkboxes + '</div><small class="text-secondary">Selecciona los menus a los que este rol tendra acceso.</small></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Crear Rol</button></div></form>');
