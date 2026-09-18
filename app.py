@@ -1201,6 +1201,24 @@ def init_db():
                 # A missing table/column shouldn't block startup.
                 print(f"Index warning: {e}")
         conn.commit()
+        # Migration (strict inheritance): Miembro de Equipo and custom roles
+        # (data agent) must always follow their team admin's country. Backfill
+        # any historic rows created before this rule so they align with their
+        # leader (same chain as create_user/update_user). Idempotent.
+        try:
+            cur.execute("""
+                UPDATE users SET country = tc.country
+                FROM users tc
+                WHERE users.team_creator_id = tc.id
+                  AND tc.role = 'team_admin'
+                  AND users.role <> 'admin'
+                  AND users.role <> 'team_admin'
+                  AND (users.country IS NULL OR users.country <> tc.country)
+            """)
+            conn.commit()
+        except Exception as e:
+            print(f"Backfill member country (PG) warning: {e}")
+            db.rollback()
         # Release the bootstrap session-level advisory lock so the next worker
         # waiting on it can proceed (the connection close would also release it).
         try:
@@ -2277,6 +2295,30 @@ def init_db():
             db.commit()
         except Exception:
             pass
+
+        # Migration (strict inheritance, SQLite): Miembro de Equipo / custom
+        # roles must always follow their team admin's country. Backfill historic
+        # rows created before this rule (see PG branch above). Idempotent.
+        try:
+            db.execute("""
+                UPDATE users
+                SET country = (SELECT tc.country FROM users tc
+                               WHERE tc.id = users.team_creator_id
+                                 AND tc.role = 'team_admin')
+                WHERE team_creator_id IS NOT NULL
+                  AND role != 'admin'
+                  AND role != 'team_admin'
+                  AND (
+                      country IS NULL
+                      OR country != (SELECT tc.country FROM users tc
+                                     WHERE tc.id = users.team_creator_id
+                                       AND tc.role = 'team_admin')
+                  )
+            """)
+            db.commit()
+        except Exception as e:
+            print(f"Backfill member country (SQLite) warning: {e}")
+            db.rollback()
 
         db.close()
 
