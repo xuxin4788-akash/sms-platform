@@ -2038,20 +2038,9 @@ async function showAddUserModal() {
     var infoText = myRole === 'admin'
         ? 'Se creara un Administrador de Equipo, un Miembro de Equipo o un rol personalizado (todas las cuentas son gestionadas por el sistema).'
         : 'Se creara un Miembro de Equipo bajo tu gestion.';
-    // Fetch API configs for team_admin creation
-    var apiConfigHtml = '';
-    if (myRole === 'admin' || (state.user.permissions || []).includes('team-api-select')) {
-        try {
-            var configsData = await api('/api/config/sms');
-            var configs = configsData.configs || [];
-            var configOptions = configs.map(function(c) {
-                return '<option value="' + c.id + '">' + escapeHtml(c.name) + ' (' + escapeHtml(c.country) + ')</option>';
-            }).join('');
-            apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais) *</label><select name="api_config_id" required><option value="">Seleccionar pais...</option>' + configOptions + '</select><small class="text-secondary">Cada equipo usa la API de un solo pais. Esta configuracion no se puede cambiar despues.</small></div>';
-        } catch (e) {
-            apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais)</label><p class="text-secondary">No hay configuraciones API disponibles</p></div>';
-        }
-    }
+    // La configuracion de API ya no se asigna manualmente: todas las cuentas
+    // siguen el pais del Administrador de Equipo automaticamente.
+    var apiConfigHtml = '<div class="form-group"><label>Configuracion API</label><p class="text-secondary" style="margin:4px 0 0;"><strong>Automatica por pais.</strong> Las cuentas usan la configuracion SMS y voz del pais del Administrador de Equipo que las gestiona. Si ese pais no esta configurado, esa funcionalidad devolvera error 404.</p></div>';
     // Pais del agente. Por defecto sigue al del administrador que crea la
     // cuenta (es decir, al del equipo); el miembro solo se sobreescribe si
     // pertenece a otro pais. El backend hereda este default igualmente.
@@ -2292,20 +2281,9 @@ async function showBulkCreateModal() {
     var myRole = state.user.role;
     if (myRole !== 'admin' && myRole !== 'team_admin') { showToast('Permisos insuficientes', 'error'); return; }
 
-    // For admin, fetch API configs (country selection)
-    var apiConfigHtml = '';
-    if (myRole === 'admin') {
-        try {
-            var configsData = await api('/api/config/sms');
-            var configs = configsData.configs || [];
-            var configOptions = configs.map(function(c) {
-                return '<option value="' + c.id + '">' + escapeHtml(c.name) + ' (' + escapeHtml(c.country) + ')</option>';
-            }).join('');
-            apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais) para todos los nuevos equipos *</label><select name="api_config_id" id="bulk-api-config" required><option value="">Seleccionar pais...</option>' + configOptions + '</select><small class="text-secondary">El Administrador del Sistema crea Administradores de Equipo. Cada equipo se asocia a la API de un pais.</small></div>';
-        } catch (e) {
-            apiConfigHtml = '<div class="form-group"><label>Configuracion API</label><p class="text-secondary">No hay configuraciones API disponibles</p></div>';
-        }
-    }
+    // API config is now automatic by country (led by each team admin's pais);
+    // no manual assignment is needed here.
+    var apiConfigHtml = '<div class="form-group"><label>Configuracion API</label><p class="text-secondary" style="margin:4px 0 0;"><strong>Automatica por pais.</strong> Cada cuenta usa la configuracion SMS y voz del pais del Administrador de Equipo. Si un pais no esta configurado, esa funcionalidad devolvera error 404.</p></div>';
 
     var defaultPwdMsg = myRole === 'admin'
         ? 'Se crearan Administradores de Equipo.'
@@ -2452,19 +2430,8 @@ async function handleBulkCreate(event) {
 async function showBulkImportModal() {
     var myRole = state.user.role;
     if (myRole !== 'admin' && myRole !== 'team_admin') { showToast('Permisos insuficientes', 'error'); return; }
-    var apiConfigHtml = '';
-    if (myRole === 'admin') {
-        try {
-            var configsData = await api('/api/config/sms');
-            var configs = configsData.configs || [];
-            var options = configs.map(function(c) {
-                return '<option value="' + c.id + '">' + escapeHtml(c.name) + ' (' + escapeHtml(c.country) + ')</option>';
-            }).join('');
-            apiConfigHtml = '<div class="form-group"><label>Configuracion API (Pais) *</label><select name="api_config_id" id="bulk-import-api-config" required><option value="">Seleccionar pais...</option>' + options + '</select><small class="text-secondary">Se crearan Administradores de Equipo asociados a este pais.</small></div>';
-        } catch (e) {
-            apiConfigHtml = '<div class="form-group"><label>Configuracion API</label><p class="text-secondary">No hay configuraciones API disponibles</p></div>';
-        }
-    }
+    // API config follows each team admin's pais automatically; no manual field.
+    var apiConfigHtml = '<div class="form-group"><label>Configuracion API</label><p class="text-secondary" style="margin:4px 0 0;"><strong>Automatica por pais.</strong> Cada cuenta usa la configuracion SMS y voz del pais del Administrador de Equipo. Si un pais no esta configurado, esa funcionalidad devolvera error 404.</p></div>';
 
     showModal('Importar Usuarios desde Excel',
         '<form onsubmit="handleBulkImport(event)" enctype="multipart/form-data">' +
@@ -3201,25 +3168,28 @@ async function renderTeamApiConfig(container) {
     try {
         var data = await api('/api/config/team-api-config');
         var teams = data.teams || [];
-        var configs = data.configs || [];
         var globalLimit = data.global_daily_limit || 0;
 
         var teamRows = teams.map(function(t) {
-            var currentId = t.api_config_id ? String(t.api_config_id) : '';
-            var opts = '<option value=""' + (currentId === '' ? ' selected' : '') + '>Sin asignar</option>' +
-                configs.map(function(c) {
-                    var label = c.country ? (c.name + ' (' + c.country + ')') : c.name;
-                    return '<option value="' + c.id + '"' + (String(c.id) === currentId ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
-                }).join('');
+            var apiCell;
+            if (t.configured) {
+                apiCell = '<span class="badge badge-success">' + escapeHtml(t.api_config_name) + ' (' + escapeHtml(t.api_config_country) + ')</span>';
+            } else {
+                apiCell = '<span class="badge badge-danger">No configurado</span><br><small class="text-secondary">Contacta al Administrador del Sistema (pais ' + escapeHtml(t.admin_country || '-') + ')</small>';
+            }
             return '<tr>' +
                 '<td><strong>' + escapeHtml(t.team_admin_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.team_admin_full_name || '') + '</small></td>' +
+                '<td style="text-align:center;"><span class="badge badge-info">' + escapeHtml(t.admin_country || 'Global') + '</span></td>' +
+                '<td>' + apiCell + '</td>' +
                 '<td><input type="number" min="0" max="100000" value="' + (t.daily_sms_limit || 0) + '" id="team-limit-' + t.team_admin_id + '" style="width:90px;padding:6px 8px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;text-align:center;"><br><small class="text-secondary">0 = sin limite</small></td>' +
-                '<td><select onchange="updateTeamApiConfig(' + t.team_admin_id + ', this.value)" style="padding:6px 10px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;max-width:240px;">' + opts + '</select></td>' +
                 '<td style="text-align:center;"><button class="btn btn-primary btn-sm" onclick="saveTeamLimit(' + t.team_admin_id + ')">Guardar</button></td>' +
                 '</tr>';
         }).join('');
 
         var html = '<div class="flex-between mb-4"><h1 style="font-size:22px;font-weight:700;">API y Limites por Equipo</h1></div>' +
+            '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">Nota</h3></div><div class="card-body">' +
+            '<p class="text-secondary" style="margin-bottom:0;">La configuracion de API (SMS y voz) de cada cuenta se asigna <strong>automaticamente</strong> segun el pais del Administrador de Equipo. Crea cada equipo con su pais y este se asociara a la configuracion SMS/voz de ese pais. Si un pais no tiene configuracion, esa funcionalidad devolvera error 404.</p>' +
+            '</div></div>' +
             '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">Limite diario global (tope para todos los miembros)</h3></div><div class="card-body">' +
             '<p class="text-secondary" style="margin-bottom:12px;">Se aplica a todos los miembros de equipo. Si un equipo tiene su propio limite, se usa el valor mas estricto (el menor). 0 = sin limite global.</p>' +
             '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
@@ -3228,8 +3198,8 @@ async function renderTeamApiConfig(container) {
             '<button class="btn btn-primary" onclick="saveGlobalLimit()">Guardar limite global</button>' +
             '</div></div></div>' +
             '<div class="card"><div class="card-header"><h3 style="margin:0;">Configuracion por equipo</h3></div><div class="card-body">' +
-            '<p class="text-secondary mb-3">Asigna la API SMS y el limite diario de cada equipo. Los miembros no podran enviar mas SMS una vez alcanzado su limite diario.</p>' +
-            (teams.length > 0 ? '<div class="table-container"><table><thead><tr><th>Equipo (Admin)</th><th style="text-align:center;">Limite diario / miembro</th><th>Configuracion API (SMS)</th><th style="text-align:center;"></th></tr></thead><tbody>' + teamRows + '</tbody></table></div>' : '<div class="empty-state"><p>No hay equipos configurados</p></div>') +
+            '<p class="text-secondary mb-3">El limite diario de cada equipo se edita aqui. La API se asigna automaticamente segun el pais del administrador.</p>' +
+            (teams.length > 0 ? '<div class="table-container"><table><thead><tr><th>Equipo (Admin)</th><th style="text-align:center;">Pais</th><th>API asignada (automatica)</th><th style="text-align:center;">Limite diario / miembro</th><th style="text-align:center;"></th></tr></thead><tbody>' + teamRows + '</tbody></table></div>' : '<div class="empty-state"><p>No hay equipos configurados</p></div>') +
             '</div></div>';
 
         container.innerHTML = html;

@@ -2633,23 +2633,79 @@ def get_sms_api_config(config_id=None):
         'unit_price': uprice,
     }
 
-def get_team_sms_config(user_id):
-    """Get SMS API config for a user based on their team."""
+def get_user_api_country(user_row):
+    """Pais de configuracion (SMS + voz) de una cuenta.
+
+    Sigue SIEMPRE el pais del Administrador de Equipo que gestiona la cuenta
+    (creador del equipo). El Administrador del Sistema (admin) no pertenece a
+    ningun equipo y usa la configuracion global (devuelve '').
+    """
+    if not user_row:
+        return ''
+    if isinstance(user_row, dict):
+        user_row = dict(user_row)
+    else:
+        user_row = dict(user_row)
+    if user_row['role'] == 'admin':
+        return ''
+    ta_id = user_row.get('team_creator_id')
+    if user_row['role'] == 'team_admin':
+        # El propio administrador de equipo: su pais.
+        ta_id = user_row.get('id')
+    if not ta_id:
+        return normalize_country(user_row.get('country') or '')
+    row = get_db().execute(
+        "SELECT country FROM users WHERE id=? AND country IS NOT NULL AND country != ''",
+        (ta_id,)
+    ).fetchone()
+    return normalize_country(row['country'] if row else '')
+
+
+def get_sms_config_for_country(country):
+    """Return the sms_api_configs row (as dict) matching `country`, or None."""
     db = get_db()
-    # Find user's team admin
-    user = db.execute("SELECT id, role, team_creator_id FROM users WHERE id = ?", (user_id,)).fetchone()
-    if not user:
+    cc = normalize_country(country)
+    if not cc:
+        return None
+    config = db.execute(
+        "SELECT * FROM sms_api_configs WHERE UPPER(country)=UPPER(?) ORDER BY id LIMIT 1",
+        (cc,)
+    ).fetchone()
+    if not config:
+        return None
+    try:
+        uprice = float(config['unit_price']) if config['unit_price'] is not None else 0.0
+    except (ValueError, TypeError):
+        uprice = 0.0
+    return {
+        'id': config['id'],
+        'name': config['name'] or '',
+        'country': config['country'] or cc,
+        'domain': config['domain'] or '',
+        'spid': config['spid'] or '',
+        'api_pwd': config['api_pwd'] or '',
+        'sender_name': config['sender_name'] or '',
+        'unit_price': uprice,
+    }
+
+
+def get_team_sms_config(user_id):
+    """Get SMS API config for a user.
+
+    The config ALWAYS follows the country of the team admin that manages the
+    account (the system admin uses the global config). Returns None when the
+    account's country has no SMS config row -> the caller must return 404.
+    """
+    db = get_db()
+    user = db.execute(
+        "SELECT id, role, team_creator_id, country FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    if not user or user['role'] == 'admin':
         return get_sms_api_config()
-    if user['role'] == 'admin':
+    country = get_user_api_country(user)
+    if not country:
         return get_sms_api_config()
-    # Find team admin's config
-    team_admin_id = user['team_creator_id']
-    if not team_admin_id:
-        return get_sms_api_config()
-    tc = db.execute("SELECT api_config_id FROM team_config WHERE team_admin_id = ?", (team_admin_id,)).fetchone()
-    if tc and tc['api_config_id']:
-        return get_sms_api_config(tc['api_config_id'])
-    return get_sms_api_config()
+    return get_sms_config_for_country(country)
 
 def normalize_phone(phone, default_country='+52'):
     """Normalize a phone number to E.164-ish form: +<digits>.
@@ -3474,22 +3530,17 @@ def get_me():
             if p not in permissions:
                 permissions.append(p)
 
-    # Get team country code
+    # Get team country code. The country follows the team admin of the account
+    # (all accounts in a team inherit their team admin's pais) so the dashboard
+    # phone default matches the actual API/voice country.
     team_country = ''
     try:
         if g.user['role'] == 'admin':
-            # Admin: get first active config country
             cfg = db.execute("SELECT country FROM sms_api_configs WHERE is_active = 1 LIMIT 1").fetchone()
             if cfg:
                 team_country = cfg['country'] or ''
         else:
-            team_admin_id = g.user.get('team_creator_id')
-            if team_admin_id:
-                tc = db.execute("SELECT api_config_id FROM team_config WHERE team_admin_id = ?", (team_admin_id,)).fetchone()
-                if tc and tc['api_config_id']:
-                    cfg = db.execute("SELECT country FROM sms_api_configs WHERE id = ?", (tc['api_config_id'],)).fetchone()
-                    if cfg:
-                        team_country = cfg['country'] or ''
+            team_country = get_user_api_country(g.user)
     except Exception as e:
         app.logger.error(f"Error loading team country: {e}")
 
@@ -3867,7 +3918,6 @@ def create_user():
     existing = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
     if existing:
         return jsonify({'error': 'El nombre de usuario ya existe'}), 409
-    api_config_id = data.get('api_config_id')
     # Las extensiones NO se asignan manualmente: se elige automaticamente una
     # libre del pool configurado si el administrador marca "asignar telefono".
     assign_extension = bool(data.get('assign_extension', False))
@@ -3894,11 +3944,12 @@ def create_user():
     EXPORTABLE_PASSWORDS[int(new_user_id)] = password
     if extnumber:
         _extensions_mark_assigned(extnumber, new_user_id, country)
-    # If creating a team_admin, create team_config with api_config_id
+    # If creating a team_admin, create team_config (API follows country, so no
+    # manual api_config_id is stored).
     if role == 'team_admin':
         db.execute(
-            "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, 100)",
-            (new_user_id, api_config_id if api_config_id else None)
+            "INSERT INTO team_config (team_admin_id, daily_sms_limit) VALUES (?, 100)",
+            (new_user_id,)
         )
     db.commit()
     response = {'message': 'Usuario creado exitosamente'}
@@ -4138,7 +4189,6 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
         full_name = (u.get('full_name') or '').strip()
         # Pais del agente: fila -> default de la tanda -> pais del lider/equipo -> mx.
         country = normalize_country(u.get('country')) or default_country or fallback_country
-        api_config_id = u.get('api_config_id') or default_api_config_id
         # Las extensiones nunca se leen del archivo: se asignan automaticamente.
         extnumber = None
 
@@ -4187,13 +4237,9 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
             new_user_row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
             new_user_id = new_user_row['id']
             if role == 'team_admin':
-                if not api_config_id:
-                    errors.append({'index': idx, 'username': username, 'error': 'Configuracion API (pais) requerida'})
-                    db.execute("DELETE FROM users WHERE id=?", (new_user_id,))
-                    continue
                 db.execute(
-                    "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, 100)",
-                    (new_user_id, api_config_id)
+                    "INSERT INTO team_config (team_admin_id, daily_sms_limit) VALUES (?, 100)",
+                    (new_user_id,)
                 )
             EXPORTABLE_PASSWORDS[int(new_user_id)] = password
             if extnumber:
@@ -6067,6 +6113,15 @@ def send_sms():
                 }), 429
     api_configured = is_sms_api_configured(g.user['id'])
     sms_config = get_team_sms_config(g.user['id'])
+    # El pais de la cuenta (sigue al administrador de equipo) DEBE tener su
+    # propia configuracion SMS. Si el pais es explicito pero no esta
+    # configurado, no se cae en simulacion: se rechaza con 404.
+    if g.user['role'] != 'admin':
+        country = get_user_api_country(g.user)
+        if country and not sms_config:
+            return jsonify({
+                'error': 'No hay configuracion SMS para el pais (%s) de este equipo. Contacta al Administrador del Sistema.' % country.upper()
+            }), 404
     api_config_id = sms_config.get('id') if sms_config else None
     contact_cache = build_contact_template_cache(db, phones)
     records = []
@@ -7892,28 +7947,39 @@ def set_daily_limit():
 @app.route('/api/config/team-api-config', methods=['GET'])
 @admin_required
 def get_team_api_configs():
-    """Get all teams with their API config assignments."""
+    """Get all teams with their daily SMS limit and the country-derived API.
+
+    Since API config now follows each team admin's country automatically, this
+    returns for each team its ADMIN COUNTRY and the SMS config row derived from
+    it (if any). No manual api_config_id assignment is exposed.
+    """
     db = get_db()
+    user_rows = {r['id']: dict(r) for r in db.execute(
+        "SELECT id, username, full_name, role, team_creator_id, country FROM users"
+    ).fetchall()}
     teams = db.execute('''
-        SELECT tc.id, tc.team_admin_id, tc.api_config_id, tc.daily_sms_limit,
+        SELECT tc.id, tc.team_admin_id, tc.daily_sms_limit,
                u.username as team_admin_name, u.full_name as team_admin_full_name,
-               sac.name as api_config_name, sac.country as api_config_country
+               u.country as admin_country
         FROM team_config tc
         JOIN users u ON tc.team_admin_id = u.id
-        LEFT JOIN sms_api_configs sac ON tc.api_config_id = sac.id
         WHERE u.role = 'team_admin'
         ORDER BY u.username
     ''').fetchall()
     team_list = []
     for t in teams:
+        admin_row = user_rows.get(t['team_admin_id']) or {}
+        derived = get_sms_config_for_country(admin_row.get('country') or '')
         team_list.append({
             'id': t['id'],
             'team_admin_id': t['team_admin_id'],
             'team_admin_name': t['team_admin_name'],
             'team_admin_full_name': t['team_admin_full_name'] or '',
-            'api_config_id': t['api_config_id'],
-            'api_config_name': t['api_config_name'] or 'Sin asignar',
-            'api_config_country': t['api_config_country'] or '',
+            'admin_country': (admin_row.get('country') or '').upper() or '',
+            'api_config_id': derived['id'] if derived else None,
+            'api_config_name': (derived['name'] if derived else 'No configurado'),
+            'api_config_country': (derived['country'] or '').upper() if derived else '',
+            'configured': derived is not None,
             'daily_sms_limit': t['daily_sms_limit']
         })
     configs = db.execute("SELECT id, name, country FROM sms_api_configs WHERE is_active=1 ORDER BY name").fetchall()
@@ -7924,11 +7990,15 @@ def get_team_api_configs():
 @app.route('/api/config/team-api-config', methods=['PUT'])
 @admin_required
 def update_team_api_config():
-    """Update team's API config assignment and/or daily SMS limit."""
+    """Update team's daily SMS limit.
+
+    The API config is NO LONGER assigned per team: every account follows the
+    country of its team admin automatically. api_config_id is accepted but
+    ignored (kept for backwards compatibility); only the daily limit is stored.
+    """
     db = get_db()
     data = request.get_json()
     team_admin_id = data.get('team_admin_id')
-    api_config_id = data.get('api_config_id')
     daily_limit = data.get('daily_sms_limit', None)
     if not team_admin_id:
         return jsonify({'error': 'team_admin_id es requerido'}), 400
@@ -7942,19 +8012,13 @@ def update_team_api_config():
     if existing:
         if daily_limit is not None:
             db.execute(
-                "UPDATE team_config SET api_config_id=?, daily_sms_limit=? WHERE team_admin_id=?",
-                (api_config_id if api_config_id else None, daily_limit, team_admin_id)
-            )
-        else:
-            db.execute(
-                "UPDATE team_config SET api_config_id=? WHERE team_admin_id=?",
-                (api_config_id if api_config_id else None, team_admin_id)
+                "UPDATE team_config SET daily_sms_limit=? WHERE team_admin_id=?",
+                (daily_limit, team_admin_id)
             )
     else:
         db.execute(
-            "INSERT INTO team_config (team_admin_id, api_config_id, daily_sms_limit) VALUES (?, ?, ?)",
-            (team_admin_id, api_config_id if api_config_id else None,
-             daily_limit if daily_limit is not None else 100)
+            "INSERT INTO team_config (team_admin_id, daily_sms_limit) VALUES (?, ?)",
+            (team_admin_id, daily_limit if daily_limit is not None else 100)
         )
     db.commit()
     return jsonify({'message': 'Configuracion actualizada'})
@@ -9521,10 +9585,20 @@ def voice_place_call_route():
     if len(phones) > 200:
         return jsonify({'error': 'Maximo 200 numeros por llamada masiva'}), 400
 
-    # Resolve the voice config for the calling agent's country. Each country
-    # (mx/co/pe) has its own Infinity credentials/extension pool; agents
-    # without a country use the global (legacy) config.
-    caller_country = normalize_country(g.user.get('country')) if hasattr(g, 'user') else ''
+    # Resolve the voice config for the team admin's country. The country of a
+    # call ALWAYS follows the team admin (administrador de equipo) that manages
+    # the account; the system admin has no team and uses the global config.
+    caller_country = get_user_api_country(g.user) if hasattr(g, 'user') else ''
+    # El pais de la cuenta DEBE tener su propia configuracion de voz. Si el pais
+    # es explicito pero no tiene fila configurada, no se cae en fallback: 404.
+    if caller_country:
+        row = get_db().execute(
+            "SELECT 1 FROM voice_configs WHERE country = ? LIMIT 1", (caller_country,)
+        ).fetchone()
+        if not row:
+            return jsonify({
+                'error': 'No hay configuracion de voz para el pais (%s) de este equipo. Contacta al Administrador del Sistema.' % caller_country.upper()
+            }), 404
     cfg = resolve_voice_config(caller_country)
     simulated = not is_voice_configured(caller_country)
     provider = (cfg or {}).get('provider', 'simulation')
