@@ -3463,6 +3463,7 @@ async function deleteRole(role) {
 // page is currently active so standalone pages still work.
 // ============================================================
 var _configPageMode = 'sms'; // 'sms' | 'unified'
+var _emailSendersBulkResult = null; // last bulk-import result, re-injected after re-render
 function refreshConfigPage() {
     var content = document.getElementById('page-content');
     if (_configPageMode === 'unified') { renderUnifiedConfig(content); return; }
@@ -5863,10 +5864,21 @@ function renderEmailSendersCard(data) {
             '<td class="text-right" style="white-space:nowrap;">' + actions + '</td></tr>';
     }).join('') : '<tr><td colspan="4" class="text-center text-secondary" style="padding:20px;">Sin direcciones por APP</td></tr>';
     return '<div class="card mb-4"><div class="card-body">' +
-        '<h3 style="margin-bottom:4px;">Direcciones de envio por APP</h3>' +
+        '<div class="flex-between" style="align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:4px;">' +
+          '<h3 style="margin-bottom:4px;">Direcciones de envio por APP</h3>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<button type="button" class="btn btn-secondary btn-sm" onclick="downloadEmailSendersTemplate()">' +
+              'Descargar plantilla</button>' +
+            '<button type="button" class="btn btn-primary btn-sm" onclick="document.getElementById(\'es-bulk-file\').click()">' +
+              'Carga masiva</button>' +
+          '</div>' +
+        '</div>' +
+        '<input type="file" id="es-bulk-file" accept=".xlsx,.csv,.txt" style="display:none;" onchange="handleEmailSendersBulk(this)">' +
+        '<div id="es-bulk-msg">' + emailSendersBulkResultHtml() + '</div>' +
         '<p class="text-secondary text-sm" style="margin-bottom:14px;">Los contactos de cada APP de su equipo se envian desde una direccion distinta. ' +
         'Las APP con etiqueta Sistema son los remitentes globales; las APP sin una direccion configurada usan el remitente global' +
-        (defaultFrom ? ' (<strong>' + escapeHtml(defaultFrom) + '</strong>)' : '') + '.</p>' +
+        (defaultFrom ? ' (<strong>' + escapeHtml(defaultFrom) + '</strong>)' : '') + '. ' +
+        'Use <strong>Carga masiva</strong> para importar varias APP desde un archivo .xlsx/.csv (columnas: APP, Correo remitente, Nombre remitente opcional, Activa); las APP existentes se actualizan.</p>' +
         '<div style="overflow-x:auto;margin-bottom:16px;"><table class="data-table"><thead><tr>' +
           '<th>APP</th><th>Correo remitente</th><th>Estado</th><th class="text-right">Acciones</th>' +
         '</tr></thead><tbody id="em-senders-rows">' + rows + '</tbody></table></div>' +
@@ -5947,6 +5959,76 @@ async function deleteEmailSender(id) {
         await api('/api/config/email/senders/' + id, { method: 'DELETE' });
         refreshEmailConfigPage();
     } catch (err) { showToast(err.message, 'error'); }
+}
+
+function emailSendersBulkResultHtml() {
+    var data = _emailSendersBulkResult;
+    if (!data) return '';
+    if (data.isError) {
+        return '<div class="alert alert-error" style="margin:10px 0;">Error al cargar <strong>' +
+            escapeHtml(data.file || 'archivo') + '</strong>: ' + escapeHtml(data.error || '') + '</div>';
+    }
+    var inv = data.invalid || [];
+    var invHtml = inv.length
+        ? '<details style="margin-top:8px;"><summary class="text-sm" style="cursor:pointer;">Ver ' + inv.length + ' fila(s) no importada(s)</summary>' +
+          '<table class="data-table text-sm" style="margin-top:6px;"><thead><tr><th>Fila</th><th>APP</th><th>Motivo</th></tr></thead><tbody>' +
+          inv.map(function(x) {
+              return '<tr><td>' + escapeHtml(String(x.row)) + '</td><td>' + escapeHtml(x.app || '') + '</td><td>' + escapeHtml(x.error || '') + '</td></tr>';
+          }).join('') + '</tbody></table></details>'
+        : '';
+    var cls = inv.length ? 'alert-warning' : 'alert-success';
+    return '<div class="alert ' + cls + '" style="margin:10px 0;">' +
+        'Carga de <strong>' + escapeHtml(data.file || 'archivo') + '</strong>: ' +
+        (data.added_count || 0) + ' agregada(s), ' +
+        (data.updated_count || 0) + ' actualizada(s), ' +
+        (data.invalid_count || 0) + ' no importada(s).' + invHtml + '</div>';
+}
+
+function downloadEmailSendersTemplate() {
+    // Authenticated file download: fetch as blob (cookie auth) instead of a raw link.
+    fetch('/api/config/email/senders/template', { credentials: 'same-origin' })
+        .then(function(res) {
+            if (!res.ok) throw new Error('No se pudo descargar la plantilla');
+            return res.blob();
+        })
+        .then(function(blob) {
+            var url = window.URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url; a.download = 'plantilla_remitentes_app.xlsx';
+            document.body.appendChild(a); a.click(); a.remove();
+            window.URL.revokeObjectURL(url);
+        })
+        .catch(function(err) { showToast(err.message, 'error'); });
+}
+
+async function handleEmailSendersBulk(input) {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    var fd = new FormData();
+    fd.append('file', file);
+    var fileName = file.name;
+    try {
+        var resp = await fetch('/api/config/email/senders/bulk', {
+            method: 'POST',
+            body: fd,
+            credentials: 'same-origin'
+        });
+        var data = null;
+        try { data = await resp.json(); } catch (e) { data = null; }
+        if (!resp.ok || (data && data.error && !(data.added_count || data.updated_count))) {
+            throw new Error((data && data.error) || ('Error HTTP ' + resp.status));
+        }
+        if (data) { data.file = fileName; _emailSendersBulkResult = data; }
+        showToast('Carga masiva completada', 'success');
+        // Re-fetch the list; renderEmailSendersCard re-injects the persisted result.
+        refreshEmailConfigPage();
+    } catch (err) {
+        _emailSendersBulkResult = { file: fileName, added_count: 0, updated_count: 0, invalid_count: 0, invalid: [], error: err.message, isError: true };
+        showToast(err.message, 'error');
+        refreshEmailConfigPage();
+    } finally {
+        input.value = '';
+    }
 }
 
 function applyEmailProviderPreset(key) {

@@ -11226,6 +11226,252 @@ def email_app_senders_delete(sid):
     return jsonify({'message': 'Direccion de envio eliminada'})
 
 
+# Columns accepted in the bulk-upload file (header, lower-cased, es/en aliases).
+_SENDER_BULK_HEADERS = {
+    'app': ('app', 'app_name', 'nombre app', 'nombre de la app', 'aplicacion', 'appname'),
+    'email': ('correo', 'correo remitente', 'email', 'from_email', 'remitente', 'correo electronico', 'e-mail'),
+    'name': ('nombre remitente', 'nombre remitente (opcional)', 'from_name', 'nombre', 'alias', 'display name'),
+    'active': ('activa', 'activo', 'estado', 'is_active', 'active', 'status'),
+}
+
+
+def _sender_bulk_header_map(fieldnames):
+    """Map canonical keys (app/email/name/active) -> actual CSV column name."""
+    mapping = {}
+    norm = {}
+    for f in fieldnames or []:
+        key = ' '.join(str(f or '').strip().lower().split())
+        norm[key] = f
+    for canon, aliases in _SENDER_BULK_HEADERS.items():
+        for a in aliases:
+            if a in norm:
+                mapping[canon] = norm[a]
+                break
+    return mapping
+
+
+def _sender_active_from_value(val):
+    """Interpret an "activa" cell. Defaults to active for blank/unrecognized."""
+    if val is None:
+        return True
+    s = str(val).strip().lower()
+    if s in ('', 'activa', 'activo', 'si', 's', 'yes', 'y', 'true', '1', 'verdadero'):
+        return True
+    if s in ('inactiva', 'inactivo', 'no', 'n', 'no activa', 'false', '0', 'falso'):
+        return False
+    return True
+
+
+def _parse_sender_bulk_rows(file_storage):
+    """Parse an uploaded .xlsx/.csv/.txt into a list of dicts
+    {app_name, from_email, from_name, is_active}. Raises ValueError (Spanish) on
+    structural failures. Per-row validation happens in the inserter so the
+    response can report every bad row instead of failing the whole file.
+    """
+    filename = (file_storage.filename or '').lower()
+    rows = []
+    if filename.endswith('.xlsx'):
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            raise ValueError('El servidor no tiene openpyxl instalado')
+        try:
+            wb = load_workbook(file_storage, read_only=True, data_only=True)
+        except Exception as e:
+            raise ValueError('No se pudo leer el archivo Excel: %s' % e)
+        ws = wb.worksheets[0]
+        iterator = ws.iter_rows(values_only=True)
+        try:
+            header = next(iterator)
+        except StopIteration:
+            return rows
+        heads = [('' if c is None else str(c).strip()) for c in header]
+        # Build a positional mapping by matching header text.
+        pos = {}
+        lower_heads = [' '.join(h.lower().split()) for h in heads]
+        for canon, aliases in _SENDER_BULK_HEADERS.items():
+            for a in aliases:
+                if a in lower_heads:
+                    pos[canon] = lower_heads.index(a)
+                    break
+        if 'app' not in pos or 'email' not in pos:
+            raise ValueError('El archivo debe contener columnas "APP" y "Correo remitente" en la primera fila.')
+        for r in iterator:
+            if r is None:
+                continue
+            def _cell(key):
+                idx = pos.get(key)
+                if idx is None or idx >= len(r) or r[idx] is None:
+                    return ''
+                return str(r[idx]).strip()
+            app_name = _cell('app')
+            email = _cell('email')
+            if not app_name and not email:
+                continue
+            rows.append({
+                'app_name': app_name,
+                'from_email': email,
+                'from_name': _cell('name'),
+                'is_active': _sender_active_from_value(_cell('active') if 'active' in pos else None),
+            })
+        return rows
+    if filename.endswith('.xls'):
+        raise ValueError('El formato .xls (Excel antiguo) no es compatible. Guarde el archivo como .xlsx y vuelva a intentarlo.')
+    # CSV / TXT
+    try:
+        raw = file_storage.read()
+        text = raw.decode('utf-8-sig', errors='replace') if isinstance(raw, (bytes, bytearray)) else str(raw)
+    except Exception as e:
+        raise ValueError('No se pudo leer el archivo: %s' % e)
+    import csv as _csv
+    import io as _io
+    # Sniff the delimiter (comma or semicolon, common in es-LOC Excel CSVs).
+    sample = text[:2048]
+    try:
+        dialect = _csv.Sniffer().sniff(sample, delimiters=',;\t')
+        delimiter = dialect.delimiter
+    except Exception:
+        delimiter = ';' if sample.count(';') > sample.count(',') else ','
+    reader = _csv.DictReader(_io.StringIO(text), delimiter=delimiter)
+    mapping = _sender_bulk_header_map(reader.fieldnames)
+    if 'app' not in mapping or 'email' not in mapping:
+        raise ValueError('El archivo debe contener columnas "APP" y "Correo remitente" en la primera fila.')
+    for row in reader:
+        app_name = (row.get(mapping['app']) or '').strip()
+        email = (row.get(mapping['email']) or '').strip()
+        if not app_name and not email:
+            continue
+        from_name = (row.get(mapping['name']) or '').strip() if 'name' in mapping else ''
+        is_active = _sender_active_from_value(row.get(mapping['active'])) if 'active' in mapping else True
+        rows.append({
+            'app_name': app_name,
+            'from_email': email,
+            'from_name': from_name,
+            'is_active': is_active,
+        })
+    return rows
+
+
+@app.route('/api/config/email/senders/template', methods=['GET'])
+@manager_required
+def download_email_senders_template():
+    """Excel template for bulk-uploading APP->sender mappings."""
+    import io
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Remitentes'
+    ws.append(['APP', 'Correo remitente', 'Nombre remitente (opcional)', 'Activa'])
+    for sample in (
+        ('CrediToque', 'CrediToque@pagoserve.com', 'Cobranza CrediToque', 'Si'),
+        ('FiloCredito', 'FiloCredito@pagoserve.com', '', 'Si'),
+        ('Mony24', 'Mony24@pagoserve.com', 'Cobranza Mony24', 'Si'),
+    ):
+        ws.append(list(sample))
+    ws.column_dimensions['A'].width = 22
+    ws.column_dimensions['B'].width = 32
+    ws.column_dimensions['C'].width = 28
+    ws.column_dimensions['D'].width = 10
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name='plantilla_remitentes_app.xlsx'
+    )
+
+
+@app.route('/api/config/email/senders/bulk', methods=['POST'])
+@manager_required
+def email_app_senders_bulk():
+    """Bulk create APP->sender mappings from an uploaded .xlsx/.csv/.txt file.
+
+    Columns: APP, Correo remitente, [Nombre remitente], [Activa]. Rows scoped to
+    the caller's team (admins create global rows, or target a team via form
+    field team_creator_id). Reports added/updated/duplicate/invalid per row so a
+    partially-bad file still imports the good rows. Existing APP names are
+    updated (upsert) within the caller's editable scope.
+    """
+    up = request.files.get('file') if request.files else None
+    if not up or not up.filename:
+        return jsonify({'error': 'No se selecciono ningun archivo'}), 400
+    try:
+        rows = _parse_sender_bulk_rows(up)
+    except ValueError as ve:
+        return jsonify({'error': str(ve)}), 400
+    if not rows:
+        return jsonify({'error': 'El archivo no contiene filas validas para importar'}), 400
+
+    db = get_db()
+    own_team_id, is_admin = _sender_scope(g.user)
+    if is_admin:
+        team_creator_id = request.form.get('team_creator_id') or None
+        if request.form.get('team_creator_id') == '':
+            team_creator_id = None
+    else:
+        team_creator_id = own_team_id
+
+    # Existing rows keyed by lower app name (case-insensitive uniqueness).
+    clause, params = _sender_team_clause(own_team_id)
+    existing = {}
+    for r in db.execute(
+        "SELECT id, app_name, team_creator_id FROM email_app_senders WHERE " + clause,
+        params
+    ).fetchall():
+        existing[(r['app_name'] or '').strip().lower()] = r
+
+    added, updated, invalid = [], [], []
+    seen_in_file = set()
+    now = datetime.now()
+    for i, item in enumerate(rows, start=2):  # row 1 is the header
+        app_name = item['app_name']
+        email = item['from_email']
+        if not app_name:
+            invalid.append({'row': i, 'app': '', 'error': 'Nombre de APP vacio'})
+            continue
+        if not email or not EMAIL_RE.match(email):
+            invalid.append({'row': i, 'app': app_name, 'error': 'Correo remitente invalido o vacio'})
+            continue
+        key = app_name.lower()
+        if key in seen_in_file:
+            invalid.append({'row': i, 'app': app_name, 'error': 'APP duplicada dentro del archivo'})
+            continue
+        seen_in_file.add(key)
+        current = existing.get(key)
+        if current:
+            # Only update rows the caller may edit (scope already limits this set).
+            db.execute(
+                "UPDATE email_app_senders SET from_email=?, from_name=?, is_active=?, updated_at=? WHERE id=?",
+                (email, item['from_name'], 1 if item['is_active'] else 0, now, current['id'])
+            )
+            updated.append({'row': i, 'app': app_name})
+        else:
+            cur = db.execute(
+                "INSERT INTO email_app_senders (app_name, from_email, from_name, team_creator_id, is_active, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (app_name, email, item['from_name'], team_creator_id, 1 if item['is_active'] else 0, now, now)
+            )
+            added.append({'row': i, 'app': app_name, 'id': cur.lastrowid})
+    db.commit()
+    if not added and not updated:
+        return jsonify({
+            'error': 'Ninguna fila valida para importar',
+            'invalid': invalid,
+            'added_count': 0, 'updated_count': 0, 'invalid_count': len(invalid),
+        }), 400
+    return jsonify({
+        'message': 'Carga masiva procesada',
+        'added_count': len(added),
+        'updated_count': len(updated),
+        'invalid_count': len(invalid),
+        'added': added,
+        'updated': updated,
+        'invalid': invalid,
+    }), 201 if added else 200
+
+
 def _email_scope_where(user, alias='r', mode='auto'):
     """Visibility scope for email records, mirroring SMS/voice. mode: auto|own|team."""
     return _scope_where(alias, user['id'], user['role'], mode)
