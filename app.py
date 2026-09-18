@@ -6096,9 +6096,13 @@ def list_apps():
     db = get_db()
     own_team_id = _sender_scope(g.user)[0]
     clause, params = _sender_team_clause(own_team_id)
+    # ORDER BY must use the GROUP BY expression (the alias k): ordering by the
+    # bare aggregated column app_name raises a strict-PostgreSQL error ("column
+    # must appear in GROUP BY or be used in an aggregate"), which made /api/apps
+    # 500 on PG and silently left the contact editor with only "Sin APP".
     rows = db.execute(
         "SELECT LOWER(TRIM(app_name)) AS k, MAX(app_name) AS app_name FROM email_app_senders "
-        "WHERE app_name <> '' AND " + clause + " GROUP BY LOWER(TRIM(app_name)) ORDER BY LOWER(app_name)",
+        "WHERE app_name <> '' AND " + clause + " GROUP BY LOWER(TRIM(app_name)) ORDER BY k",
         params
     ).fetchall()
     apps = [r['app_name'] for r in rows]
@@ -11079,12 +11083,17 @@ def test_email_config_api():
 # ----- Per-APP sender addresses (direcciones de envio por APP) -------------
 def _sender_scope(user):
     """Team isolation for APP->sender mappings.
-    Returns (own_team_id, is_admin). own_team_id is None for admins (see all),
-    or the team_admin's user id for team_admins (see own team + global NULL rows
-    read-only)."""
+    Returns (own_team_id, is_admin). own_team_id is None for admins (see all).
+    For a team_admin it is their own id; for a member / custom role it is their
+    team admin's id (users.team_creator_id), so members see the SAME app set their
+    team admin configured instead of an empty scope (which previously made the
+    contact editor APP dropdown and the Excel template show no apps)."""
     if user['role'] == 'admin':
         return None, True
-    return user['id'], False
+    if user['role'] == 'team_admin':
+        return user['id'], False
+    leader_id = user.get('team_creator_id')
+    return (leader_id if leader_id else user['id']), False
 
 
 def _sender_team_clause(own_team_id):
