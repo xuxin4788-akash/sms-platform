@@ -974,8 +974,12 @@ def init_db():
                 "UPDATE user_categories SET retention_days = 7 WHERE retention_days > 7 "
                 "OR retention_days < 1 OR retention_days IS NULL"
             )
-        except Exception:
-            db.rollback()
+        except Exception as _e:
+            print(f"Clamp retention_days (PG) warning: {_e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
         # users migrations
         if not pg_column_exists('users', 'team_creator_id'):
@@ -1213,12 +1217,17 @@ def init_db():
                   AND tc.role = 'team_admin'
                   AND users.role <> 'admin'
                   AND users.role <> 'team_admin'
+                  AND tc.country IS NOT NULL
+                  AND tc.country <> ''
                   AND (users.country IS NULL OR users.country <> tc.country)
             """)
             conn.commit()
         except Exception as e:
             print(f"Backfill member country (PG) warning: {e}")
-            db.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         # Release the bootstrap session-level advisory lock so the next worker
         # waiting on it can proceed (the connection close would also release it).
         try:
@@ -1231,7 +1240,7 @@ def init_db():
         # resolve them. Idempotent; only touches rows whose value is not an
         # ISO code. Mirrors the JS _countryFromNameOrCode inference.
         _sms_country_norm_pg = (
-            "UPDATE sms_api_configs SET country = CASE %s END WHERE 1=1"
+            "UPDATE sms_api_configs SET country = CASE %s ELSE country END"
             % " ".join(
                 "WHEN LOWER(BTRIM(country)) IN (%s) THEN '%s'" % (
                     ','.join("'" + a + "'" for a in aliases), iso
@@ -1241,14 +1250,23 @@ def init_db():
                     ('pe', ('peru', 'per')),
                     ('ar', ('argentina', 'arg')),
                 )
-            ) + ""
+            )
+        )
+        # Only touch rows that actually hold a legacy display name; already-ISO
+        # rows (e.g. 'MX') are left untouched (no accidental NULL writes).
+        _sms_country_norm_pg += (
+            " WHERE LOWER(BTRIM(country)) IN "
+            "('mexico','mex','méx','colombia','col','peru','per','argentina','arg')"
         )
         try:
             cur.execute(_sms_country_norm_pg)
             conn.commit()
         except Exception as e:
             print(f"Normalise SMS country (PG) warning: {e}")
-            db.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
         cur.close()
         conn.close()
