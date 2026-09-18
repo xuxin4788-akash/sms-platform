@@ -3295,6 +3295,7 @@ async function renderTeamApiConfig(container) {
         var data = await api('/api/config/team-api-config');
         var teams = data.teams || [];
         var globalLimit = data.global_daily_limit || 0;
+        var globalEmailLimit = data.global_daily_email_limit || 0;
 
         var teamRows = teams.map(function(t) {
             var apiCell;
@@ -3307,7 +3308,8 @@ async function renderTeamApiConfig(container) {
                 '<td><strong>' + escapeHtml(t.team_admin_name) + '</strong><br><small class="text-secondary">' + escapeHtml(t.team_admin_full_name || '') + '</small></td>' +
                 '<td style="text-align:center;"><span class="badge badge-info">' + escapeHtml(t.admin_country || 'Global') + '</span></td>' +
                 '<td>' + apiCell + '</td>' +
-                '<td><input type="number" min="0" max="100000" value="' + (t.daily_sms_limit || 0) + '" id="team-limit-' + t.team_admin_id + '" style="width:90px;padding:6px 8px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;text-align:center;"><br><small class="text-secondary">0 = sin limite</small></td>' +
+                '<td style="text-align:center;"><input type="number" min="0" max="100000" value="' + (t.daily_sms_limit || 0) + '" id="team-limit-' + t.team_admin_id + '" style="width:80px;padding:6px 8px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;text-align:center;"></td>' +
+                '<td style="text-align:center;"><input type="number" min="0" max="100000" value="' + (t.daily_email_limit || 0) + '" id="team-email-limit-' + t.team_admin_id + '" style="width:80px;padding:6px 8px;border:1px solid #E2E8F0;border-radius:8px;font-size:13px;text-align:center;"></td>' +
                 '<td style="text-align:center;"><button class="btn btn-primary btn-sm" onclick="saveTeamLimit(' + t.team_admin_id + ')">Guardar</button></td>' +
                 '</tr>';
         }).join('');
@@ -3317,15 +3319,20 @@ async function renderTeamApiConfig(container) {
             '<p class="text-secondary" style="margin-bottom:0;">La configuracion de API (SMS y voz) de cada cuenta se asigna <strong>automaticamente</strong> segun el pais del Administrador de Equipo. Crea cada equipo con su pais y este se asociara a la configuracion SMS/voz de ese pais. Si un pais no tiene configuracion, esa funcionalidad devolvera error 404.</p>' +
             '</div></div>' +
             '<div class="card mb-4"><div class="card-header"><h3 style="margin:0;">Limite diario global (tope para todos los miembros)</h3></div><div class="card-body">' +
-            '<p class="text-secondary" style="margin-bottom:12px;">Se aplica a todos los miembros de equipo. Si un equipo tiene su propio limite, se usa el valor mas estricto (el menor). 0 = sin limite global.</p>' +
-            '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
+            '<p class="text-secondary" style="margin-bottom:12px;">Se aplica a todos los miembros de equipo y roles personalizados. Si un equipo tiene su propio limite, se usa el valor mas estricto (el menor). 0 = sin limite global.</p>' +
+            '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">' +
             '<input type="number" id="global-daily-limit" min="0" max="100000" value="' + globalLimit + '" style="width:140px;padding:8px 10px;border:1px solid #E2E8F0;border-radius:8px;font-size:14px;text-align:center;">' +
             '<span class="text-secondary">SMS por miembro / dia (0 = sin limite)</span>' +
-            '<button class="btn btn-primary" onclick="saveGlobalLimit()">Guardar limite global</button>' +
+            '<button class="btn btn-primary" onclick="saveGlobalLimit(\'sms\')">Guardar SMS global</button>' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
+            '<input type="number" id="global-email-daily-limit" min="0" max="100000" value="' + globalEmailLimit + '" style="width:140px;padding:8px 10px;border:1px solid #E2E8F0;border-radius:8px;font-size:14px;text-align:center;">' +
+            '<span class="text-secondary">Correos por miembro / dia (0 = sin limite)</span>' +
+            '<button class="btn btn-primary" onclick="saveGlobalLimit(\'email\')">Guardar correos global</button>' +
             '</div></div></div>' +
             '<div class="card"><div class="card-header"><h3 style="margin:0;">Configuracion por equipo</h3></div><div class="card-body">' +
-            '<p class="text-secondary mb-3">El limite diario de cada equipo se edita aqui. La API se asigna automaticamente segun el pais del administrador.</p>' +
-            (teams.length > 0 ? '<div class="table-container"><table><thead><tr><th>Equipo (Admin)</th><th style="text-align:center;">Pais</th><th>API asignada (automatica)</th><th style="text-align:center;">Limite diario / miembro</th><th style="text-align:center;"></th></tr></thead><tbody>' + teamRows + '</tbody></table></div>' : '<div class="empty-state"><p>No hay equipos configurados</p></div>') +
+            '<p class="text-secondary mb-3">Los limites diarios (SMS y correos) de cada equipo se editan aqui. La API se asigna automaticamente segun el pais del administrador.</p>' +
+            (teams.length > 0 ? '<div class="table-container"><table><thead><tr><th>Equipo (Admin)</th><th style="text-align:center;">Pais</th><th>API asignada (automatica)</th><th style="text-align:center;">Limite SMS<br><small>por miembro / dia</small></th><th style="text-align:center;">Limite correos<br><small>por miembro / dia</small></th><th style="text-align:center;"></th></tr></thead><tbody>' + teamRows + '</tbody></table></div>' : '<div class="empty-state"><p>No hay equipos configurados</p></div>') +
             '</div></div>';
 
         container.innerHTML = html;
@@ -3333,24 +3340,29 @@ async function renderTeamApiConfig(container) {
 }
 
 async function saveTeamLimit(teamAdminId) {
-    var el = document.getElementById('team-limit-' + teamAdminId);
-    if (!el) return;
-    var val = parseInt(el.value, 10);
-    if (isNaN(val) || val < 0) { showToast('Introduce un numero valido (0 = sin limite)', 'error'); return; }
+    var smsEl = document.getElementById('team-limit-' + teamAdminId);
+    var emailEl = document.getElementById('team-email-limit-' + teamAdminId);
+    if (!smsEl || !emailEl) return;
+    var smsVal = parseInt(smsEl.value, 10);
+    var emailVal = parseInt(emailEl.value, 10);
+    if (isNaN(smsVal) || smsVal < 0 || isNaN(emailVal) || emailVal < 0) {
+        showToast('Introduce numeros validos (0 = sin limite)', 'error'); return;
+    }
     try {
-        await api('/api/config/team-api-config', { method: 'PUT', body: { team_admin_id: teamAdminId, daily_sms_limit: val } });
-        showToast('Limite del equipo guardado', 'success');
+        await api('/api/config/team-api-config', { method: 'PUT', body: { team_admin_id: teamAdminId, daily_sms_limit: smsVal, daily_email_limit: emailVal } });
+        showToast('Limites del equipo guardados (SMS y correos)', 'success');
     } catch (err) { showToast(err.message, 'error'); }
 }
 
-async function saveGlobalLimit() {
-    var el = document.getElementById('global-daily-limit');
+async function saveGlobalLimit(type) {
+    var isEmail = type === 'email';
+    var el = document.getElementById(isEmail ? 'global-email-daily-limit' : 'global-daily-limit');
     if (!el) return;
     var val = parseInt(el.value, 10);
     if (isNaN(val) || val < 0) { showToast('Introduce un numero valido (0 = sin limite)', 'error'); return; }
     try {
-        await api('/api/config/daily-limit', { method: 'POST', body: { limit: val } });
-        showToast('Limite global guardado', 'success');
+        await api('/api/config/daily-limit', { method: 'POST', body: { limit: val, type: isEmail ? 'email' : 'sms' } });
+        showToast(isEmail ? 'Limite global de correos guardado' : 'Limite global de SMS guardado', 'success');
     } catch (err) { showToast(err.message, 'error'); }
 }
 
