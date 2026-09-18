@@ -5624,9 +5624,12 @@ def import_contacts():
         return jsonify({'error': 'Archivo vacio'}), 400
     if not file.filename.endswith('.csv'):
         return jsonify({'error': 'Solo se aceptan archivos CSV'}), 400
-    group_id = request.form.get('group_id', None)
+    group_id = (request.form.get('group_id') or '').strip() or None
     if group_id:
-        group_id = int(group_id)
+        try:
+            group_id = int(group_id)
+        except (TypeError, ValueError):
+            group_id = None
     # Validate the target group is visible/owned by the importing user
     if group_id:
         db_check = get_db()
