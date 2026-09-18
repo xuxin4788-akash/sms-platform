@@ -577,7 +577,6 @@ function navigateTo(page) {
             _configPageMode = 'sms';
             renderEmailConfig(content); break;
         case 'email-senders':
-            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderEmailSendersPage(content); break;
         case 'email-pricing':
             if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
@@ -2156,7 +2155,7 @@ var PERM_ITEMS = [
     { key: 'my-team', label: 'Mi Equipo', icon: 'users' },
     { key: 'all-teams', label: 'Todos los Equipos', icon: 'bar-chart' },
     { key: 'api-config', label: 'Configuracion de APIs', icon: 'settings', adminOnly: true },
-    { key: 'email-senders', label: 'Direcciones envio por APP', icon: 'mail', adminOnly: true },
+    { key: 'email-senders', label: 'Direcciones envio por APP', icon: 'mail' },
     { key: 'extensions', label: 'Extensiones', icon: 'phone', adminOnly: true },
     { key: 'retention', label: 'Retencion de Contactos', icon: 'shield' },
     { key: 'team-api-select', label: 'Seleccionar API de Equipo', icon: 'server', adminOnly: true }
@@ -5700,22 +5699,30 @@ function renderEmailSendersPage(container) {
 function renderEmailSendersCard(data) {
     var senders = data.senders || [];
     var defaultFrom = data.default_from_email || '';
+    var isAdmin = state.user && state.user.role === 'admin';
+    // For a team_admin, NULL-team rows are the global system defaults: visible
+    // read-only (they act as fallback). Own-team rows are editable.
     var rows = senders.length ? senders.map(function(s) {
         var badge = s.is_active === false
             ? '<span class="badge badge-secondary">Inactiva</span>'
             : '<span class="badge badge-success">Activa</span>';
+        var isGlobal = !s.team_creator_id && !isAdmin;
+        var scopeTxt = isGlobal
+            ? ' <span class="badge badge-info">Sistema</span>'
+            : '';
+        var actions = isGlobal
+            ? '<span class="text-secondary text-sm">Solo lectura</span>'
+            : '<button class="btn btn-secondary btn-sm" onclick="editEmailSender(' + s.id + ')">Editar</button> ' +
+              '<button class="btn btn-danger btn-sm" onclick="deleteEmailSender(' + s.id + ')">Eliminar</button>';
         return '<tr>' +
-            '<td><strong>' + escapeHtml(s.app_name) + '</strong></td>' +
+            '<td><strong>' + escapeHtml(s.app_name) + '</strong>' + scopeTxt + '</td>' +
             '<td>' + escapeHtml(s.from_email) + (s.from_name ? ' <span class="text-secondary text-sm">(' + escapeHtml(s.from_name) + ')</span>' : '') + '</td>' +
             '<td>' + badge + '</td>' +
-            '<td class="text-right" style="white-space:nowrap;">' +
-              '<button class="btn btn-secondary btn-sm" onclick="editEmailSender(' + s.id + ')">Editar</button> ' +
-              '<button class="btn btn-danger btn-sm" onclick="deleteEmailSender(' + s.id + ')">Eliminar</button>' +
-            '</td></tr>';
+            '<td class="text-right" style="white-space:nowrap;">' + actions + '</td></tr>';
     }).join('') : '<tr><td colspan="4" class="text-center text-secondary" style="padding:20px;">Sin direcciones por APP</td></tr>';
     return '<div class="card mb-4"><div class="card-body">' +
         '<h3 style="margin-bottom:4px;">Direcciones de envio por APP</h3>' +
-        '<p class="text-secondary text-sm" style="margin-bottom:14px;">Los contactos de cada APP se envian desde una direccion distinta. ' +
+        '<p class="text-secondary text-sm" style="margin-bottom:14px;">Los contactos de cada APP de su equipo se envian desde una direccion distinta. ' +
         'Las APP sin una direccion configurada usan el remitente global' +
         (defaultFrom ? ' (<strong>' + escapeHtml(defaultFrom) + '</strong>)' : '') + '.</p>' +
         '<div style="overflow-x:auto;margin-bottom:16px;"><table class="data-table"><thead><tr>' +

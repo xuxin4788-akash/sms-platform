@@ -857,10 +857,13 @@ def init_db():
                 app_name VARCHAR(255) NOT NULL UNIQUE,
                 from_email VARCHAR(255) NOT NULL DEFAULT '',
                 from_name VARCHAR(255) DEFAULT '',
+                team_creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             )""")
+        if not pg_column_exists('email_app_senders', 'team_creator_id'):
+            cur.execute("ALTER TABLE email_app_senders ADD COLUMN team_creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_job ON email_records(job_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_status ON email_records(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_email_records_creator ON email_records(created_by, created_at)")
@@ -1310,6 +1313,7 @@ def init_db():
                 app_name TEXT NOT NULL UNIQUE,
                 from_email TEXT NOT NULL DEFAULT '',
                 from_name TEXT DEFAULT '',
+                team_creator_id INTEGER,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -2025,10 +2029,14 @@ def init_db():
                     app_name TEXT NOT NULL UNIQUE,
                     from_email TEXT NOT NULL DEFAULT '',
                     from_name TEXT DEFAULT '',
+                    team_creator_id INTEGER,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                 )''')
+            _eap_cols = [row[1] for row in db.execute("PRAGMA table_info(email_app_senders)").fetchall()]
+            if 'team_creator_id' not in _eap_cols:
+                db.execute("ALTER TABLE email_app_senders ADD COLUMN team_creator_id INTEGER")
             # email_config: global email unit price (facturacion global, no por pais).
             db.execute("""
                 CREATE TABLE IF NOT EXISTS email_config (
@@ -4800,7 +4808,12 @@ AVAILABLE_PAGES = [
 # bounces to the dashboard). They are therefore hidden for non-admin roles in
 # the permission editors and always stripped from non-admin effective
 # permissions, even if a stale/older stored permission set still contains them.
-ADMIN_ONLY_PAGES = {'api-config', 'email-senders', 'extensions',
+# email-senders (Envios por APP) is team-manageable: each team may maintain
+# its own (team_creator_id-scoped) APP->sender mapping, with the global
+# (NULL team) mappings read-only as fallback. It must therefore NOT be in
+# ADMIN_ONLY_PAGES, so it can be granted to team_admin. The remaining pages
+# stay system-admin exclusive.
+ADMIN_ONLY_PAGES = {'api-config', 'extensions',
                     'email-pricing', 'email-config', 'voice-config',
                     'role-permissions', 'team-api-select'}
 
@@ -4813,7 +4826,7 @@ DEFAULT_ROLE_PERMISSIONS = {
     'team_admin': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
         'calls', 'email', 'email-records', 'email-records-team', 'email-replies', 'content-search', 'users',
-        'my-account', 'my-team', 'all-teams', 'retention',
+        'my-account', 'my-team', 'all-teams', 'retention', 'email-senders',
     ],
     'team_member': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
@@ -4825,7 +4838,8 @@ DEFAULT_ROLE_PERMISSIONS = {
 # an explicit (possibly older) permission set stored. Used to roll out new
 # features without forcing an admin to re-check permissions for existing teams.
 # Admin-only pages (e.g. email-config) must never be added here.
-AUTO_GRANT_PAGES = {'email', 'email-records', 'email-records-team', 'email-replies'}
+AUTO_GRANT_PAGES = {'email', 'email-records', 'email-records-team', 'email-replies',
+                    'email-senders'}
 
 @app.route('/api/role-permissions', methods=['GET'])
 @admin_required
@@ -10269,12 +10283,25 @@ def is_email_configured():
                 and cfg.get('from_email'))
 
 
-def _app_senders_map():
-    """Active APP name -> {from_email, from_name} (keys lower-cased/stripped)."""
+def _app_senders_map(team_creator_id=None):
+    """Active APP name -> {from_email, from_name} (keys lower-cased/stripped).
+
+    With team_creator_id given (a team_admin's id), only that team's own
+    mappings are returned. With None, only the global defaults (NULL team) are
+    returned. The enqueue path combines both (team first, then global fallback).
+    """
     db = get_db()
-    rows = db.execute(
-        "SELECT app_name, from_email, from_name FROM email_app_senders WHERE is_active=1"
-    ).fetchall()
+    if team_creator_id is None:
+        rows = db.execute(
+            "SELECT app_name, from_email, from_name FROM email_app_senders "
+            "WHERE is_active=1 AND team_creator_id IS NULL"
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT app_name, from_email, from_name FROM email_app_senders "
+            "WHERE is_active=1 AND team_creator_id=?",
+            (team_creator_id,)
+        ).fetchall()
     out = {}
     for r in rows:
         email = (r['from_email'] or '').strip()
@@ -10287,18 +10314,36 @@ def _app_senders_map():
     return out
 
 
-def resolve_app_sender(app_name, cfg=None):
+def resolve_app_sender(app_name, cfg=None, team_creator_id=None):
     """Return (from_email, from_name) to use for a contact.
 
-    Contacts belonging to an APP with an admin-configured sender use that
-    mailbox; everything else falls back to the global SMTP from address."""
+    Resolution precedence for a contact owned by team <team_creator_id>:
+      1) that team's APP sender (team rows);
+      2) the global default APP sender (NULL team), if any;
+      3) the global SMTP from address.
+    """
     cfg = cfg if cfg is not None else get_email_config()
     key = (app_name or '').strip().lower()
     if key:
         db = get_db()
+        clauses = []
+        params = []
+        # Team mapping first (when a team is given).
+        if team_creator_id is not None:
+            clauses.append("team_creator_id = ?")
+            params.append(team_creator_id)
+            clauses.append("is_active = 1 AND LOWER(TRIM(app_name)) = ?")
+            params.append(key)
+            row = db.execute(
+                "SELECT from_email, from_name FROM email_app_senders WHERE " + " AND ".join(clauses),
+                params
+            ).fetchone()
+            if row and (row['from_email'] or '').strip():
+                return (row['from_email'].strip(), (row['from_name'] or '').strip())
+        # Global default APP sender.
         row = db.execute(
             "SELECT from_email, from_name FROM email_app_senders "
-            "WHERE LOWER(TRIM(app_name))=? AND is_active=1",
+            "WHERE LOWER(TRIM(app_name))=? AND is_active=1 AND team_creator_id IS NULL",
             (key,)
         ).fetchone()
         if row and (row['from_email'] or '').strip():
@@ -10457,13 +10502,46 @@ def test_email_config_api():
 
 
 # ----- Per-APP sender addresses (direcciones de envio por APP) -------------
+def _sender_scope(user):
+    """Team isolation for APP->sender mappings.
+    Returns (own_team_id, is_admin). own_team_id is None for admins (see all),
+    or the team_admin's user id for team_admins (see own team + global NULL rows
+    read-only)."""
+    if user['role'] == 'admin':
+        return None, True
+    return user['id'], False
+
+
+def _sender_team_clause(own_team_id):
+    """SQL scope fragment for listing. Admin (own_team_id None) sees all rows;
+    a team_admin sees its own team's rows + the global default (NULL team) rows
+    read-only (marked team_creator_id is None)."""
+    if own_team_id is None:
+        return '1=1', ()
+    return '(team_creator_id IS NULL OR team_creator_id = ?)', (own_team_id,)
+
+
+def _sender_can_edit(db, sid, own_team_id, is_admin):
+    """Whether the current user may modify the given sender row.
+    admin:yes; team_admin: only rows owned by their team (team_creator_id = own id)."""
+    row = db.execute("SELECT team_creator_id FROM email_app_senders WHERE id=?", (sid,)).fetchone()
+    if not row:
+        return None, False
+    if is_admin:
+        return row, True
+    return row, (row['team_creator_id'] == own_team_id)
+
+
 @app.route('/api/config/email/senders', methods=['GET'])
-@admin_required
+@manager_required
 def email_app_senders_list():
     db = get_db()
+    own_team_id, is_admin = _sender_scope(g.user)
+    clause, params = _sender_team_clause(own_team_id)
     rows = db.execute(
-        "SELECT id, app_name, from_email, from_name, is_active, created_at, updated_at "
-        "FROM email_app_senders ORDER BY LOWER(app_name)"
+        "SELECT id, app_name, from_email, from_name, team_creator_id, is_active, created_at, updated_at "
+        "FROM email_app_senders WHERE " + clause + " ORDER BY LOWER(app_name)",
+        params
     ).fetchall()
     cfg = get_email_config()
     return jsonify({
@@ -10474,7 +10552,7 @@ def email_app_senders_list():
 
 
 @app.route('/api/config/email/senders', methods=['POST'])
-@admin_required
+@manager_required
 def email_app_senders_create():
     data = request.get_json(silent=True) or {}
     app_name = (data.get('app_name') or '').strip()
@@ -10489,24 +10567,36 @@ def email_app_senders_create():
     if db.execute("SELECT 1 FROM email_app_senders WHERE LOWER(TRIM(app_name))=?",
                   (app_name.lower(),)).fetchone():
         return jsonify({'error': 'Ya existe una direccion para esta APP'}), 409
+    own_team_id, is_admin = _sender_scope(g.user)
+    # Team admins always create rows scoped to their own team. Admins create a
+    # global default (NULL team) unless they explicitly target a team.
+    if is_admin:
+        team_creator_id = data.get('team_creator_id') or None
+        if data.get('team_creator_id') == '':
+            team_creator_id = None
+    else:
+        team_creator_id = own_team_id
     now = datetime.now()
     cur = db.execute(
-        "INSERT INTO email_app_senders (app_name, from_email, from_name, is_active, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?)",
-        (app_name, from_email, from_name, is_active, now, now)
+        "INSERT INTO email_app_senders (app_name, from_email, from_name, team_creator_id, is_active, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (app_name, from_email, from_name, team_creator_id, is_active, now, now)
     )
     db.commit()
     return jsonify({'message': 'Direccion de envio creada', 'id': cur.lastrowid}), 201
 
 
 @app.route('/api/config/email/senders/<int:sid>', methods=['PUT'])
-@admin_required
+@manager_required
 def email_app_senders_update(sid):
     data = request.get_json(silent=True) or {}
     db = get_db()
-    row = db.execute("SELECT * FROM email_app_senders WHERE id=?", (sid,)).fetchone()
+    own_team_id, is_admin = _sender_scope(g.user)
+    row, can = _sender_can_edit(db, sid, own_team_id, is_admin)
     if not row:
         return jsonify({'error': 'Direccion no encontrada'}), 404
+    if not can:
+        return jsonify({'error': 'No tiene permiso para modificar esta direccion'}), 403
     app_name = (data.get('app_name') or '').strip()
     from_email = (data.get('from_email') or '').strip()
     from_name = (data.get('from_name') or '').strip()
@@ -10521,21 +10611,29 @@ def email_app_senders_update(sid):
     ).fetchone()
     if dup:
         return jsonify({'error': 'Ya existe otra direccion para esta APP'}), 409
+    # Admins may also move a mapping to another team (or global with NULL).
+    new_team = row['team_creator_id']
+    if is_admin:
+        if 'team_creator_id' in data:
+            new_team = data.get('team_creator_id') or None
     db.execute(
-        "UPDATE email_app_senders SET app_name=?, from_email=?, from_name=?, is_active=?, updated_at=? WHERE id=?",
-        (app_name, from_email, from_name, is_active, datetime.now(), sid)
+        "UPDATE email_app_senders SET app_name=?, from_email=?, from_name=?, team_creator_id=?, is_active=?, updated_at=? WHERE id=?",
+        (app_name, from_email, from_name, new_team, is_active, datetime.now(), sid)
     )
     db.commit()
     return jsonify({'message': 'Direccion de envio actualizada'})
 
 
 @app.route('/api/config/email/senders/<int:sid>', methods=['DELETE'])
-@admin_required
+@manager_required
 def email_app_senders_delete(sid):
     db = get_db()
-    row = db.execute("SELECT 1 FROM email_app_senders WHERE id=?", (sid,)).fetchone()
+    own_team_id, is_admin = _sender_scope(g.user)
+    row, can = _sender_can_edit(db, sid, own_team_id, is_admin)
     if not row:
         return jsonify({'error': 'Direccion no encontrada'}), 404
+    if not can:
+        return jsonify({'error': 'No tiene permiso para eliminar esta direccion'}), 403
     db.execute("DELETE FROM email_app_senders WHERE id=?", (sid,))
     db.commit()
     return jsonify({'message': 'Direccion de envio eliminada'})
@@ -10788,7 +10886,7 @@ def send_email():
     if mode == 'group' and group_id:
         where, params = _contact_visible_where('c')
         rows = db.execute(
-            f"SELECT id, name, phone, email, app_name, amount, discount_amount, payment_link, notes, remark "
+            f"SELECT c.id, c.name, c.phone, c.email, c.app_name, c.amount, c.discount_amount, c.payment_link, c.notes, c.remark, c.created_by "
             f"FROM contacts c WHERE c.group_id=? AND COALESCE(c.email,'')<>'' AND {where}",
             [int(group_id)] + params
         ).fetchall()
@@ -10798,7 +10896,7 @@ def send_email():
         where, params = _contact_visible_where('c')
         ph = ','.join(['?'] * len(contact_ids))
         rows = db.execute(
-            f"SELECT id, name, phone, email, app_name, amount, discount_amount, payment_link, notes, remark "
+            f"SELECT c.id, c.name, c.phone, c.email, c.app_name, c.amount, c.discount_amount, c.payment_link, c.notes, c.remark, c.created_by "
             f"FROM contacts c WHERE c.id IN ({ph}) AND COALESCE(c.email,'')<>'' AND {where}",
             [int(x) for x in contact_ids] + params
         ).fetchall()
@@ -10820,15 +10918,44 @@ def send_email():
 
     cfg = get_email_config()
     simulated = not (cfg and is_email_configured())
-    # Per-APP sender override: contacts with an APP mapped in email_app_senders
-    # go out through that mailbox; others use the global default From address.
-    # Loaded even in simulation mode so records preview the real mailbox.
-    senders = _app_senders_map()
+    # Per-APP sender override, resolved per recipient's team: a contact whose
+    # APP has a mapping in ITS team goes out through that team's mailbox; if
+    # the team has no mapping (or for a global NULL-team sender) the global
+    # default applies; otherwise the global SMTP From address. Loaded even in
+    # simulation mode so records preview the real mailbox.
+    global_senders = _app_senders_map(None)
+    # Resolve each contact owner -> team_admin id that owns them (the sender
+    # scope). An admin or unowned contact resolves to team None (global only).
+    _team_cache = {}
+
+    def _owner_team(owner_id):
+        if user['role'] == 'admin':
+            # Admin-owned contacts have no team; only global applies.
+            if owner_id is None:
+                return None
+            if owner_id in _team_cache:
+                return _team_cache[owner_id]
+            # Look up the owner's own team_creator_id; if the owner is a
+            # team_admin (or a member), use their team_creator_id so their
+            # team's senders apply.
+            own = db.execute(
+                "SELECT team_creator_id FROM users WHERE id=?", (owner_id,)
+            ).fetchone()
+            tid = own['team_creator_id'] if own else None
+            _team_cache[owner_id] = tid
+            return tid
+        return user['id']  # team_admin/member sending within their own team
 
     def resolve_sender(c):
         key = (c.get('app_name') or '').strip().lower()
-        if key in senders:
-            return senders[key]['from_email'], senders[key]['from_name']
+        if key:
+            team = _owner_team(c.get('created_by'))
+            if team is not None:
+                team_map = _app_senders_map(team)
+                if key in team_map:
+                    return team_map[key]['from_email'], team_map[key]['from_name']
+            if key in global_senders:
+                return global_senders[key]['from_email'], global_senders[key]['from_name']
         if cfg:
             return ((cfg.get('from_email') or '').strip(), (cfg.get('from_name') or '').strip())
         return '', ''
