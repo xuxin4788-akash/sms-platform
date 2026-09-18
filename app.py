@@ -5570,7 +5570,7 @@ def download_contact_template():
     # Write UTF-8 BOM so Excel opens the file with correct encoding
     buf.write('\ufeff')
     writer = csv.writer(buf)
-    writer.writerow(['name', 'phone', 'email', 'notes', 'remark', 'app_name', 'amount', 'discount_amount', 'payment_link'])
+    writer.writerow(['name', 'phone', 'email', 'notes', 'remark', 'app_name', 'amount', 'discount_amount', 'payment_link', 'group'])
     writer.writerow([
         'Juan Perez',
         '5215512345678',
@@ -5581,6 +5581,7 @@ def download_contact_template():
         '150.00',
         '20.00',
         'https://pago.ejemplo.com/juan',
+        '',
     ])
     writer.writerow([
         'Maria Lopez',
@@ -5588,6 +5589,7 @@ def download_contact_template():
         'maria.lopez@ejemplo.com',
         'No molestar despues de las 20h',
         'No contactable',
+        '',
         '',
         '',
         '',
@@ -5603,6 +5605,7 @@ def download_contact_template():
         '1200.50',
         '100.00',
         'https://pago.ejemplo.com/carlos',
+        '',
     ])
 
     data = buf.getvalue().encode('utf-8')
@@ -5628,50 +5631,69 @@ def download_contact_template_xlsx():
     wb = Workbook()
     ws = wb.active
     ws.title = 'Contactos'
+    # Every field that is a <select>/dropdown in the contact editor has a
+    # corresponding data-validation list here: remark (E), app_name (F), group (J).
     headers = ['name', 'phone', 'email', 'notes', 'remark', 'app_name',
-               'amount', 'discount_amount', 'payment_link']
+               'amount', 'discount_amount', 'payment_link', 'group']
     ws.append(headers)
     ws.append(['Juan Perez', '5215512345678', 'juan.perez@ejemplo.com',
                'Cliente interesado en promo MXN', 'Dispuesto a pagar sin fondos',
-               '', '150.00', '20.00', 'https://pago.ejemplo.com/juan'])
+               '', '150.00', '20.00', 'https://pago.ejemplo.com/juan', ''])
     ws.append(['Maria Lopez', '', 'maria.lopez@ejemplo.com', '', 'No contactable',
-               '', '', '', ''])
+               '', '', '', '', ''])
 
     # remark dropdown
     dv_remark = DataValidation(type='list', formula1='"No contactable,Promesa de pago,Dispuesto a pagar sin fondos,No dispuesto a pagar"', allow_blank=True, showErrorMessage=True)
     dv_remark.error = 'Valor de nota no valido'
     dv_remark.errorTitle = 'Nota invalida'
     ws.add_data_validation(dv_remark)
-    dv_remark.add('E2:E200')
+    dv_remark.add('E2:E5000')
 
-    # app_name dropdown from configured apps (visible scope). Options are written
-    # to a hidden auxiliary sheet and referenced by range, so the validation list
-    # follows app additions/removals automatically and is not limited to the
-    # Excel 255-char inline-formula limit.
     db = get_db()
+
+    def _write_list_sheet(sheet_name, values):
+        """Write a hidden aux sheet holding a dropdown list and return the
+        validation range formula. Lists are read live so they follow add/remove."""
+        if not values:
+            return None
+        wsx = wb.create_sheet(sheet_name)
+        wsx.sheet_state = 'hidden'
+        for i, v in enumerate(values, start=1):
+            wsx.cell(row=i, column=1, value=v)
+        return '={}!$A$1:$A${}'.format(sheet_name, len(values))
+
+    # app_name dropdown from configured apps (visible scope), hidden _APPS sheet so
+    # it follows app additions/removals and is not limited to Excel's 255-char
+    # inline-formula cap.
     own_team_id = _sender_scope(g.user)[0]
     clause, params = _sender_team_clause(own_team_id)
     rows = db.execute(
         "SELECT app_name FROM email_app_senders WHERE app_name <> '' AND "
         + clause + " ORDER BY LOWER(app_name)", params).fetchall()
     apps = [r['app_name'] for r in rows if r['app_name']]
-
-    if apps:
-        ws_apps = wb.create_sheet('_APPS')
-        ws_apps.sheet_state = 'hidden'
-        for i, a in enumerate(apps, start=1):
-            ws_apps.cell(row=i, column=1, value=a)
-        last = len(apps)
+    app_formula = _write_list_sheet('_APPS', apps)
+    if app_formula:
         dv_app = DataValidation(
-            type='list',
-            formula1='=_APPS!$A$1:$A${}'.format(last),
-            allow_blank=True, showErrorMessage=True)
+            type='list', formula1=app_formula, allow_blank=True, showErrorMessage=True)
         dv_app.error = 'APP no configurada. Elija una de la lista.'
         dv_app.errorTitle = 'APP invalida'
         ws.add_data_validation(dv_app)
-        dv_app.add('F2:F200')
+        dv_app.add('F2:F5000')
 
-    for col, w in zip('ABCDEFGHI', [20, 18, 24, 30, 26, 18, 12, 16, 28]):
+    # group dropdown: existing group names (groups are shared globally), hidden
+    # _GROUPS sheet so it follows group additions/removals automatically.
+    grows = db.execute("SELECT name FROM contact_groups ORDER BY LOWER(name)").fetchall()
+    groups = [r['name'] for r in grows if r['name']]
+    group_formula = _write_list_sheet('_GROUPS', groups)
+    if group_formula:
+        dv_group = DataValidation(
+            type='list', formula1=group_formula, allow_blank=True, showErrorMessage=True)
+        dv_group.error = 'Grupo no existente. Use un grupo de la lista o dejelo vacio.'
+        dv_group.errorTitle = 'Grupo invalido'
+        ws.add_data_validation(dv_group)
+        dv_group.add('J2:J5000')
+
+    for col, w in zip('ABCDEFGHIJ', [20, 18, 24, 30, 26, 18, 12, 16, 28, 22]):
         ws.column_dimensions[col].width = w
 
     buf = _io.BytesIO()
@@ -5742,16 +5764,30 @@ def import_contacts():
             "SELECT LOWER(TRIM(app_name)) AS k FROM email_app_senders "
             "WHERE app_name <> '' AND " + _clause, _params).fetchall()
         legal_apps = {r['k'] for r in _app_rows}
+        # Group name -> id map for per-row `group` assignment (groups are global).
+        # Mirrors the group dropdown list in the Excel template.
+        _grp_rows = db.execute("SELECT id, name FROM contact_groups").fetchall()
+        group_by_name = {(r['name'] or '').strip().lower(): r['id'] for r in _grp_rows if r['name']}
+        batch_group_id = group_id
         for i, row in enumerate(reader, start=2):
             name = (row.get('name') or row.get('nombre') or '').strip()
             phone = normalize_phone((row.get('phone') or row.get('telefono') or row.get('tel') or '').strip())
             notes = (row.get('notes') or row.get('notas') or row.get('observaciones') or '').strip()
             remark = (row.get('remark') or row.get('nota') or '').strip()
             app_name = (row.get('app_name') or row.get('app') or '').strip()[:255]
+            group_name = (row.get('group') or row.get('grupo') or '').strip()
             amount = _parse_money(row.get('amount') or row.get('monto'))
             discount_amount = _parse_money(row.get('discount_amount') or row.get('descuento'))
             payment_link = (row.get('payment_link') or row.get('link_pago') or row.get('url_pago') or '').strip()
             email = (row.get('email') or row.get('correo') or row.get('e-mail') or '').strip()[:255]
+            # Per-row group name overrides the batch group dropdown; an unknown
+            # group name is reported (validation list keeps it valid upstream).
+            row_group_id = batch_group_id
+            if group_name:
+                if group_name.lower() not in group_by_name:
+                    errors.append(f"Fila {i}: grupo '{group_name}' no existe (use un grupo de la lista)")
+                    continue
+                row_group_id = group_by_name[group_name.lower()]
             if not name or not phone:
                 errors.append(f"Fila {i}: nombre y telefono son requeridos")
                 continue
@@ -5761,7 +5797,7 @@ def import_contacts():
             db.execute(
                 "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, created_by) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, owner_id)
+                (name, phone, notes, remark, row_group_id, app_name, amount, discount_amount, payment_link, email, owner_id)
             )
             imported += 1
         db.commit()
