@@ -23,18 +23,20 @@ nginx (contenedor existente)  ── proxy /ws ──►  Asterisk :8089 (conten
 - Asterisk ↔ VOS3000: SIP/RTP normales, IP estática (sin registro ni contraseña).
 - Sin transcodificación: ambos lados usan G.711 (ulaw/alaw); no se instala Opus.
 
-> Nota sobre la imagen base: **Asterisk no está en los archivos de Debian
-> bookworm (12) ni trixie (13)** (se eliminó antes de congelar bookworm; `apt`
-> devuelve "Package 'asterisk' has no installation candidate"). El paquete
-> mantenido está en **bullseye (11): Asterisk 16.28 LTS**, donde `chan_pjsip`
-> y `res_pjsip` viven dentro de `asterisk-modules` (no hay paquete
-> `asterisk-pjsip` separado). Por eso el Dockerfile usa `debian:bullseye-slim`.
+> Elección de la imagen base (validado contra los archivos oficiales):
 >
-> Además, bullseye ya está fuera de soporte: la suite `bullseye-security` se
-> eliminó de los espejos (los `.deb` de `debian-security` dan 404) y
-> `bullseye-updates` está vacía. El Dockerfile fija `sources.list` solo a
-> `deb http://deb.debian.org/debian bullseye main`, que conserva Asterisk 16.28
-> y todas sus dependencias en la versión del point-release final.
+> - Debian **bookworm (12) / trixie (13) no incluyen Asterisk** en ninguna
+>   componente (`apt`: "no installation candidate").
+> - Debian **bullseye** incluye Asterisk 16.28, pero está fuera de soporte y su
+>   suite `bullseye-security` se eliminó de los espejos: el índice referencia
+>   `.deb` que ahora dan 404, así que no permite construir de forma fiable.
+> - **Ubuntu 24.04 (noble), componente `universe`, incluye Asterisk 20.6 LTS**
+>   mantenido; `chan_pjsip`, `res_pjsip`, el transporte WebSocket y SRTP están
+>   dentro de `asterisk-modules`, con un archivado normal y consistente.
+>
+> El Dockerfile usa por tanto `ubuntu:24.04`. El códec es G.711 (ulaw/alaw)
+> en ambos lados, sin transcodificación; no se instala Opus (aunque Asterisk
+> 20 lo incluya, no hace falta para los navegadores con G.711).
 
 ## Requisitos previos
 

@@ -1,19 +1,18 @@
 # WebRTC <-> VOS3000 gateway for the SMS platform softphone.
 #
-# IMPORTANT: Asterisk is NOT in Debian bookworm (12) / trixie (13) archives;
-# the maintained package lives in bullseye (11): Asterisk 16.28 LTS, which
-# bundles chan_pjsip/res_pjsip in `asterisk-modules` (no separate -pjsip pkg).
-# We therefore build on the official debian:bullseye-slim, main component only.
-FROM debian:bullseye-slim
+# Base image history (do not regress these):
+#  - Debian bookworm (12) / trixie (13) do NOT ship asterisk at all.
+#  - Debian bullseye ships Asterisk 16.28, but bullseye is EOL and its
+#    bullseye-security suite was removed from the CDN (index points at .deb
+#    files that now 404), so reliable builds are not possible there.
+#  - Ubuntu 24.04 (noble) "universe" ships maintained Asterisk 20.6 LTS with
+#    chan_pjsip / res_pjsip / WebSocket / SRTP inside asterisk-modules, and a
+#    normal, consistent archive. We build on that.
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Bullseye is EOL: the bullseye-security suite was removed from the mirrors
-# (all *.deb under debian-security return 404) and bullseye-updates is empty.
-# Pin apt to the bullseye main point-release archive, which still hosts the
-# Asterisk 16.28 packages and every dependency.
-RUN printf 'deb http://deb.debian.org/debian bullseye main\n' > /etc/apt/sources.list
-
+# Asterisk lives in the "universe" component.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         asterisk \
         asterisk-config \
