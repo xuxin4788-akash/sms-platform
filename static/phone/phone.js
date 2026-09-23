@@ -184,10 +184,6 @@
   var inboundHud = $("inbound-hud");
   var inboundHudState = $("inbound-hud-state");
   var inboundHudPkts = $("inbound-hud-pkts");
-  var inboundHudDeep = $("inbound-hud-deep");
-  var inboundHudDeep2 = $("inbound-hud-deep2");
-  var inboundHudRaw = $("inbound-hud-raw");
-  var inboundHudEl = $("inbound-hud-el");
   var hudRaf = null;
 
   function stopInboundHud() {
@@ -208,87 +204,14 @@
       function loop() {
         try {
           pc.getStats().then(function (stats) {
-            var dtlsState = "-";
-            var level = "-";
-            var sample = "-";
-            var discarded = "-";
-            var decFail = "-";
-            var jbFlushes = "-";
-            var rawLines = [];
             stats.forEach(function (rep) {
-              if (rep.type === "transport") {
-                if (rep.dtlsState) { dtlsState = rep.dtlsState; }
-              }
               if (rep.type === "inbound-rtp" && rep.kind === "audio" &&
                   rep.id.indexOf("IT") === 0) {
                 inboundHudPkts.textContent = "Paquetes recibidos: " +
                   (rep.packetsReceived || 0) +
                   " · perdidos: " + (rep.packetsLost || 0);
-                if (typeof rep.audioLevel === "number") {
-                  level = rep.audioLevel.toFixed(3);
-                }
-                if (typeof rep.packetsDiscarded === "number") {
-                  discarded = String(rep.packetsDiscarded);
-                }
-                if (typeof rep.decryptionFailures === "number") {
-                  decFail = String(rep.decryptionFailures);
-                }
-                if (typeof rep.jitterBufferFlushes === "number") {
-                  jbFlushes = String(rep.jitterBufferFlushes);
-                }
-              }
-              // Older Chrome exposes inbound level on the remote track.
-              if (rep.type === "track" && rep.kind === "audio" &&
-                  rep.remoteSource === true && level === "-") {
-                if (typeof rep.audioLevel === "number") {
-                  level = rep.audioLevel.toFixed(3);
-                }
-              }
-              // Playout: how many decoded samples actually reached the sink.
-              if (rep.type === "media-playout") {
-                if (typeof rep.totalSamplesDuration === "number") {
-                  sample = rep.totalSamplesDuration.toFixed(1) + "s";
-                }
-              }
-              if (rep.type === "inbound-rtp" && rep.kind === "audio" &&
-                  rep.id.indexOf("IT") === 0) {
-                rawLines.push("== inbound-rtp ==");
-                Object.keys(rep).sort().forEach(function (k) {
-                  if (k === "id") { return; }
-                  rawLines.push(k + " = " + rep[k]);
-                });
-              }
-              if (rep.type === "media-playout") {
-                rawLines.push("== media-playout ==");
-                Object.keys(rep).sort().forEach(function (k) {
-                  if (k === "id") { return; }
-                  rawLines.push(k + " = " + rep[k]);
-                });
               }
             });
-            if (inboundHudRaw) {
-              inboundHudRaw.hidden = false;
-              inboundHudRaw.textContent = rawLines.join("\n");
-            }
-            inboundHudDeep.textContent =
-              "DTLS: " + dtlsState + " · nivel: " + level + " · muestra: " + sample;
-            inboundHudDeep2.textContent =
-              "descartados: " + discarded + " · fallo-cripto: " + decFail +
-              " · flush-JB: " + jbFlushes;
-            if (inboundHudEl) {
-              var hasSrc = false, nTracks = 0;
-              try {
-                hasSrc = !!remoteAudio.srcObject;
-                nTracks = hasSrc && remoteAudio.srcObject.getAudioTracks
-                  ? remoteAudio.srcObject.getAudioTracks().length : 0;
-              } catch (e) { /* noop */ }
-              inboundHudEl.textContent =
-                "audio: paused=" + remoteAudio.paused +
-                " · muted=" + remoteAudio.muted +
-                " · t=" + remoteAudio.currentTime.toFixed(2) +
-                " · pistas=" + nTracks +
-                " · sink=" + (remoteAudio.sinkId || "default");
-            }
           }).catch(function () { /* noop */ });
         } catch (e) { /* noop */ }
       }
