@@ -194,10 +194,11 @@
   var inboundHud = $("inbound-hud");
   var inboundHudState = $("inbound-hud-state");
   var inboundHudPkts = $("inbound-hud-pkts");
+  var inboundHudDeep = $("inbound-hud-deep");
   var hudRaf = null;
 
   function stopInboundHud() {
-    if (hudRaf) { cancelAnimationFrame(hudRaf); hudRaf = null; }
+    if (hudRaf) { clearInterval(hudRaf); hudRaf = null; }
     if (inboundHud) { inboundHud.hidden = true; }
   }
 
@@ -214,19 +215,40 @@
       function loop() {
         try {
           pc.getStats().then(function (stats) {
+            var dtlsState = "-";
+            var level = "-";
+            var sample = "-";
             stats.forEach(function (rep) {
+              if (rep.type === "transport") {
+                if (rep.dtlsState) { dtlsState = rep.dtlsState; }
+              }
               if (rep.type === "inbound-rtp" && rep.kind === "audio" &&
                   rep.id.indexOf("IT") === 0) {
                 inboundHudPkts.textContent = "Paquetes recibidos: " +
                   (rep.packetsReceived || 0) +
                   " · perdidos: " + (rep.packetsLost || 0);
               }
+              // Decoded inbound track (remote source): actual audio level.
+              if (rep.type === "track" && rep.kind === "audio" &&
+                  rep.remoteSource === true) {
+                if (typeof rep.audioLevel === "number") {
+                  level = rep.audioLevel.toFixed(3);
+                }
+              }
+              // Playout: how many decoded samples actually reached the sink.
+              if (rep.type === "media-playout") {
+                if (typeof rep.totalSamplesDuration === "number") {
+                  sample = rep.totalSamplesDuration.toFixed(1) + "s";
+                }
+              }
             });
+            inboundHudDeep.textContent =
+              "DTLS: " + dtlsState + " · nivel: " + level + " · muestra: " + sample;
           }).catch(function () { /* noop */ });
         } catch (e) { /* noop */ }
-        hudRaf = requestAnimationFrame(loop);
       }
       loop();
+      hudRaf = setInterval(loop, 1000);
     }
   }
 
