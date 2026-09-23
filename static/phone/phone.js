@@ -48,8 +48,6 @@
   var remoteAudio = $("remote-audio");
   var micMeter = $("mic-meter");
   var micMeterFill = $("mic-meter-fill");
-  var remoteMeter = $("remote-meter");
-  var remoteMeterFill = $("remote-meter-fill");
 
   function setStatus(text, connected) {
     statusLine.textContent = text;
@@ -136,50 +134,6 @@
     } catch (e) { /* meter is diagnostic only */ }
   }
 
-  /* ---------------- Remote audio level meter ----------------
-   * Taps the <audio> element itself to see what the page is receiving. */
-  var remoteAudioCtx = null;
-  var remoteNodeSrc = null;
-  var remoteRaf = null;
-
-  function stopRemoteMeter() {
-    if (remoteRaf) { cancelAnimationFrame(remoteRaf); remoteRaf = null; }
-    if (remoteNodeSrc) { try { remoteNodeSrc.disconnect(); } catch (e) { /* noop */ } remoteNodeSrc = null; }
-    if (remoteAudioCtx) { try { remoteAudioCtx.close(); } catch (e) { /* noop */ } remoteAudioCtx = null; }
-    remoteMeter.hidden = true;
-    remoteMeterFill.style.width = "0%";
-  }
-
-  function startRemoteMeter() {
-    stopRemoteMeter();
-    remoteMeter.hidden = false;
-    try {
-      var Ctx = window.AudioContext || window.webkitAudioContext;
-      remoteAudioCtx = new Ctx();
-      if (remoteAudioCtx.state === "suspended") { try { remoteAudioCtx.resume(); } catch (e) { /* noop */ } }
-      // createMediaElementSource taps the element but its own <audio> output to
-      // the speakers is unaffected; connect analyser only (not to destination).
-      remoteNodeSrc = remoteAudioCtx.createMediaElementSource(remoteAudio);
-      var analyser = remoteAudioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      var buf = new Uint8Array(analyser.fftSize);
-      remoteNodeSrc.connect(analyser);
-      // Keep the element audible by routing the graph to the output as well.
-      analyser.connect(remoteAudioCtx.destination);
-      function tick() {
-        analyser.getByteTimeDomainData(buf);
-        var peak = 0;
-        for (var i = 0; i < buf.length; i++) {
-          var v = Math.abs(buf[i] - 128) / 128;
-          if (v > peak) { peak = v; }
-        }
-        remoteMeterFill.style.width = Math.min(100, Math.round(peak * 140)) + "%";
-        remoteRaf = requestAnimationFrame(tick);
-      }
-      tick();
-    } catch (e) { /* meter optional */ }
-  }
-
   /* ---------------- Force the remote <audio> to actually play ---------------- */
   function forceRemotePlay() {
     try {
@@ -199,7 +153,6 @@
     callBtn.disabled = true;
     callState.textContent = "Conectando...";
     forceRemotePlay();
-    startRemoteMeter();
 
     function bindLocalMedia() {
       if (localMicStream) {
@@ -245,7 +198,6 @@
     callBtn.disabled = false;
     stopTimer();
     stopMicMeter();
-    stopRemoteMeter();
   }
 
   function showDialer() {
