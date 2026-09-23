@@ -24,6 +24,12 @@ mobile/www/static/
 # Local SQLite database
 instance/
 
+# Environment secrets (never commit; .env.example is the tracked template)
+.env
+.env.local
+*.env
+!.env.example
+
 # Preview files
 .preview
 .cozeproj/reduction
