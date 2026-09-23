@@ -55,6 +55,37 @@ services:
           memory: 2G
           cpus: '2.0'
 
+  # Asterisk WebRTC <-> VOS3000 gateway (softphone at /static/phone)
+  asterisk:
+    build: ./asterisk
+    container_name: sms-platform-asterisk
+    restart: unless-stopped
+    environment:
+      - HTTP_PORT=8089
+      - RTP_START=10000
+      - RTP_END=10100
+      - STUN_SERVER=${STUN_SERVER:-stun.l.google.com:19302}
+      - EXTERNAL_IP=${PHONE_EXTERNAL_IP:-47.87.38.52}
+      - LOCAL_NET=${PHONE_LOCAL_NET:-172.16.0.0/12}
+      - TRUNK_HOST=${VOS3000_HOST:-43.112.27.24}
+      - TRUNK_PORT=${VOS3000_PORT:-5060}
+      # Provider dial prefix: 52 / 0052 / empty (confirm with the line vendor)
+      - OUTBOUND_PREFIX=${VOS3000_PREFIX:-}
+      # Shared initial secret for the 1001-1020 web peers (set in .env)
+      - PEER_SECRET=${PHONE_PEER_SECRET:-}
+    volumes:
+      - asterisk-certs:/var/lib/asterisk/phone-certs
+    ports:
+      # Browser <-> Asterisk media (published; opened in the cloud firewall)
+      - "10000-10100:10000-10100/udp"
+      # SIP trunk signaling/media toward VOS3000 (outbound + inbound RTP)
+      - "5060:5060/udp"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
   # Nginx Reverse Proxy
   nginx:
     image: nginx:alpine
@@ -62,6 +93,7 @@ services:
     restart: unless-stopped
     depends_on:
       - app
+      - asterisk
     environment:
       # Public domain served by nginx (used for server_name + cert paths).
       # Test: test.pagoserve.com  |  Production: pagoserve.com
@@ -93,4 +125,6 @@ volumes:
   postgres-data:
     driver: local
   app-logs:
+    driver: local
+  asterisk-certs:
     driver: local

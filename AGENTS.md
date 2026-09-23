@@ -26,11 +26,17 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 ├── DESIGN.md              # Design tokens and guidelines
 ├── AGENTS.md              # This file
 ├── Dockerfile             # Docker image definition (Python + Gunicorn)
-├── docker-compose.yml     # Docker compose (PostgreSQL + App + Nginx)
+├── docker-compose.yml     # Docker compose (PostgreSQL + App + Asterisk + Nginx)
 ├── nginx/
-│   └── nginx.conf         # Nginx reverse proxy config
+│   ├── nginx.conf         # Nginx reverse proxy config
+│   └── templates/default.conf.template  # Rendered conf (incl. location /ws WSS)
+├── asterisk/              # WebRTC <-> VOS3000 gateway (softphone)
+│   ├── Dockerfile         # debian:bookworm-slim + asterisk/pjsip/opus
+│   ├── README.md          # Deployment guide
+│   └── config/            # pjsip/rtp/http/extensions + entrypoint (peers 1001-1020)
 ├── static/
 │   ├── css/style.css      # Application styles
+│   ├── phone/             # Standalone SIP.js web softphone (served at /static/phone/)
 │   └── js/
 │       ├── app.js         # SPA frontend logic
 │       └── mobile.js      # Capacitor/Web Contact Picker native bridge
@@ -52,6 +58,7 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 - **Run production (Gunicorn)**: `gunicorn -c gunicorn.conf.py app:app`
 - **Docker build**: `docker build -t sms-platform .`
 - **Docker run (full stack)**: `docker-compose up -d` (PostgreSQL + Gunicorn + Nginx)
+- **Web softphone stack**: `docker compose build asterisk && docker compose up -d && docker compose restart nginx`; open `https://<DOMAIN>/static/phone/` (echo test: dial 7777). Needs firewall UDP 10000-10100 + 5060 and `PHONE_PEER_SECRET` in .env; VOS3000 dial prefix via `VOS3000_PREFIX`.
 - **Sync Android web assets**: `cd mobile && pnpm install && pnpm run sync:web`
 - **Build Android APK**: set `SMS_SERVER_URL`, then `pnpm --dir mobile exec cap sync android && cd mobile/android && ./gradlew assembleDebug`
 

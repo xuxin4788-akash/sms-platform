@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Teléfono Web - pagoserve.com</title>
+  <link rel="stylesheet" href="phone.css" />
+  <!-- SIP.js 0.15.x UMD -->
+  <script src="vendor/sip-0.15.11.min.js"></script>
+</head>
+<body>
+  <main class="phone-shell">
+    <header class="phone-header">
+      <div class="brand-dot"></div>
+      <div class="brand-text">
+        <strong>Teléfono Web</strong>
+        <span id="status-line">Desconectado</span>
+      </div>
+    </header>
+
+    <!-- Login / extension entry -->
+    <section id="login-panel" class="panel">
+      <label class="field">
+        <span>Extensión</span>
+        <input id="ext-input" type="text" inputmode="numeric" autocomplete="username"
+               placeholder="1001" maxlength="6" />
+      </label>
+      <label class="field">
+        <span>Contraseña</span>
+        <input id="pwd-input" type="password" autocomplete="current-password"
+               placeholder="Contraseña de la extensión" />
+      </label>
+      <label class="switch-row">
+        <input id="remember" type="checkbox" checked />
+        <span>Recordar en este navegador</span>
+      </label>
+      <button id="login-btn" class="btn btn-primary btn-block">Conectar</button>
+      <p id="login-error" class="error-text" hidden></p>
+    </section>
+
+    <!-- Dialer / call -->
+    <section id="dialer-panel" class="panel" hidden>
+      <div class="state-badge" id="call-state">Listo</div>
+      <input id="number-input" class="number-input" type="tel" inputmode="tel"
+             placeholder="Número de destino" />
+      <div class="keypad" id="keypad"></div>
+      <div class="call-actions">
+        <button id="call-btn" class="btn btn-call" title="Llamar">
+          <span class="call-ico">&#9742;</span>
+        </button>
+        <button id="hangup-btn" class="btn btn-hangup" title="Colgar" disabled>
+          <span class="call-ico">&#10006;</span>
+        </button>
+      </div>
+      <div class="call-meta">
+        <span id="call-timer">00:00</span>
+        <button id="logout-btn" class="btn btn-ghost btn-small">Cerrar extensión</button>
+      </div>
+      <audio id="remote-audio" autoplay></audio>
+    </section>
+
+    <footer class="phone-footer">Solo en navegadores compatibles con WebRTC (Chrome/Edge).</footer>
+  </main>
+  <script src="phone.js"></script>
+</body>
+</html>

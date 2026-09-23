@@ -1,0 +1,35 @@
+; --- WebRTC peer __EXT__ (generated per 1001-1020) ---
+[__EXT__]
+type=endpoint
+transport=transport-ws
+context=from-internal
+disallow=all
+allow=opus
+allow=ulaw
+allow=alaw
+auth=__EXT__
+aors=__EXT__
+callerid="Agente __EXT__" <__EXT__>
+direct_media=no
+ice_support=yes
+media_use_received_transport=yes
+webrtc=yes
+dtls_auto_generate_cert=no
+dtls_cert_file=/var/lib/asterisk/phone-certs/cert.pem
+dtls_private_key=/var/lib/asterisk/phone-certs/key.pem
+dtls_verify=fingerprint
+dtls_setup=actpass
+rtp_symmetric=yes
+force_rport=yes
+rewrite_contact=yes
+
+[__EXT__]
+type=aor
+max_contacts=2
+remove_existing=yes
+
+[__EXT__]
+type=auth
+auth_type=userpass
+username=__EXT__
+password=__PEER_SECRET__

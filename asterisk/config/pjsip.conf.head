@@ -1,0 +1,39 @@
+; === PJSIP base config: transport + VOS3000 static-IP trunk ===
+; The 1001-1020 WebRTC peers are appended below by entrypoint.sh.
+
+[transport-ws]
+type=transport
+protocol=ws
+bind=0.0.0.0
+; Advertise the public host so Contact / SDP are reachable through NAT.
+external_signaling_address=__EXTERNAL_IP__
+external_media_address=__EXTERNAL_IP__
+local_net=__LOCAL_NET__
+
+; ---- VOS3000 IP trunk (authenticates by our static source IP, no register) ----
+[trunk-vos3000]
+type=endpoint
+transport=transport-ws
+context=from-trunk
+disallow=all
+allow=ulaw
+allow=alaw
+allow=opus
+aors=trunk-vos3000
+direct_media=no
+rtp_symmetric=yes
+force_rport=yes
+rewrite_contact=yes
+ice_support=yes
+media_use_received_transport=no
+; From-DID passthrough lets the provider route inbound DIDs if added later.
+
+[trunk-vos3000]
+type=aor
+contact=sip:__TRUNK_HOST__:__TRUNK_PORT__
+qualify_frequency=30
+
+[trunk-vos3000]
+type=identify
+endpoint=trunk-vos3000
+match=__TRUNK_HOST__
