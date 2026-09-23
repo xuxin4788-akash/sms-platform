@@ -31,6 +31,8 @@
   var callState = $("call-state");
   var callTimer = $("call-timer");
   var remoteAudio = $("remote-audio");
+  var micMeter = $("mic-meter");
+  var micMeterFill = $("mic-meter-fill");
 
   function setStatus(text, connected) {
     statusLine.textContent = text;
@@ -78,17 +80,94 @@
     callTimer.textContent = "00:00";
   }
 
+  /* ---------------- Local mic level meter ---------------- */
+  var micStream = null;
+  var micAudioCtx = null;
+  var micRaf = null;
+
+  function stopMicMeter() {
+    if (micRaf) { cancelAnimationFrame(micRaf); micRaf = null; }
+    if (micStream) {
+      micStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { /* noop */ } });
+      micStream = null;
+    }
+    if (micAudioCtx) { try { micAudioCtx.close(); } catch (e) { /* noop */ } micAudioCtx = null; }
+    micMeter.hidden = true;
+    micMeterFill.style.width = "0%";
+  }
+
+  function startMicMeter(stream) {
+    stopMicMeter();
+    micStream = stream;
+    micMeter.hidden = false;
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      micAudioCtx = new Ctx();
+      var src = micAudioCtx.createMediaStreamSource(stream);
+      var analyser = micAudioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      var buf = new Uint8Array(analyser.fftSize);
+      src.connect(analyser);
+      function tick() {
+        analyser.getByteTimeDomainData(buf);
+        var peak = 0;
+        for (var i = 0; i < buf.length; i++) {
+          var v = Math.abs(buf[i] - 128) / 128;
+          if (v > peak) { peak = v; }
+        }
+        micMeterFill.style.width = Math.min(100, Math.round(peak * 140)) + "%";
+        micRaf = requestAnimationFrame(tick);
+      }
+      tick();
+    } catch (e) { /* meter is diagnostic only */ }
+  }
+
+  /* ---------------- Force the remote <audio> to actually play ---------------- */
+  function forceRemotePlay() {
+    try {
+      remoteAudio.muted = false;
+      remoteAudio.volume = 1;
+      var p = remoteAudio.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(function () { /* autoplay still blocked; user gesture helps */ });
+      }
+    } catch (e) { /* noop */ }
+  }
+
   /* ---------------- Session wiring ---------------- */
   function attachSession(session) {
     currentSession = session;
     hangupBtn.disabled = false;
     callBtn.disabled = true;
     callState.textContent = "Conectando...";
+    forceRemotePlay();
 
-    session.on("progress", function () { callState.textContent = "Llamando..."; });
+    function bindLocalMedia() {
+      try {
+        var pc = session.sessionDescriptionHandler &&
+          session.sessionDescriptionHandler.peerConnection;
+        if (pc && pc.getReceivers) {
+          var senders = pc.getSenders();
+          for (var i = 0; i < senders.length; i++) {
+            if (senders[i].track && senders[i].track.kind === "audio") {
+              startMicMeter(new MediaStream([senders[i].track]));
+              break;
+            }
+          }
+        }
+      } catch (e) { /* meter optional */ }
+    }
+
+    session.on("progress", function () {
+      callState.textContent = "Llamando...";
+      forceRemotePlay();
+      bindLocalMedia();
+    });
     session.on("accepted", function () {
       callState.textContent = "En llamada";
       startTimer();
+      forceRemotePlay();
+      bindLocalMedia();
     });
     session.on("failed", function () {
       callState.textContent = "Falló la llamada";
@@ -109,6 +188,7 @@
     hangupBtn.disabled = true;
     callBtn.disabled = false;
     stopTimer();
+    stopMicMeter();
   }
 
   function showDialer() {

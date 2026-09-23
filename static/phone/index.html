@@ -52,11 +52,15 @@
           <span class="call-ico">&#10006;</span>
         </button>
       </div>
+      <div class="mic-meter" id="mic-meter" hidden>
+        <span class="mic-meter-label">Micrófono</span>
+        <div class="mic-meter-track"><div class="mic-meter-fill" id="mic-meter-fill"></div></div>
+      </div>
       <div class="call-meta">
         <span id="call-timer">00:00</span>
         <button id="logout-btn" class="btn btn-ghost btn-small">Cerrar extensión</button>
       </div>
-      <audio id="remote-audio" autoplay></audio>
+      <audio id="remote-audio" autoplay playsinline></audio>
     </section>
 
     <footer class="phone-footer">Solo en navegadores compatibles con WebRTC (Chrome/Edge).</footer>
