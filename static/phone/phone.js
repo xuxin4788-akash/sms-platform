@@ -9,6 +9,7 @@
   var DOMAIN = location.host;
 
   var ua = null;
+  var busy = false;
   var currentSession = null;
   var timerHandle = null;
   var timerStart = 0;
@@ -110,8 +111,21 @@
     stopTimer();
   }
 
+  function showDialer() {
+    loginPanel.hidden = true;
+    dialerPanel.hidden = false;
+  }
+  function showLogin() {
+    dialerPanel.hidden = true;
+    loginPanel.hidden = false;
+    loginBtn.disabled = false;
+    busy = false;
+  }
+
   /* ---------------- Connect / register ---------------- */
   function connect(extension, password) {
+    if (busy) { return; }
+    busy = true;
     showError("");
     loginBtn.disabled = true;
 
@@ -132,14 +146,14 @@
       });
     } catch (e) {
       showError("No se pudo iniciar el teléfono: " + e.message);
-      loginBtn.disabled = false;
+      showLogin();
       return;
     }
 
     ua.on("registered", function () {
+      busy = false;
       setStatus("Conectado · " + extension, true);
-      loginPanel.hidden = true;
-      dialerPanel.hidden = false;
+      showDialer();
       if (rememberBox.checked) {
         try { localStorage.setItem(STORE_KEY, JSON.stringify({ ext: extension, pwd: password })); }
         catch (e) { /* storage blocked */ }
@@ -148,18 +162,16 @@
 
     ua.on("registrationFailed", function () {
       showError("No se pudo registrar la extensión. Revisa número y contraseña.");
-      loginBtn.disabled = false;
       setStatus("Error de registro", false);
       stopUA();
+      showLogin();
     });
 
     ua.on("unregistered", function () { setStatus("Desconectado", false); });
 
     ua.on("disconnected", function () {
       setStatus("Sin conexión al servidor", false);
-      dialerPanel.hidden = true;
-      loginPanel.hidden = false;
-      loginBtn.disabled = false;
+      showLogin();
     });
 
     // Inbound call (not expected yet, but wire it safely)
@@ -179,17 +191,16 @@
   function logout() {
     stopUA();
     try { localStorage.removeItem(STORE_KEY); } catch (e) { /* noop */ }
-    dialerPanel.hidden = true;
-    loginPanel.hidden = false;
-    loginBtn.disabled = false;
     pwdInput.value = "";
     setStatus("Desconectado", false);
+    showLogin();
   }
 
   /* ---------------- Actions ---------------- */
   loginBtn.addEventListener("click", function () {
     var ext = extInput.value.trim();
     var pwd = pwdInput.value;
+    if (busy) { return; }
     if (!/^\d{2,6}$/.test(ext)) { showError("Ingresa una extensión válida (solo números)."); return; }
     if (!pwd) { showError("Ingresa la contraseña de la extensión."); return; }
     connect(ext, pwd);
