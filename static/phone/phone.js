@@ -160,9 +160,10 @@
       }
     });
 
-    ua.on("registrationFailed", function () {
-      showError("No se pudo registrar la extensión. Revisa número y contraseña.");
-      setStatus("Error de registro", false);
+    ua.on("registrationFailed", function (cause) {
+      console.error("[phone] registrationFailed, cause =", cause);
+      showError("No se pudo registrar la extensión (" + cause + "). Revisa número y contraseña.");
+      setStatus("Error de registro: " + cause, false);
       stopUA();
       showLogin();
     });
