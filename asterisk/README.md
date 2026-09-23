@@ -29,6 +29,12 @@ nginx (contenedor existente)  ── proxy /ws ──►  Asterisk :8089 (conten
 > mantenido está en **bullseye (11): Asterisk 16.28 LTS**, donde `chan_pjsip`
 > y `res_pjsip` viven dentro de `asterisk-modules` (no hay paquete
 > `asterisk-pjsip` separado). Por eso el Dockerfile usa `debian:bullseye-slim`.
+>
+> Además, bullseye ya está fuera de soporte: la suite `bullseye-security` se
+> eliminó de los espejos (los `.deb` de `debian-security` dan 404) y
+> `bullseye-updates` está vacía. El Dockerfile fija `sources.list` solo a
+> `deb http://deb.debian.org/debian bullseye main`, que conserva Asterisk 16.28
+> y todas sus dependencias en la versión del point-release final.
 
 ## Requisitos previos
 
