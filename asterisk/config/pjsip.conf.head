@@ -10,10 +10,17 @@ external_signaling_address=__EXTERNAL_IP__
 external_media_address=__EXTERNAL_IP__
 local_net=__LOCAL_NET__
 
+; UDP transport used ONLY for the VOS3000 trunk (plain SIP/RTP, not WebRTC).
+[transport-udp]
+type=transport
+protocol=udp
+bind=0.0.0.0:5060
+local_net=__LOCAL_NET__
+
 ; ---- VOS3000 IP trunk (authenticates by our static source IP, no register) ----
 [trunk-vos3000]
 type=endpoint
-transport=transport-ws
+transport=transport-udp
 context=from-trunk
 disallow=all
 allow=ulaw
@@ -23,13 +30,11 @@ direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
-ice_support=yes
-media_use_received_transport=no
 ; From-DID passthrough lets the provider route inbound DIDs if added later.
 
 [trunk-vos3000]
 type=aor
-contact=sip:__TRUNK_HOST__:__TRUNK_PORT__
+contact=sip:__TRUNK_HOST__:__TRUNK_PORT__\;transport=udp
 qualify_frequency=30
 
 [trunk-vos3000]
