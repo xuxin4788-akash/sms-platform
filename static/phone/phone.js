@@ -167,16 +167,60 @@
       }
     }
 
+    // Explicitly pull the inbound audio receiver track from the PeerConnection
+    // and attach it ourselves to the <audio> element, instead of relying on the
+    // SIP.js 0.15 render black box. Logged so we can see the track's true state.
+    function bindRemoteTrack() {
+      try {
+        var sdh = session.sessionDescriptionHandler;
+        var pc = sdh && sdh.peerConnection;
+        if (!pc || !pc.getReceivers) {
+          console.warn("[phone] no PeerConnection/receivers yet");
+          return;
+        }
+        var tracks = [];
+        pc.getReceivers().forEach(function (r) {
+          if (r.track && r.track.kind === "audio") { tracks.push(r.track); }
+        });
+        if (!tracks.length) {
+          console.warn("[phone] no inbound audio receiver track");
+          return;
+        }
+        var track = tracks[0];
+        console.log("[phone] inbound audio track:", track.id,
+          "readyState=", track.readyState, "muted=", track.muted);
+        track.onunmute = function () {
+          console.log("[phone] remote track unmuted -> forcing play");
+          forceRemotePlay();
+        };
+        track.onmute = function () { console.log("[phone] remote track muted"); };
+
+        // Rebind a fresh stream carrying this live track.
+        var stream = new MediaStream([track]);
+        if (remoteAudio.srcObject !== stream) {
+          remoteAudio.srcObject = stream;
+        }
+        forceRemotePlay();
+      } catch (e) {
+        console.error("[phone] bindRemoteTrack error:", e);
+      }
+    }
+
     session.on("progress", function () {
       callState.textContent = "Llamando...";
       forceRemotePlay();
       bindLocalMedia();
+      bindRemoteTrack();
+      // Receivers/tracks may appear slightly later; retry shortly.
+      setTimeout(bindRemoteTrack, 600);
     });
     session.on("accepted", function () {
       callState.textContent = "En llamada";
       startTimer();
       forceRemotePlay();
       bindLocalMedia();
+      bindRemoteTrack();
+      setTimeout(bindRemoteTrack, 600);
     });
     session.on("failed", function () {
       callState.textContent = "Falló la llamada";
@@ -198,6 +242,7 @@
     callBtn.disabled = false;
     stopTimer();
     stopMicMeter();
+    try { remoteAudio.srcObject = null; } catch (e) { /* noop */ }
   }
 
   function showDialer() {
