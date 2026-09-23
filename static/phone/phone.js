@@ -156,6 +156,7 @@
     try {
       var Ctx = window.AudioContext || window.webkitAudioContext;
       remoteAudioCtx = new Ctx();
+      if (remoteAudioCtx.state === "suspended") { try { remoteAudioCtx.resume(); } catch (e) { /* noop */ } }
       // createMediaElementSource taps the element but its own <audio> output to
       // the speakers is unaffected; connect analyser only (not to destination).
       remoteNodeSrc = remoteAudioCtx.createMediaElementSource(remoteAudio);
