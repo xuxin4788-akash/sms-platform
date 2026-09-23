@@ -15,62 +15,6 @@
   var timerStart = 0;
   var localMicStream = null;
 
-  // Gesture-activated output graph. Browsers block an <audio> element whose
-  // srcObject is assigned after the user gesture, but an AudioContext created
-  // + resumed inside the click stays "running" and can drive the speaker when
-  // we later pipe the inbound track into it.
-  var outCtx = null;            // running AudioContext
-  var outSourceNode = null;     // MediaStreamAudioSourceNode for remote track
-  var outSinkStream = null;     // stream currently wired
-  var OUT_CTX_PREFERS = (typeof AudioContext !== "undefined" &&
-    typeof AudioContext.prototype.createMediaStreamTrackSource === "function");
-
-  // Must be called from a real user gesture (the call / resume click).
-  function ensureOutputContext() {
-    try {
-      if (!outCtx) {
-        var AC = window.AudioContext || window.webkitAudioContext;
-        if (AC) { outCtx = new AC(); }
-      }
-      if (outCtx && outCtx.state === "suspended") {
-        outCtx.resume();
-      }
-    } catch (e) { /* noop */ }
-  }
-
-  // Pipe the live inbound audio track into the running context -> speakers.
-  function attachRemoteSink(track) {
-    if (!track || track.kind !== "audio" || track.muted) { return; }
-    try {
-      if (!outCtx) { ensureOutputContext(); }
-      if (!outCtx || outCtx.state !== "running") { return; }
-      if (OUT_CTX_PREFERS) {
-        // Per-track node: swapping tracks replaces the node cleanly.
-        if (outSourceNode && outSourceNode._track !== track) {
-          try { outSourceNode.disconnect(); } catch (e) { /* noop */ }
-          outSourceNode = null;
-        }
-        if (!outSourceNode) {
-          outSourceNode = outCtx.createMediaStreamTrackSource(track);
-          outSourceNode._track = track;
-          outSourceNode.connect(outCtx.destination);
-        }
-      } else {
-        // Legacy: source from a one-track stream.
-        var stream = new MediaStream([track]);
-        if (outSinkStream !== stream) {
-          if (outSourceNode) { try { outSourceNode.disconnect(); } catch (e) {} }
-          outSourceNode = outCtx.createMediaStreamSource(stream);
-          outSinkStream = stream;
-          outSourceNode.connect(outCtx.destination);
-        }
-      }
-      // WebAudio now drives the speaker; mute the element to avoid doubling.
-      remoteAudio.muted = true;
-    } catch (e) { /* fall back to element playback */ }
-  }
-
-
   // Intercept getUserMedia so we can meter the EXACT mic stream that SIP.js
   // uses (reading a sender track into a new MediaStream does not carry level).
   if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
@@ -314,12 +258,12 @@
         pc.getReceivers().forEach(function (r) {
           if (r.track && r.track.kind === "audio") {
             r.track.onunmute = function () {
-              attachRemoteSink(r.track);
+              forceRemotePlay();
               updateInboundHud(pc, "unmuted");
             };
             r.track.onmute = function () { updateInboundHud(pc, "muted"); };
-            // In case it is already unmuted when we first observe it.
-            if (!r.track.muted) { attachRemoteSink(r.track); }
+            // If already unmuted, make sure the sink is live.
+            if (!r.track.muted) { forceRemotePlay(); }
           }
         });
         updateInboundHud(pc, "poll");
@@ -362,11 +306,6 @@
     stopTimer();
     stopMicMeter();
     stopInboundHud();
-    try {
-      if (outSourceNode) { outSourceNode.disconnect(); }
-    } catch (e) { /* noop */ }
-    outSourceNode = null;
-    outSinkStream = null;
     try { remoteAudio.srcObject = null; } catch (e) { /* noop */ }
     remoteAudio.muted = false;
   }
@@ -471,7 +410,10 @@
     var target = numberInput.value.replace(/[^0-9+*#]/g, "");
     if (!ua || !target) { callState.textContent = "Ingresa un número"; return; }
     callState.textContent = "Marcando...";
-    ensureOutputContext();   // create + resume inside this click gesture
+    // Start the <audio> sink inside this gesture so it is already "playing"
+    // by the time SIP.js assigns the remote MediaStream (Chrome keeps the
+    // origin's autoplay permission; a live sink keeps NetEq from flushing).
+    forceRemotePlay();
     try {
       var session = ua.invite(target, {
         media: { render: { remote: remoteAudio } }
@@ -496,24 +438,7 @@
   var resumeAudioBtn = $("resume-audio-btn");
   if (resumeAudioBtn) {
     resumeAudioBtn.addEventListener("click", function () {
-      ensureOutputContext();
-      try {
-        remoteAudio.muted = false;
-        remoteAudio.volume = 1;
-        if (remoteAudio.paused) { remoteAudio.play(); }
-      } catch (e) { /* noop */ }
-      // Also (re)wire the live track into the running context.
-      try {
-        var sdh = currentSession && currentSession.sessionDescriptionHandler;
-        var pc = sdh && sdh.peerConnection;
-        if (pc && pc.getReceivers) {
-          pc.getReceivers().forEach(function (r) {
-            if (r.track && r.track.kind === "audio" && !r.track.muted) {
-              attachRemoteSink(r.track);
-            }
-          });
-        }
-      } catch (e) { /* noop */ }
+      forceRemotePlay();
     });
   }
 
