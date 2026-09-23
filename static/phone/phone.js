@@ -29,6 +29,52 @@
     };
   }
 
+  // SIP.js 0.15's remote render does not fire on Chrome's Unified-Plan
+  // ontrack path, so the <audio> element ends up with pistas=0. We wrap
+  // RTCPeerConnection and attach every inbound audio track ourselves the
+  // moment the browser emits the track event.
+  var remoteStream = null;
+  var lastRemoteTrack = null;
+  function addRemoteTrack(track) {
+    if (!track || track.kind !== "audio") { return; }
+    if (lastRemoteTrack === track && remoteStream) { return; }
+    lastRemoteTrack = track;
+    if (!remoteStream) { remoteStream = new MediaStream(); }
+    if (remoteStream.getAudioTracks().indexOf(track) === -1) {
+      remoteStream.addTrack(track);
+    }
+    try {
+      remoteAudio.srcObject = remoteStream;
+      remoteAudio.muted = false;
+      remoteAudio.volume = 1;
+      var p = remoteAudio.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(function () { /* user can press Reanudar audio */ });
+      }
+    } catch (e) { /* noop */ }
+  }
+  if (typeof window.RTCPeerConnection !== "undefined") {
+    var OrigPC = window.RTCPeerConnection;
+    var WrappedPC = function (config, constraints) {
+      var pc = new OrigPC(config, constraints);
+      try {
+        pc.addEventListener("track", function (ev) {
+          if (ev.track && ev.track.kind === "audio") {
+            addRemoteTrack(ev.track);
+          }
+        });
+      } catch (e) { /* noop */ }
+      return pc;
+    };
+    // Preserve statics and prototype for SIP.js / browser internals.
+    WrappedPC.prototype = OrigPC.prototype;
+    Object.keys(OrigPC).forEach(function (k) { WrappedPC[k] = OrigPC[k]; });
+    window.RTCPeerConnection = WrappedPC;
+    if (window.webkitRTCPeerConnection === OrigPC) {
+      window.webkitRTCPeerConnection = WrappedPC;
+    }
+  }
+
   // DOM refs
   var $ = function (id) { return document.getElementById(id); };
   var loginPanel = $("login-panel");
@@ -343,6 +389,8 @@
     stopMicMeter();
     stopInboundHud();
     try { remoteAudio.srcObject = null; } catch (e) { /* noop */ }
+    remoteStream = null;
+    lastRemoteTrack = null;
     remoteAudio.muted = false;
   }
 
@@ -475,6 +523,16 @@
   if (resumeAudioBtn) {
     resumeAudioBtn.addEventListener("click", function () {
       forceRemotePlay();
+      // Re-attach any live inbound track (definitive user gesture).
+      try {
+        var sdh = currentSession && currentSession.sessionDescriptionHandler;
+        var pc = sdh && sdh.peerConnection;
+        if (pc && pc.getReceivers) {
+          pc.getReceivers().forEach(function (r) {
+            if (r.track && r.track.kind === "audio") { addRemoteTrack(r.track); }
+          });
+        }
+      } catch (e) { /* noop */ }
     });
   }
 
