@@ -195,6 +195,7 @@
   var inboundHudState = $("inbound-hud-state");
   var inboundHudPkts = $("inbound-hud-pkts");
   var inboundHudDeep = $("inbound-hud-deep");
+  var inboundHudDeep2 = $("inbound-hud-deep2");
   var hudRaf = null;
 
   function stopInboundHud() {
@@ -218,6 +219,9 @@
             var dtlsState = "-";
             var level = "-";
             var sample = "-";
+            var discarded = "-";
+            var decFail = "-";
+            var jbFlushes = "-";
             stats.forEach(function (rep) {
               if (rep.type === "transport") {
                 if (rep.dtlsState) { dtlsState = rep.dtlsState; }
@@ -227,10 +231,22 @@
                 inboundHudPkts.textContent = "Paquetes recibidos: " +
                   (rep.packetsReceived || 0) +
                   " · perdidos: " + (rep.packetsLost || 0);
+                if (typeof rep.audioLevel === "number") {
+                  level = rep.audioLevel.toFixed(3);
+                }
+                if (typeof rep.packetsDiscarded === "number") {
+                  discarded = String(rep.packetsDiscarded);
+                }
+                if (typeof rep.decryptionFailures === "number") {
+                  decFail = String(rep.decryptionFailures);
+                }
+                if (typeof rep.jitterBufferFlushes === "number") {
+                  jbFlushes = String(rep.jitterBufferFlushes);
+                }
               }
-              // Decoded inbound track (remote source): actual audio level.
+              // Older Chrome exposes inbound level on the remote track.
               if (rep.type === "track" && rep.kind === "audio" &&
-                  rep.remoteSource === true) {
+                  rep.remoteSource === true && level === "-") {
                 if (typeof rep.audioLevel === "number") {
                   level = rep.audioLevel.toFixed(3);
                 }
@@ -244,6 +260,9 @@
             });
             inboundHudDeep.textContent =
               "DTLS: " + dtlsState + " · nivel: " + level + " · muestra: " + sample;
+            inboundHudDeep2.textContent =
+              "descartados: " + discarded + " · fallo-cripto: " + decFail +
+              " · flush-JB: " + jbFlushes;
           }).catch(function () { /* noop */ });
         } catch (e) { /* noop */ }
       }
