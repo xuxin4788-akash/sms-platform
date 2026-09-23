@@ -21,7 +21,14 @@ nginx (contenedor existente)  ── proxy /ws ──►  Asterisk :8089 (conten
 
 - Navegador ↔ Asterisk: WebRTC (SRTP/DTLS + ICE/STUN).
 - Asterisk ↔ VOS3000: SIP/RTP normales, IP estática (sin registro ni contraseña).
-- Sin transcodificación obligatoria: ambos lados usan G.711; Opus disponible.
+- Sin transcodificación: ambos lados usan G.711 (ulaw/alaw); no se instala Opus.
+
+> Nota sobre la imagen base: **Asterisk no está en los archivos de Debian
+> bookworm (12) ni trixie (13)** (se eliminó antes de congelar bookworm; `apt`
+> devuelve "Package 'asterisk' has no installation candidate"). El paquete
+> mantenido está en **bullseye (11): Asterisk 16.28 LTS**, donde `chan_pjsip`
+> y `res_pjsip` viven dentro de `asterisk-modules` (no hay paquete
+> `asterisk-pjsip` separado). Por eso el Dockerfile usa `debian:bullseye-slim`.
 
 ## Requisitos previos
 

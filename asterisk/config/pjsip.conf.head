@@ -18,7 +18,6 @@ context=from-trunk
 disallow=all
 allow=ulaw
 allow=alaw
-allow=opus
 aors=trunk-vos3000
 direct_media=no
 rtp_symmetric=yes

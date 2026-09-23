@@ -4,7 +4,6 @@ type=endpoint
 transport=transport-ws
 context=from-internal
 disallow=all
-allow=opus
 allow=ulaw
 allow=alaw
 auth=__EXT__
