@@ -140,6 +140,7 @@
   var inboundHudPkts = $("inbound-hud-pkts");
   var inboundHudDeep = $("inbound-hud-deep");
   var inboundHudDeep2 = $("inbound-hud-deep2");
+  var inboundHudRaw = $("inbound-hud-raw");
   var hudRaf = null;
 
   function stopInboundHud() {
@@ -166,6 +167,7 @@
             var discarded = "-";
             var decFail = "-";
             var jbFlushes = "-";
+            var rawLines = [];
             stats.forEach(function (rep) {
               if (rep.type === "transport") {
                 if (rep.dtlsState) { dtlsState = rep.dtlsState; }
@@ -201,7 +203,26 @@
                   sample = rep.totalSamplesDuration.toFixed(1) + "s";
                 }
               }
+              if (rep.type === "inbound-rtp" && rep.kind === "audio" &&
+                  rep.id.indexOf("IT") === 0) {
+                rawLines.push("== inbound-rtp ==");
+                Object.keys(rep).sort().forEach(function (k) {
+                  if (k === "id") { return; }
+                  rawLines.push(k + " = " + rep[k]);
+                });
+              }
+              if (rep.type === "media-playout") {
+                rawLines.push("== media-playout ==");
+                Object.keys(rep).sort().forEach(function (k) {
+                  if (k === "id") { return; }
+                  rawLines.push(k + " = " + rep[k]);
+                });
+              }
             });
+            if (inboundHudRaw) {
+              inboundHudRaw.hidden = false;
+              inboundHudRaw.textContent = rawLines.join("\n");
+            }
             inboundHudDeep.textContent =
               "DTLS: " + dtlsState + " · nivel: " + level + " · muestra: " + sample;
             inboundHudDeep2.textContent =
