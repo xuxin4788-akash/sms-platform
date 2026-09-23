@@ -15,6 +15,10 @@ local_net=__LOCAL_NET__
 type=transport
 protocol=udp
 bind=0.0.0.0:5060
+; Without these, the SDP advertises the container IP (172.x) and VOS3000 sends
+; RTP to an unreachable address -> call connects but no audio.
+external_signaling_address=__EXTERNAL_IP__
+external_media_address=__EXTERNAL_IP__
 local_net=__LOCAL_NET__
 
 ; ---- VOS3000 IP trunk (authenticates by our static source IP, no register) ----
