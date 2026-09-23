@@ -73,8 +73,6 @@ services:
       - OUTBOUND_PREFIX=${VOS3000_PREFIX:-}
       # Shared initial secret for the 1001-1020 web peers (set in .env)
       - PEER_SECRET=${PHONE_PEER_SECRET:-}
-    volumes:
-      - asterisk-certs:/var/lib/asterisk/phone-certs
     ports:
       # Browser <-> Asterisk media (published; opened in the cloud firewall)
       - "10000-10100:10000-10100/udp"
@@ -125,6 +123,4 @@ volumes:
   postgres-data:
     driver: local
   app-logs:
-    driver: local
-  asterisk-certs:
     driver: local

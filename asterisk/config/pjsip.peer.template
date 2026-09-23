@@ -13,9 +13,11 @@ direct_media=no
 ice_support=yes
 media_use_received_transport=yes
 webrtc=yes
-dtls_auto_generate_cert=no
-dtls_cert_file=/var/lib/asterisk/phone-certs/cert.pem
-dtls_private_key=/var/lib/asterisk/phone-certs/key.pem
+; Let Asterisk generate and manage the self-signed DTLS cert itself. This
+; guarantees the SDP fingerprint always matches the cert used on the DTLS
+; handshake (a mismatch silently breaks SRTP decrypt -> packets arrive but
+; the browser never plays audio).
+dtls_auto_generate_cert=yes
 dtls_verify=fingerprint
 dtls_setup=actpass
 rtp_symmetric=yes

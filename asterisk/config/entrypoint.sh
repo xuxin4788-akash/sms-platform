@@ -5,7 +5,6 @@ set -euo pipefail
 
 SRC=/opt/phone
 CONF=/etc/asterisk
-CERTDIR=/var/lib/asterisk/phone-certs
 
 : "${HTTP_PORT:=8089}"
 : "${RTP_START:=10000}"
@@ -57,17 +56,6 @@ for n in $(seq "$PEER_START" "$PEER_END"); do
         "$SRC/pjsip.peer.template" >> "$CONF/pjsip.conf"
 done
 echo "[entrypoint] Generated peers ${PEER_START}-${PEER_END}, trunk=${TRUNK_HOST}:${TRUNK_PORT}, prefix='${OUTBOUND_PREFIX}'"
-
-# DTLS certificate for SRTP (media). Created once and reused.
-mkdir -p "$CERTDIR"
-if [ ! -f "$CERTDIR/cert.pem" ] || [ ! -f "$CERTDIR/key.pem" ]; then
-    echo "[entrypoint] Generating DTLS certificate..."
-    openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$CERTDIR/key.pem" -out "$CERTDIR/cert.pem" -days 3650 \
-        -subj "/CN=${EXTERNAL_IP}" >/dev/null 2>&1
-fi
-chmod 644 "$CERTDIR/cert.pem"
-chmod 600 "$CERTDIR/key.pem"
 
 echo "[entrypoint] Starting Asterisk (http ${HTTP_PORT}, rtp ${RTP_START}-${RTP_END})"
 exec asterisk -f -U root -vvvg
