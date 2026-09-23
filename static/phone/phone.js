@@ -141,6 +141,7 @@
   var inboundHudDeep = $("inbound-hud-deep");
   var inboundHudDeep2 = $("inbound-hud-deep2");
   var inboundHudRaw = $("inbound-hud-raw");
+  var inboundHudEl = $("inbound-hud-el");
   var hudRaf = null;
 
   function stopInboundHud() {
@@ -228,6 +229,20 @@
             inboundHudDeep2.textContent =
               "descartados: " + discarded + " · fallo-cripto: " + decFail +
               " · flush-JB: " + jbFlushes;
+            if (inboundHudEl) {
+              var hasSrc = false, nTracks = 0;
+              try {
+                hasSrc = !!remoteAudio.srcObject;
+                nTracks = hasSrc && remoteAudio.srcObject.getAudioTracks
+                  ? remoteAudio.srcObject.getAudioTracks().length : 0;
+              } catch (e) { /* noop */ }
+              inboundHudEl.textContent =
+                "audio: paused=" + remoteAudio.paused +
+                " · muted=" + remoteAudio.muted +
+                " · t=" + remoteAudio.currentTime.toFixed(2) +
+                " · pistas=" + nTracks +
+                " · sink=" + (remoteAudio.sinkId || "default");
+            }
           }).catch(function () { /* noop */ });
         } catch (e) { /* noop */ }
       }
