@@ -132,7 +132,7 @@
     try {
       ua = new SIP.UA({
         uri: "sip:" + extension + "@" + DOMAIN,
-        wsServers: WSS_URL,
+        transportOptions: { wsServers: WSS_URL },
         authorizationUser: extension,
         password: password,
         register: true,
