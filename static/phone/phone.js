@@ -134,6 +134,46 @@
     } catch (e) { /* meter is diagnostic only */ }
   }
 
+  /* ---------------- Inbound diagnostics HUD (on-screen) ---------------- */
+  var inboundHud = $("inbound-hud");
+  var inboundHudState = $("inbound-hud-state");
+  var inboundHudPkts = $("inbound-hud-pkts");
+  var hudRaf = null;
+
+  function stopInboundHud() {
+    if (hudRaf) { cancelAnimationFrame(hudRaf); hudRaf = null; }
+    if (inboundHud) { inboundHud.hidden = true; }
+  }
+
+  function updateInboundHud(pc, why) {
+    if (!inboundHud) { return; }
+    inboundHud.hidden = false;
+    var muted = true;
+    pc.getReceivers().forEach(function (r) {
+      if (r.track && r.track.kind === "audio" && !r.track.muted) { muted = false; }
+    });
+    inboundHudState.textContent = muted ? "Pista: silencio" : "Pista: con audio";
+    inboundHudState.style.color = muted ? "var(--muted)" : "var(--green)";
+    if (!hudRaf) {
+      function loop() {
+        try {
+          pc.getStats().then(function (stats) {
+            stats.forEach(function (rep) {
+              if (rep.type === "inbound-rtp" && rep.kind === "audio" &&
+                  rep.id.indexOf("IT") === 0) {
+                inboundHudPkts.textContent = "Paquetes recibidos: " +
+                  (rep.packetsReceived || 0) +
+                  " · perdidos: " + (rep.packetsLost || 0);
+              }
+            });
+          }).catch(function () { /* noop */ });
+        } catch (e) { /* noop */ }
+        hudRaf = requestAnimationFrame(loop);
+      }
+      loop();
+    }
+  }
+
   /* ---------------- Force the remote <audio> to actually play ---------------- */
   function forceRemotePlay() {
     try {
@@ -167,60 +207,37 @@
       }
     }
 
-    // Explicitly pull the inbound audio receiver track from the PeerConnection
-    // and attach it ourselves to the <audio> element, instead of relying on the
-    // SIP.js 0.15 render black box. Logged so we can see the track's true state.
-    function bindRemoteTrack() {
+    // Monitor (without taking over) the inbound receiver track. The actual
+    // audio sink is owned by SIP.js render; we only surface state on screen.
+    function monitorRemoteTrack() {
       try {
         var sdh = session.sessionDescriptionHandler;
         var pc = sdh && sdh.peerConnection;
-        if (!pc || !pc.getReceivers) {
-          console.warn("[phone] no PeerConnection/receivers yet");
-          return;
-        }
-        var tracks = [];
+        if (!pc || !pc.getReceivers) { return; }
         pc.getReceivers().forEach(function (r) {
-          if (r.track && r.track.kind === "audio") { tracks.push(r.track); }
+          if (r.track && r.track.kind === "audio") {
+            r.track.onunmute = function () { updateInboundHud(pc, "unmuted"); };
+            r.track.onmute = function () { updateInboundHud(pc, "muted"); };
+          }
         });
-        if (!tracks.length) {
-          console.warn("[phone] no inbound audio receiver track");
-          return;
-        }
-        var track = tracks[0];
-        console.log("[phone] inbound audio track:", track.id,
-          "readyState=", track.readyState, "muted=", track.muted);
-        track.onunmute = function () {
-          console.log("[phone] remote track unmuted -> forcing play");
-          forceRemotePlay();
-        };
-        track.onmute = function () { console.log("[phone] remote track muted"); };
-
-        // Rebind a fresh stream carrying this live track.
-        var stream = new MediaStream([track]);
-        if (remoteAudio.srcObject !== stream) {
-          remoteAudio.srcObject = stream;
-        }
-        forceRemotePlay();
-      } catch (e) {
-        console.error("[phone] bindRemoteTrack error:", e);
-      }
+        updateInboundHud(pc, "poll");
+      } catch (e) { /* monitor optional */ }
     }
 
     session.on("progress", function () {
       callState.textContent = "Llamando...";
       forceRemotePlay();
       bindLocalMedia();
-      bindRemoteTrack();
-      // Receivers/tracks may appear slightly later; retry shortly.
-      setTimeout(bindRemoteTrack, 600);
+      monitorRemoteTrack();
+      setTimeout(monitorRemoteTrack, 800);
     });
     session.on("accepted", function () {
       callState.textContent = "En llamada";
       startTimer();
       forceRemotePlay();
       bindLocalMedia();
-      bindRemoteTrack();
-      setTimeout(bindRemoteTrack, 600);
+      monitorRemoteTrack();
+      setTimeout(monitorRemoteTrack, 800);
     });
     session.on("failed", function () {
       callState.textContent = "Falló la llamada";
@@ -242,6 +259,7 @@
     callBtn.disabled = false;
     stopTimer();
     stopMicMeter();
+    stopInboundHud();
     try { remoteAudio.srcObject = null; } catch (e) { /* noop */ }
   }
 
@@ -364,6 +382,18 @@
   });
 
   logoutBtn.addEventListener("click", logout);
+
+  // Definite user gesture: force the remote element to play (autoplay bypass).
+  var resumeAudioBtn = $("resume-audio-btn");
+  if (resumeAudioBtn) {
+    resumeAudioBtn.addEventListener("click", function () {
+      try {
+        remoteAudio.muted = false;
+        remoteAudio.volume = 1;
+        if (remoteAudio.paused) { remoteAudio.play(); }
+      } catch (e) { /* noop */ }
+    });
+  }
 
   // Auto-login with remembered credentials.
   (function autoLogin() {
