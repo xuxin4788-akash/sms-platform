@@ -13,6 +13,21 @@
   var currentSession = null;
   var timerHandle = null;
   var timerStart = 0;
+  var localMicStream = null;
+
+  // Intercept getUserMedia so we can meter the EXACT mic stream that SIP.js
+  // uses (reading a sender track into a new MediaStream does not carry level).
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    var origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = function (constraints) {
+      return origGetUserMedia(constraints).then(function (stream) {
+        if (stream && stream.getAudioTracks && stream.getAudioTracks().length) {
+          localMicStream = stream;
+        }
+        return stream;
+      });
+    };
+  }
 
   // DOM refs
   var $ = function (id) { return document.getElementById(id); };
@@ -80,17 +95,15 @@
     callTimer.textContent = "00:00";
   }
 
-  /* ---------------- Local mic level meter ---------------- */
-  var micStream = null;
+  /* ---------------- Local mic level meter ----------------
+   * The meter observes the mic stream but never owns/stops it (SIP.js does). */
   var micAudioCtx = null;
+  var micSource = null;
   var micRaf = null;
 
   function stopMicMeter() {
     if (micRaf) { cancelAnimationFrame(micRaf); micRaf = null; }
-    if (micStream) {
-      micStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { /* noop */ } });
-      micStream = null;
-    }
+    if (micSource) { try { micSource.disconnect(); } catch (e) { /* noop */ } micSource = null; }
     if (micAudioCtx) { try { micAudioCtx.close(); } catch (e) { /* noop */ } micAudioCtx = null; }
     micMeter.hidden = true;
     micMeterFill.style.width = "0%";
@@ -98,16 +111,15 @@
 
   function startMicMeter(stream) {
     stopMicMeter();
-    micStream = stream;
     micMeter.hidden = false;
     try {
       var Ctx = window.AudioContext || window.webkitAudioContext;
       micAudioCtx = new Ctx();
-      var src = micAudioCtx.createMediaStreamSource(stream);
+      micSource = micAudioCtx.createMediaStreamSource(stream);
       var analyser = micAudioCtx.createAnalyser();
       analyser.fftSize = 256;
       var buf = new Uint8Array(analyser.fftSize);
-      src.connect(analyser);
+      micSource.connect(analyser);
       function tick() {
         analyser.getByteTimeDomainData(buf);
         var peak = 0;
@@ -143,19 +155,16 @@
     forceRemotePlay();
 
     function bindLocalMedia() {
-      try {
-        var pc = session.sessionDescriptionHandler &&
-          session.sessionDescriptionHandler.peerConnection;
-        if (pc && pc.getReceivers) {
-          var senders = pc.getSenders();
-          for (var i = 0; i < senders.length; i++) {
-            if (senders[i].track && senders[i].track.kind === "audio") {
-              startMicMeter(new MediaStream([senders[i].track]));
-              break;
-            }
-          }
-        }
-      } catch (e) { /* meter optional */ }
+      if (localMicStream) {
+        startMicMeter(localMicStream);
+      } else {
+        // Fallback if the interceptor missed it: request the same mic stream.
+        try {
+          navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+            .then(function (stream) { startMicMeter(stream); })
+            .catch(function () { /* meter optional */ });
+        } catch (e) { /* noop */ }
+      }
     }
 
     session.on("progress", function () {
