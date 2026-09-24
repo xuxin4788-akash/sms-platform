@@ -290,6 +290,7 @@
       bindLocalMedia();
       monitorRemoteTrack();
       setTimeout(monitorRemoteTrack, 800);
+      notifyParent({ type: "webphone-answer" });
     });
     function failInfo(response, cause) {
       var code = "", txt = "";
@@ -538,6 +539,11 @@
         notifyParent({ type: "webphone-idle" });
       } else if (d.type === "webphone-status") {
         notifyParent({ type: "webphone-status", registered: registered });
+      } else if (d.type === "webphone-resume") {
+        // Force the remote sink to play (autoplay may have been blocked);
+        // the parent surfaced a "sonido" button so this runs on a user gesture.
+        forceRemotePlay();
+        notifyParent({ type: "webphone-resumed" });
       }
     });
   }

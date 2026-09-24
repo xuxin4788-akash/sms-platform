@@ -1353,6 +1353,7 @@ function webphoneCall(btn, name) {
     _webphoneActiveBtn = btn;
     webphoneSetBtn(btn, true);
     showToast('Llamando por Teléfono Web...', 'info');
+    webphoneShowCard(rawPhone || phone);
     if (_webphoneReady) {
         webphonePost({ source: 'app', type: 'webphone-dial', number: phone });
     } else {
@@ -1372,6 +1373,76 @@ function webphoneReset() {
     _webphonePending = [];
     if (_webphoneActiveBtn) { webphoneSetBtn(_webphoneActiveBtn, false); _webphoneActiveBtn = null; }
 }
+
+// ---- Floating call window ----------------------------------------------
+// A small draggable card shown while a WebRTC call is active: contact, call
+// state, elapsed timer, an audio-unlock button (autoplay may silence the
+// off-screen iframe) and a hang-up button.
+var _webphoneCard;            // DOM element
+var _webphoneCardTimer = null;
+var _webphoneCardElapsed = 0;
+var _webphoneCardNumber = '';
+function webphoneEnsureCard() {
+    if (_webphoneCard) { return _webphoneCard; }
+    try {
+        var c = document.createElement('div');
+        c.id = 'webphone-card';
+        c.style.cssText = 'position:fixed; right:16px; bottom:16px; z-index:99997; width:280px; background:#fff; border:1px solid #E2E8F0; border-radius:12px; box-shadow:0 12px 32px rgba(15,23,42,.18); font-family:inherit; overflow:hidden;';
+        c.innerHTML =
+            '<div id="webphone-card-head" style="display:flex;align-items:center;justify-content:space-between;background:#4F46E5;color:#fff;padding:8px 12px;cursor:move;user-select:none;">' +
+            '<span style="font-weight:600;font-size:13px;">&#128222; Llamando</span>' +
+            '<span id="webphone-card-status" style="font-size:11px;background:rgba(255,255,255,.22);padding:2px 8px;border-radius:20px;">--:--</span>' +
+            '</div>' +
+            '<div style="padding:12px;">' +
+            '<div id="webphone-card-number" style="font-size:15px;font-weight:600;color:#0F172A;word-break:break-all;"></div>' +
+            '<div id="webphone-card-state" style="font-size:12px;color:#64748B;margin-top:2px;">Conectando...</div>' +
+            '<div style="display:flex;gap:8px;margin-top:12px;">' +
+            '<button id="webphone-card-sound" style="flex:1;cursor:pointer;border:1px solid #CBD5E1;background:#F8FAFC;color:#0F172A;border-radius:8px;padding:8px;font-size:12px;font-weight:600;">Activar sonido</button>' +
+            '<button id="webphone-card-hangup" style="flex:1;cursor:pointer;border:0;background:#EF4444;color:#fff;border-radius:8px;padding:8px;font-size:12px;font-weight:600;">Colgar</button>' +
+            '</div></div>';
+        document.body.appendChild(c);
+        var head = c.querySelector('#webphone-card-head');
+        var dragging = false, dx = 0, dy = 0;
+        head.addEventListener('mousedown', function (ev) { dragging = true; dx = ev.clientX - c.offsetLeft; dy = ev.clientY - c.offsetTop; ev.preventDefault(); });
+        document.addEventListener('mousemove', function (ev) { if (!dragging) { return; } c.style.left = (ev.clientX - dx) + 'px'; c.style.top = (ev.clientY - dy) + 'px'; });
+        document.addEventListener('mouseup', function () { dragging = false; });
+        c.querySelector('#webphone-card-sound').addEventListener('click', function () { webphonePost({ source: 'app', type: 'webphone-resume' }); });
+        c.querySelector('#webphone-card-hangup').addEventListener('click', function () { webphoneHangup(); webphoneHideCard(); });
+        _webphoneCard = c;
+        c.style.display = 'none';
+    } catch (e) { _webphoneCard = null; }
+    return _webphoneCard;
+}
+function webphoneShowCard(number) {
+    var c = webphoneEnsureCard();
+    if (!c) { return; }
+    _webphoneCardNumber = number || '';
+    c.style.display = 'block';
+    c.querySelector('#webphone-card-number').textContent = _webphoneCardNumber;
+    c.querySelector('#webphone-card-state').textContent = 'Llamando...';
+    setCardStatusText('');
+    _webphoneCardElapsed = 0;
+    updateCardTimer();
+    clearInterval(_webphoneCardTimer);
+    _webphoneCardTimer = setInterval(updateCardTimer, 1000);
+}
+function webphoneHideCard() {
+    clearInterval(_webphoneCardTimer);
+    _webphoneCardTimer = null;
+    if (_webphoneCard) { _webphoneCard.style.display = 'none'; }
+}
+function updateCardTimer() {
+    var m = String(Math.floor(_webphoneCardElapsed / 60)).padStart(2, '0');
+    var s = String(_webphoneCardElapsed % 60).padStart(2, '0');
+    _webphoneCardElapsed++;
+    var el = _webphoneCard && _webphoneCard.querySelector('#webphone-card-status');
+    if (el) { el.textContent = m + ':' + s; }
+}
+function setCardStatusText(t) {
+    if (!_webphoneCard) { return; }
+    var el = _webphoneCard.querySelector('#webphone-card-state');
+    if (el) { el.textContent = t; }
+}
 if (window.addEventListener) {
     window.addEventListener('message', function (ev) {
         var d = ev.data;
@@ -1385,12 +1456,22 @@ if (window.addEventListener) {
             _webphoneReady = !!d.registered;
             if (_webphoneReady) { webphoneFlushPending(); }
         }
-        else if (d.type === 'webphone-dialing') { /* button already lit */ }
+        else if (d.type === 'webphone-dialing') {
+            setCardStatusText('Llamando...');
+        }
+        else if (d.type === 'webphone-answer') {
+            setCardStatusText('En llamada');
+        }
         else if (d.type === 'webphone-session-ended') {
             dbg('fin de llamada: ' + d.outcome + (d.reason ? (' razon=' + d.reason) : ''));
             if (d.reason) { showToast('Llamada ' + d.outcome + ': ' + d.reason, 'error'); }
+            setCardStatusText('Finalizada (' + (d.reason || d.outcome) + ')');
+            setTimeout(function () { if (!_webphoneActiveBtn) { webphoneHideCard(); } }, 2500);
         }
-        else if (d.type === 'webphone-idle') { webphoneReset(); }
+        else if (d.type === 'webphone-idle') {
+            webphoneReset();
+            webphoneHideCard();
+        }
         else if (d.type === 'webphone-registration-failed') {
             webphoneReset();
             showToast('No se pudo registrar el Teléfono Web (' + (d.cause || 'error') + '). Inicia sesion en /static/phone/index.html.', 'error');
