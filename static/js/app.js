@@ -4593,7 +4593,9 @@ async function renderDial(container) {
             '</div>' +
             (isTeamLead
                 ? '<div class="card"><div class="card-header"><h2>Campañas</h2><span class="text-secondary" style="font-size:12px;">Haz clic en una campaña para marcar / gestionar</span></div><div class="card-body" style="padding-top:0;">' + rows + '</div></div>'
-                : '<div class="card"><div class="card-header"><h2>Tu Cola de Marcado</h2><span class="text-secondary" style="font-size:12px;">Pulsa "Siguiente" para recibir el próximo número</span></div><div class="card-body"><div id="dial-my-queue">' + rows + '</div></div></div>');
+                : '<div class="card"><div class="card-header"><h2>Tu Cola de Marcado</h2><span class="text-secondary" style="font-size:12px;">Pulsa "Siguiente" para recibir el próximo número</span></div><div class="card-body">' +
+                    '<button class="btn btn-primary btn-lg" onclick="takeMyNext()" style="width:100%;margin-bottom:6px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><path d="M5 3l-4 6 3 3 2-1-2 4 1 1 4-2-1 2 3 3 6-4-1-4-2 2-2-3 3-2 3-2z"/></svg> Siguiente número</button>' +
+                    '<div id="dial-my-queue">' + rows + '</div></div></div>');
     } catch (err) {
         container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
     }
@@ -4845,6 +4847,19 @@ async function takeDialNext(cid) {
     } catch (e) {
         showToast(e.message || 'No hay más números', 'error');
     }
+}
+
+// One-tap "next number" for a plain agent from the queue card: picks the first
+// active campaign within their scope that still has pending numbers.
+async function takeMyNext() {
+    try {
+        var d = await api('/api/dial/campaigns');
+        var cams = (d.campaigns || []).filter(function(c) {
+            return c.status === 'active' && (c.pending || 0) > 0;
+        });
+        if (!cams.length) { showToast('No hay números pendientes en tus campañas', 'error'); return; }
+        await takeDialNext(cams[0].id);
+    } catch (e) { showToast(e.message || 'No hay más números', 'error'); }
 }
 
 function renderDialCallControls() {
