@@ -1327,9 +1327,19 @@ function webphoneFlushPending() {
     var q = _webphonePending; _webphonePending = [];
     q.forEach(function (n) { webphonePost({ source: 'app', type: 'webphone-dial', number: n }); });
 }
+function webphoneNormalize(raw) {
+    var num = String(raw == null ? '' : raw).replace(/[^0-9]/g, '');
+    var local = num;
+    // Strip Mexico country code: +52XXXXXXXXXX -> XXXXXXXXXX
+    if (/^52/.test(num) && num.length > 10) { local = num.slice(2); }
+    // Legacy +521XXXXXXXXXX mobile format -> XXXXXXXXXX
+    if (/^1/.test(local) && local.length === 11) { local = local.slice(1); }
+    return local;
+}
 function webphoneCall(btn, name) {
-    var phone = btn ? String(btn.getAttribute('data-phone') || '').replace(/[^\d+]/g, '') : '';
-    dbg('click boton, numero="' + (btn ? btn.getAttribute('data-phone') : '') + '" -> "' + phone + '"');
+    var rawPhone = btn ? String(btn.getAttribute('data-phone') || '') : '';
+    var phone = webphoneNormalize(rawPhone);
+    dbg('click boton, numero="' + rawPhone + '" -> "' + phone + '"');
     if (!phone) { showToast('Numero invalido', 'error'); dbg('numero invalido'); return; }
     // Toggle: if this button is mid-call, hang up instead of dialling again.
     if (_webphoneActiveBtn === btn) {
@@ -1376,6 +1386,10 @@ if (window.addEventListener) {
             if (_webphoneReady) { webphoneFlushPending(); }
         }
         else if (d.type === 'webphone-dialing') { /* button already lit */ }
+        else if (d.type === 'webphone-session-ended') {
+            dbg('fin de llamada: ' + d.outcome + (d.reason ? (' razon=' + d.reason) : ''));
+            if (d.reason) { showToast('Llamada ' + d.outcome + ': ' + d.reason, 'error'); }
+        }
         else if (d.type === 'webphone-idle') { webphoneReset(); }
         else if (d.type === 'webphone-registration-failed') {
             webphoneReset();

@@ -291,16 +291,26 @@
       monitorRemoteTrack();
       setTimeout(monitorRemoteTrack, 800);
     });
-    session.on("failed", function () {
+    function failInfo(response, cause) {
+      var code = "", txt = "";
+      if (response) {
+        code = (response.status_code != null ? response.status_code : response.statusCode) || "";
+        txt = response.reason_phrase || response.statusText || "";
+      }
+      return (code ? code : "") + (txt ? (" " + txt) : "") + (cause ? (" [" + cause + "]") : "");
+    }
+    session.on("failed", function (response, cause) {
       callState.textContent = "Falló la llamada";
+      notifyParent({ type: "webphone-session-ended", outcome: "failed", reason: failInfo(response, cause) });
       resetCall();
     });
     session.on("terminated", function () {
       callState.textContent = "Finalizada";
       resetCall();
     });
-    session.on("rejected", function () {
+    session.on("rejected", function (response, cause) {
       callState.textContent = "Rechazada";
+      notifyParent({ type: "webphone-session-ended", outcome: "rejected", reason: failInfo(response, cause) });
       resetCall();
     });
   }
