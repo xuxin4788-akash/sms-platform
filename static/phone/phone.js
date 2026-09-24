@@ -10,6 +10,7 @@
 
   var ua = null;
   var busy = false;
+  var registered = false;
   var currentSession = null;
   var timerHandle = null;
   var timerStart = 0;
@@ -359,8 +360,10 @@
 
     ua.on("registered", function () {
       busy = false;
+      registered = true;
       setStatus("Conectado · " + extension, true);
       showDialer();
+      notifyParent({ type: "webphone-registered", extension: extension });
       if (rememberBox.checked) {
         try { localStorage.setItem(STORE_KEY, JSON.stringify({ ext: extension, pwd: password })); }
         catch (e) { /* storage blocked */ }
@@ -369,17 +372,21 @@
 
     ua.on("registrationFailed", function (cause) {
       console.error("[phone] registrationFailed, cause =", cause);
+      registered = false;
       showError("No se pudo registrar la extensión (" + cause + "). Revisa número y contraseña.");
       setStatus("Error de registro: " + cause, false);
+      notifyParent({ type: "webphone-registration-failed", cause: String(cause) });
       stopUA();
       showLogin();
     });
 
-    ua.on("unregistered", function () { setStatus("Desconectado", false); });
+    ua.on("unregistered", function () { registered = false; setStatus("Desconectado", false); notifyParent({ type: "webphone-unregistered" }); });
 
     ua.on("disconnected", function () {
+      registered = false;
       setStatus("Sin conexión al servidor", false);
       showLogin();
+      notifyParent({ type: "webphone-disconnected" });
     });
 
     // Inbound call (not expected yet, but wire it safely)
@@ -482,7 +489,9 @@
   function notifyParent(msg) {
     try {
       if (window.parent && window.parent !== window) {
-        window.parent.postMessage({ source: "webphone", type: msg.type }, "*");
+        var payload = { source: "webphone" };
+        Object.keys(msg).forEach(function (k) { payload[k] = msg[k]; });
+        window.parent.postMessage(payload, "*");
       }
     } catch (e) { /* noop */ }
   }
@@ -493,7 +502,7 @@
       if (d.type === "webphone-dial") {
         var target = String(d.number || "").replace(/[^0-9+*#]/g, "");
         if (!target) { notifyParent({ type: "webphone-toast", message: "Número inválido", level: "error" }); return; }
-        if (!ua) {
+        if (!registered || !ua) {
           notifyParent({ type: "webphone-not-registered" });
           return;
         }
@@ -509,6 +518,7 @@
           notifyParent({ type: "webphone-toast", message: "Llamando...", level: "info" });
         } catch (e) {
           notifyParent({ type: "webphone-toast", message: "Error al llamar: " + e.message, level: "error" });
+          notifyParent({ type: "webphone-idle" });
         }
       } else if (d.type === "webphone-hangup") {
         try {
@@ -517,7 +527,7 @@
         } catch (e) { /* noop */ }
         notifyParent({ type: "webphone-idle" });
       } else if (d.type === "webphone-status") {
-        notifyParent({ type: "webphone-status", registered: !!(ua && ua.isConnected && ua.isConnected()) });
+        notifyParent({ type: "webphone-status", registered: registered });
       }
     });
   }

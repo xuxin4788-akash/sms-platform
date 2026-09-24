@@ -1246,18 +1246,44 @@ async function dialZoiper(phone, name) {
 // drive it via postMessage. Voice audio plays inside the iframe, so a call
 // can run while the user browses any page of the SPA.
 function webphoneFrame() {
-    return document.getElementById('webphone-frame');
+    var f = document.getElementById('webphone-frame');
+    if (f) { return f; }
+    // The iframe lives in index.html (inside the app image), but to avoid
+    // depending on an image rebuild we create it here on demand. Static
+    // assets are served directly by nginx from the host ./static mount.
+    try {
+      f = document.createElement('iframe');
+      f.id = 'webphone-frame';
+      f.src = '/static/phone/index.html';
+      f.setAttribute('allow', 'microphone; autoplay; clipboard-write');
+      f.setAttribute('allowtransparency', 'true');
+      f.title = 'Teléfono Web';
+      f.setAttribute('aria-hidden', 'true');
+      f.style.cssText = 'position:fixed; left:-9999px; top:0; width:1px; height:1px; border:0; opacity:0; pointer-events:none;';
+      document.body.appendChild(f);
+    } catch (e) { return null; }
+    return f;
 }
 var _webphoneActiveBtn = null;
+var _webphoneReady = false;
+var _webphonePending = [];
 function webphoneSetBtn(btn, active) {
     if (!btn) { return; }
     btn.style.color = active ? '#F59E0B' : '#6366F1';
     btn.title = active ? 'Colgar (Web)' : 'Llamar (Web)';
 }
-function webphoneCall(btn, name) {
+function webphonePost(msg) {
     var frame = webphoneFrame();
+    if (!frame || !frame.contentWindow) { showToast('Telefono Web no disponible', 'error'); return false; }
+    frame.contentWindow.postMessage(msg, '*');
+    return true;
+}
+function webphoneDial(phone) {
+    if (!_webphoneReady) { _webphonePending.push(phone); return; }
+    webphonePost({ source: 'app', type: 'webphone-dial', number: phone });
+}
+function webphoneCall(btn, name) {
     var phone = btn ? String(btn.getAttribute('data-phone') || '').replace(/[^\d+]/g, '') : '';
-    if (!frame) { showToast('Telefono Web no disponible', 'error'); return; }
     if (!phone) { showToast('Numero invalido', 'error'); return; }
     // Toggle: if this button is mid-call, hang up instead of dialling again.
     if (_webphoneActiveBtn === btn) {
@@ -1265,30 +1291,55 @@ function webphoneCall(btn, name) {
         return;
     }
     if (_webphoneActiveBtn) { showToast('Ya hay una llamada en curso (colgala antes)', 'error'); return; }
+    var frame = webphoneFrame();
+    if (!frame) { showToast('Telefono Web no disponible', 'error'); return; }
     _webphoneActiveBtn = btn;
     webphoneSetBtn(btn, true);
     showToast('Llamando por Teléfono Web...', 'info');
-    frame.contentWindow.postMessage({ source: 'app', type: 'webphone-dial', number: phone }, '*');
-    // Fallback: if the iframe never answers (e.g. phone page dead), reset button.
+    // Drive the iframe; if it is not ready yet the dial is queued and flushed
+    // when the phone page reports registration/status.
+    if (_webphoneReady) { webphonePost({ source: 'app', type: 'webphone-dial', number: phone }); }
+    else { _webphonePending.push(phone); webphonePost({ source: 'app', type: 'webphone-status' }); }
+    // Fallback: if the iframe never answers, reset button after 2 min.
     setTimeout(function () { if (_webphoneActiveBtn === btn) { _webphoneActiveBtn = null; webphoneSetBtn(btn, false); } }, 120000);
 }
 function webphoneHangup() {
-    var frame = webphoneFrame();
-    if (frame) { frame.contentWindow.postMessage({ source: 'app', type: 'webphone-hangup' }, '*'); }
+    _webphonePending = [];
+    webphonePost({ source: 'app', type: 'webphone-hangup' });
     if (_webphoneActiveBtn) { webphoneSetBtn(_webphoneActiveBtn, false); _webphoneActiveBtn = null; }
 }
 function webphoneReset() {
+    _webphonePending = [];
     if (_webphoneActiveBtn) { webphoneSetBtn(_webphoneActiveBtn, false); _webphoneActiveBtn = null; }
 }
 if (window.addEventListener) {
     window.addEventListener('message', function (ev) {
         var d = ev.data;
         if (!d || d.source !== 'webphone') { return; }
-        if (d.type === 'webphone-dialing') { /* in-progress; button already lit */ }
+        if (d.type === 'webphone-registered') {
+            _webphoneReady = true;
+            var q = _webphonePending; _webphonePending = [];
+            q.forEach(function (n) { webphonePost({ source: 'app', type: 'webphone-dial', number: n }); });
+        }
+        else if (d.type === 'webphone-status') {
+            _webphoneReady = !!d.registered;
+            if (_webphoneReady) {
+                var q2 = _webphonePending; _webphonePending = [];
+                q2.forEach(function (n) { webphonePost({ source: 'app', type: 'webphone-dial', number: n }); });
+            }
+        }
+        else if (d.type === 'webphone-dialing') { /* button already lit */ }
         else if (d.type === 'webphone-idle') { webphoneReset(); }
+        else if (d.type === 'webphone-registration-failed') {
+            webphoneReset();
+            showToast('No se pudo registrar el Teléfono Web (' + (d.cause || 'error') + '). Inicia sesion en /static/phone/index.html.', 'error');
+        }
+        else if (d.type === 'webphone-disconnected' || d.type === 'webphone-unregistered') {
+            _webphoneReady = false;
+        }
         else if (d.type === 'webphone-not-registered') {
             webphoneReset();
-            showToast('Telefono Web no esta registrado. Abre la pagina /static/phone/index.html e inicia sesion una vez.', 'error');
+            showToast('Telefono Web no registrado. Abre /static/phone/index.html e inicia sesion una vez.', 'error');
         }
         else if (d.type === 'webphone-toast') {
             showToast(d.message || '', d.level === 'error' ? 'error' : (d.level === 'info' ? 'info' : 'success'));
