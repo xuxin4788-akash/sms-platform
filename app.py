@@ -11113,7 +11113,7 @@ def dial_next_number(cid):
         (cid,)).fetchone()
     if not cand:
         return jsonify({'error': 'No hay más números pendientes', 'empty': True}), 404
-    nid = cand[0]
+    nid = cand['id']
     db.execute(
         "UPDATE dial_campaign_numbers SET status='calling', locked_by=?, locked_at=datetime('now'), agent_id=? "
         "WHERE id = ?", (user['id'], user['id'], nid))
