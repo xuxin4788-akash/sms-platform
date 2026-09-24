@@ -11017,10 +11017,45 @@ def dial_add_numbers(cid):
                 targets.append((d['phone'], d.get('name') or '', d.get('contact_id')))
     if isinstance(numbers, str):
         numbers = [numbers]
+    # Match pasted numbers against existing visible contacts (by last 10 digits)
+    # so every queued number stays linked to a contact for the workbench card.
+    match_scope, match_params = _scope_where('c', user['id'], role)
+    queued_tails = set()
     for raw in (numbers or []):
         ph = str(raw).strip()
-        if ph:
-            targets.append((ph, '', None))
+        if not ph:
+            continue
+        digits = _phone_digits_tail(ph)
+        if digits:
+            queued_tails.add(digits)
+    matched_by_tail = {}
+    if queued_tails:
+        like_clause = ' OR '.join(['c.phone LIKE ?'] * len(queued_tails))
+        like_params = ['%' + t for t in sorted(queued_tails)]
+        where2 = [like_clause]
+        if match_scope != '1=1':
+            where2.append(match_scope)
+            match_params = list(match_params)
+        else:
+            match_params = []
+        try:
+            for r in db.execute(
+                    "SELECT id, name, phone FROM contacts c WHERE " + ' AND '.join(where2),
+                    like_params + match_params).fetchall():
+                t = _phone_digits_tail(r['phone'])
+                if t in queued_tails and t not in matched_by_tail:
+                    matched_by_tail[t] = (r['id'], r.get('name') or '')
+        except Exception:
+            matched_by_tail = {}
+    for raw in (numbers or []):
+        ph = str(raw).strip()
+        if not ph:
+            continue
+        digits = _phone_digits_tail(ph)
+        cid2, cname = None, ''
+        if digits and digits in matched_by_tail:
+            cid2, cname = matched_by_tail[digits]
+        targets.append((ph, cname, cid2))
 
     if not targets:
         return jsonify({'error': 'No hay números para importar'}), 400
@@ -13205,6 +13240,31 @@ def email_reply_link_contact(reply_id):
     db.execute("UPDATE email_replies SET contact_id=? WHERE id=?", (contact_id, reply_id))
     db.commit()
     return jsonify({'message': 'ok', 'contact': dict(contact)})
+
+
+@app.route('/api/contacts/<int:cid>/card', methods=['GET'])
+@login_required
+def contact_card(cid):
+    """Return the full contact card (group name + activity stats) for a single
+    contact, so the predictive-dial workbench can link a queued number to its
+    contact record. Applied to the caller's contact visibility scope. Returns
+    {contact: {...}} or {contact: null}."""
+    db = get_db()
+    cwhere, cparams = _contact_visible_where("c")
+    c = db.execute(
+        "SELECT c.*, cg.name AS group_name FROM contacts c "
+        "LEFT JOIN contact_groups cg ON c.group_id = cg.id "
+        "WHERE c.id=? AND " + cwhere, [cid] + cparams).fetchone()
+    if not c:
+        return jsonify({'contact': None})
+    cd = dict(c)
+    stats = _contact_stats_map([cd])
+    key = _phone_digits_tail(cd.get('phone'))
+    s = stats.get(key, {})
+    cd['sms_count'] = int(s.get('sms') or 0)
+    cd['call_count'] = int(s.get('calls') or 0)
+    cd['talk_time'] = int(s.get('talk_time') or 0)
+    return jsonify({'contact': _row_with_dates(cd, ('created_at',))})
 
 
 @app.route('/api/email/replies/<int:reply_id>/panel-contact', methods=['GET'])

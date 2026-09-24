@@ -4673,10 +4673,14 @@ function renderDialWorkbench(camp, numbers) {
             ? '<span class="badge ' + (n.result === 'answered' ? 'badge-green' : 'badge-gray') + '">' + (n.result_label || n.result) + '</span>'
             : (n.status === 'calling' ? '<span class="badge badge-yellow">En curso</span>' : '<span class="badge badge-gray">Pendiente</span>');
         var agentTxt = n.agent_full_name || n.agent_username || '—';
+        var contactBtn = n.contact_id
+            ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="showDialContactCard(' + n.contact_id + ')" title="Ver contacto" style="color:#637381;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>'
+            : '';
         return '<tr><td>' + escapeHtml(n.phone) + '</td><td>' + escapeHtml(n.contact_name || '—') + '</td>' +
             '<td>' + resBadge + '</td><td>' + escapeHtml(agentTxt) + '</td>' +
-            '<td>' + (n.duration ? formatDuration(n.duration) : '—') + '</td></tr>';
-    }).join('') || '<tr><td colspan="5" class="text-center text-secondary" style="padding:16px;">Sin números. Importa contactos o un grupo.</td></tr>';
+            '<td>' + (n.duration ? formatDuration(n.duration) : '—') + '</td>' +
+            '<td>' + contactBtn + '</td></tr>';
+    }).join('') || '<tr><td colspan="6" class="text-center text-secondary" style="padding:16px;">Sin números. Importa contactos o un grupo.</td></tr>';
 
     container.innerHTML =
         '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">' +
@@ -4717,8 +4721,25 @@ function renderDialWorkbench(camp, numbers) {
                 '<div id="dial-import-error" style="display:none" class="alert alert-error"></div>' +
                 '<button class="btn btn-primary mt-2" onclick="importDialNumbers(' + camp.id + ')">Importar</button>' +
             '</div></div>' : '') +
-            '<div class="card" style="grid-column:1/-1;"><div class="card-header"><h2>Registro</h2><span class="text-secondary" style="font-size:12px;">Últimos 500</span></div><div class="card-body" style="padding-top:0;overflow-x:auto;"><table class="table"><thead><tr><th>Teléfono</th><th>Nombre</th><th>Resultado</th><th>Agente</th><th>Duración</th></tr></thead><tbody>' + numRows + '</tbody></table></div></div>' +
+            '<div class="card" style="grid-column:1/-1;"><div class="card-header"><h2>Registro</h2><span class="text-secondary" style="font-size:12px;">Últimos 500</span></div><div class="card-body" style="padding-top:0;overflow-x:auto;"><table class="table"><thead><tr><th>Teléfono</th><th>Nombre</th><th>Resultado</th><th>Agente</th><th>Duración</th><th></th></tr></thead><tbody>' + numRows + '</tbody></table></div></div>' +
         '</div>';
+}
+
+async function showDialContactCard(cid) {
+    try {
+        var d = await api('/api/contacts/' + cid + '/card');
+        var c = d.contact;
+        if (!c) { showToast('Contacto no encontrado', 'error'); return; }
+        var oid = 0;
+        if (_dialCurrent && _dialCurrent.campaign) oid = _dialCurrent.campaign.id;
+        showModal('Contacto',
+            '<div style="padding:8px 0;">' + renderInlineContactPanel(c, 'dial') + '</div>');
+        // Re-render the workbench after an inline edit/delete via the panel.
+        window._dialCardReload = function() {
+            hideModal();
+            if (oid) openDialCampaign(oid);
+        };
+    } catch (e) { showToast(e.message || 'Error al cargar contacto', 'error'); }
 }
 
 async function takeDialNext(cid) {
@@ -6209,8 +6230,8 @@ function renderInlineContactPanel(c, replyId) {
           (phone ? '<a class="btn btn-secondary btn-sm" href="tel:' + escapeHtml(phone) + '">Llamar</a>' : '') +
           (phone ? '<button class="btn btn-secondary btn-sm" onclick="dialZoiper(\'' + escapeHtml(phone.replace(/'/g, '')) + '\',\'' + escapeHtml(String(c.name || '').replace(/'/g, '')) + '\')">Zoiper</button>' : '') +
           (waHref ? '<a class="btn btn-secondary btn-sm" target="_blank" rel="noopener" href="' + waHref + '">WhatsApp</a>' : '') +
-          '<button class="btn btn-primary btn-sm" onclick="showEditContactModal(' + c.id + ', function(){ loadReplyContactPanel(' + replyId + '); })">Editar</button>' +
-          '<button class="btn btn-danger btn-sm" onclick="deleteContact(' + c.id + ', function(){ loadReplyContactPanel(' + replyId + '); })">Eliminar</button>' +
+          '<button class="btn btn-primary btn-sm" onclick="showEditContactModal(' + c.id + ', function(){ ' + (replyId === 'dial' ? 'if(window._dialCardReload) window._dialCardReload();' : 'loadReplyContactPanel(' + replyId + ');') + ' })">Editar</button>' +
+          '<button class="btn btn-danger btn-sm" onclick="deleteContact(' + c.id + ', function(){ ' + (replyId === 'dial' ? 'if(window._dialCardReload) window._dialCardReload();' : 'loadReplyContactPanel(' + replyId + ');') + ' })">Eliminar</button>' +
         '</div>' +
       '</div>';
 }
