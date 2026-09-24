@@ -64,6 +64,23 @@ CORS(app, supports_credentials=True, origins=[
 # Ensure instance folder exists
 os.makedirs(app.instance_path, exist_ok=True)
 
+# Return real error details as JSON for API routes so the SPA toast can show the
+# actual cause (missing column, type error, ...) instead of a generic 500 page.
+@app.errorhandler(500)
+def internal_error(exc):
+    import traceback as _tb
+    tb = _tb.format_exc()
+    # Log the full traceback server-side.
+    app.logger.error("Unhandled 500:\n%s", tb)
+    # Last line of the traceback ("ErrorType: message") is compact but informative.
+    last = [ln for ln in tb.strip().splitlines() if ln.strip()]
+    summary = last[-1] if last else repr(exc)
+    path = request.path if request else ''
+    return jsonify({
+        'error': 'Error interno: ' + summary,
+        'path': path,
+    }), 500
+
 # ============================================================
 # Database abstraction (SQLite + PostgreSQL)
 # ============================================================
@@ -11090,7 +11107,7 @@ def dial_add_numbers(cid):
     # De-duplicate against already queued numbers.
     existing = set()
     for r in db.execute("SELECT phone FROM dial_campaign_numbers WHERE campaign_id = ?", (cid,)).fetchall():
-        existing.add(r[0])
+        existing.add(r['phone'])
     added = 0
     for phone, cname, cid2 in targets:
         if phone in existing:
