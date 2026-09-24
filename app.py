@@ -5820,24 +5820,30 @@ def create_contact():
     db = get_db()
     user_id = session.get('user_id')
     user_role = session.get('role')
-    if group_id:
-        if user_role == 'team_member':
-            group = db.execute(
-                "SELECT id FROM contact_groups WHERE id=? AND (created_by=? OR created_by IS NULL)",
-                (int(group_id), user_id),
-            ).fetchone()
-        else:
-            group = db.execute("SELECT id FROM contact_groups WHERE id=?", (int(group_id),)).fetchone()
-        if not group:
-            group_id = None
-    db.execute(
-        "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, created_by) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email,
-         session.get('user_id'))
-    )
-    db.commit()
-    return jsonify({'message': 'Contacto creado', 'phone': phone}), 201
+    try:
+        if group_id:
+            if user_role == 'team_member':
+                group = db.execute(
+                    "SELECT id FROM contact_groups WHERE id=? AND (created_by=? OR created_by IS NULL)",
+                    (int(group_id), user_id),
+                ).fetchone()
+            else:
+                group = db.execute("SELECT id FROM contact_groups WHERE id=?", (int(group_id),)).fetchone()
+            if not group:
+                group_id = None
+        db.execute(
+            "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email,
+             session.get('user_id'))
+        )
+        db.commit()
+        return jsonify({'message': 'Contacto creado', 'phone': phone}), 201
+    except Exception as e:
+        db.rollback()
+        import logging
+        logging.getLogger('app').exception('create_contact failed')
+        return jsonify({'error': 'Error al crear contacto: %s' % str(e)}), 500
 
 
 @app.route('/api/contacts/import-device', methods=['POST'])
