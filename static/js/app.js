@@ -465,11 +465,11 @@ function showMainApp() {
         state.user.permsConfigured !== true) {
         if (role === 'team_admin') {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'calls', 'email', 'email-records', 'email-records-team', 'email-replies', 'content-search',
+                     'records', 'calls', 'predictive-dial', 'email', 'email-records', 'email-records-team', 'email-replies', 'content-search',
                      'users', 'my-account', 'my-team', 'all-teams', 'retention'];
         } else {
             perms = ['dashboard', 'contacts', 'groups', 'templates', 'send',
-                     'records', 'calls', 'email', 'email-records', 'email-replies', 'my-account'];
+                     'records', 'calls', 'predictive-dial', 'email', 'email-records', 'email-replies', 'my-account'];
         }
     }
     document.querySelectorAll('.nav-item').forEach(function(el) {
@@ -564,6 +564,7 @@ function navigateTo(page) {
         case 'send': renderSendSMS(content); break;
         case 'records': renderRecords(content); break;
         case 'calls': renderCalls(content); break;
+        case 'predictive-dial': renderDial(content); break;
         case 'email':
             renderEmailSend(content); break;
         case 'email-records':
@@ -1337,7 +1338,7 @@ function webphoneNormalize(raw) {
     return local;
 }
 function webphoneCall(btn, name) {
-    var rawPhone = btn ? String(btn.getAttribute('data-phone') || '') : '';
+    var rawPhone = btn ? String(btn.getAttribute('data-phone') || '') : (String(name || '').trim());
     var phone = webphoneNormalize(rawPhone);
     dbg('click boton, numero="' + rawPhone + '" -> "' + phone + '"');
     if (!phone) { showToast('Numero invalido', 'error'); dbg('numero invalido'); return; }
@@ -4534,6 +4535,326 @@ async function renderCalls(container) {
     } catch (err) {
         container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
     }
+}
+
+// ============================================================
+// Predictive Dialer (Marcador Predictivo)
+// ============================================================
+var DIAL_RESULTS = [
+    ['answered', 'Respondió'], ['no-answer', 'Sin respuesta'], ['busy', 'Ocupado'],
+    ['failed', 'Falló'], ['follow-up', 'Seguimiento'], ['not-interested', 'No interesado'],
+    ['wrong-number', 'Número incorrecto'], ['hangup', 'Colgó']
+];
+var _dialCurrent = null;  // {campaign, number}
+
+async function renderDial(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var [stats, campaigns, groupsData] = await Promise.all([
+            api('/api/dial/statistics'),
+            api('/api/dial/campaigns'),
+            api('/api/groups')
+        ]);
+        window._dialGroups = groupsData.groups || [];
+        var isTeamLead = state.user.role === 'admin' || state.user.role === 'team_admin';
+        var rows = campaigns.campaigns.map(function(c) {
+            var rate = c.dialed ? Math.round(c.answered / c.dialed * 100) : 0;
+            var statusBadge = c.status === 'active'
+                ? '<span class="badge badge-green">Activa</span>'
+                : (c.status === 'paused' ? '<span class="badge badge-yellow">Pausada</span>' : '<span class="badge badge-gray">Terminada</span>');
+            return '<div class="dial-campaign-row" data-id="' + c.id + '" onclick="openDialCampaign(' + c.id + ')">' +
+                '<div style="flex:1;min-width:180px;"><div style="font-weight:600;">' + escapeHtml(c.name) + '</div>' +
+                '<div class="text-secondary text-sm">' + escapeHtml(c.country ? (VOICE_COUNTRY_LABELS[c.country] || c.country) : 'General') +
+                (c.assignee_username ? ' · Asignada a ' + escapeHtml(c.assignee_full_name || c.assignee_username) : '') +
+                ' · Creada por ' + escapeHtml(c.creator_username || '—') + '</div></div>' +
+                '<div class="text-sm" style="min-width:70px;text-align:center;">Total<br><strong>' + c.total + '</strong></div>' +
+                '<div class="text-sm" style="min-width:70px;text-align:center;">Marcadas<br><strong>' + c.dialed + '</strong></div>' +
+                '<div class="text-sm" style="min-width:70px;text-align:center;">Pendientes<br><strong>' + c.pending + '</strong></div>' +
+                '<div class="text-sm" style="min-width:70px;text-align:center;">Conectadas<br><strong>' + c.answered + '</strong></div>' +
+                '<div class="text-sm" style="min-width:60px;text-align:center;">Tasa<br><strong>' + rate + '%</strong></div>' +
+                '<div style="min-width:90px;text-align:right;">' + statusBadge + '</div>' +
+            '</div>';
+        }).join('') || '<div class="empty-state"><h3>Sin campañas aún</h3><p>Crea una campaña de marcación para comenzar.</p></div>';
+
+        container.innerHTML =
+            '<div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">' +
+                '<h1 style="font-size:22px;font-weight:700;">Marcador Predictivo</h1>' +
+                (isTeamLead ? '<button class="btn btn-primary" onclick="openNewCampaign()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Nueva Campaña</button>' : '') +
+            '</div>' +
+            '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));margin:16px 0;">' +
+                '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div><div class="stat-label">Campañas</div><div class="stat-value" style="font-size:22px;">' + stats.campaigns + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon" style="background:#EEF2FF;color:#4F46E5;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><div class="stat-label">Total</div><div class="stat-value" style="font-size:22px;">' + stats.total + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon yellow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div><div class="stat-label">Conectadas</div><div class="stat-value" style="font-size:22px;">' + stats.answered + '</div></div>' +
+                '<div class="stat-card"><div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div><div class="stat-label">Pendientes</div><div class="stat-value" style="font-size:22px;">' + stats.pending + '</div></div>' +
+                '<div class="stat-card"><div class="stat-label">Tasa de contacto</div><div class="stat-value" style="font-size:22px;">' + stats.success_rate + '%</div></div>' +
+            '</div>' +
+            (isTeamLead
+                ? '<div class="card"><div class="card-header"><h2>Campañas</h2><span class="text-secondary" style="font-size:12px;">Haz clic en una campaña para marcar / gestionar</span></div><div class="card-body" style="padding-top:0;">' + rows + '</div></div>'
+                : '<div class="card"><div class="card-header"><h2>Tu Cola de Marcado</h2><span class="text-secondary" style="font-size:12px;">Pulsa "Siguiente" para recibir el próximo número</span></div><div class="card-body"><div id="dial-my-queue">' + rows + '</div></div></div>');
+    } catch (err) {
+        container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
+    }
+}
+
+function openNewCampaign() {
+    var groupOpts = (window._dialGroups || []).map(function(g) {
+        return '<option value="' + g.id + '">' + escapeHtml(g.name) + ' (' + g.contact_count + ')</option>';
+    }).join('');
+    var countryOpts = Object.keys(VOICE_COUNTRY_LABELS || {}).map(function(k) {
+        return '<option value="' + k + '">' + VOICE_COUNTRY_LABELS[k] + '</option>';
+    }).join('');
+    var assignOpts = (window._dialUsers || []).map(function(u) {
+        return '<option value="' + u.id + '">' + escapeHtml(u.full_name || u.username) + '</option>';
+    }).join('');
+    modal.innerHTML =
+        '<div class="modal-content" style="max-width:560px;">' +
+            '<div class="modal-header"><h2>Nueva Campaña de Marcación</h2><button class="modal-close" onclick="closeModal()">×</button></div>' +
+            '<div class="form-group"><label>Nombre de la campaña *</label><input type="text" id="dial-c-name" placeholder="Ej: Bienvenida Clientes"></div>' +
+            '<div class="form-group mt-3"><label>País</label><select id="dial-c-country"><option value="">General</option>' + countryOpts + '</select></div>' +
+            (state.user.role === 'team_admin' ? '<div class="form-group mt-3"><label>Asignar a (agente)</label><select id="dial-c-assign"><option value="">Todos los agentes del equipo</option>' + assignOpts + '</select></div>' : '') +
+            '<div class="form-group mt-3"><label>Guion sugerido (opcional)</label><textarea id="dial-c-script" rows="4" placeholder="Hola {nombre}, le llamamos para..."></textarea></div>' +
+            '<div id="dial-c-error" class="alert alert-error" style="display:none;"></div>' +
+            '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;"><button class="btn btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="createDialCampaign()">Crear</button></div>' +
+        '</div>';
+    showModal();
+}
+
+async function loadDialUsers() {
+    try {
+        var d = await api('/api/users');
+        window._dialUsers = (d.users || d.data || []).filter(function(u) {
+            return u.role === 'team_member' || u.role === 'team_admin';
+        });
+    } catch (e) { window._dialUsers = []; }
+}
+
+async function createDialCampaign() {
+    var name = document.getElementById('dial-c-name').value.trim();
+    if (!name) { setAlert('dial-c-error', 'Ingresa el nombre de la campaña'); return; }
+    var country = document.getElementById('dial-c-country').value;
+    var script = document.getElementById('dial-c-script').value;
+    var body = { name: name, country: country, script: script };
+    var assign = document.getElementById('dial-c-assign');
+    if (assign && assign.value) body.assigned_to = assign.value;
+    try {
+        var res = await api('/api/dial/campaigns', { method: 'POST', body: JSON.stringify(body) });
+        closeModal();
+        renderDial(document.getElementById('page-content'));
+        showToast('Campaña creada', 'ok');
+    } catch (e) { setAlert('dial-c-error', e.message); }
+}
+
+// --- Campaign detail / workbench ---
+async function openDialCampaign(id) {
+    try {
+        var d = await api('/api/dial/campaigns/' + id);
+        renderDialWorkbench(d.campaign, d.numbers);
+    } catch (e) {
+        showToast(e.message || 'Error al abrir campaña', 'error');
+    }
+}
+
+function dialResultOptions(selected) {
+    return DIAL_RESULTS.map(function(r) {
+        return '<option value="' + r[0] + '"' + (selected === r[0] ? ' selected' : '') + '>' + r[1] + '</option>';
+    }).join('');
+}
+
+function renderDialWorkbench(camp, numbers) {
+    var container = document.getElementById('page-content');
+    var isTeamLead = state.user.role === 'admin' || state.user.role === 'team_admin';
+    var statusSel = '<select id="dial-status" onchange="updateDialCampaignStatus(this.value)" style="margin-right:8px;">' +
+        '<option value="active"' + (camp.status === 'active' ? ' selected' : '') + '>Activa</option>' +
+        '<option value="paused"' + (camp.status === 'paused' ? ' selected' : '') + '>Pausada</option>' +
+        '<option value="done"' + (camp.status === 'done' ? ' selected' : '') + '>Terminada</option>' +
+        '</select>';
+    var numRows = numbers.map(function(n) {
+        var resBadge = n.result
+            ? '<span class="badge ' + (n.result === 'answered' ? 'badge-green' : 'badge-gray') + '">' + (n.result_label || n.result) + '</span>'
+            : (n.status === 'calling' ? '<span class="badge badge-yellow">En curso</span>' : '<span class="badge badge-gray">Pendiente</span>');
+        var agentTxt = n.agent_full_name || n.agent_username || '—';
+        return '<tr><td>' + escapeHtml(n.phone) + '</td><td>' + escapeHtml(n.contact_name || '—') + '</td>' +
+            '<td>' + resBadge + '</td><td>' + escapeHtml(agentTxt) + '</td>' +
+            '<td>' + (n.duration ? formatDuration(n.duration) : '—') + '</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="text-center text-secondary" style="padding:16px;">Sin números. Importa contactos o un grupo.</td></tr>';
+
+    container.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">' +
+            '<div><a href="javascript:void(0)" onclick="renderDial(document.getElementById(\'page-content\'))" class="text-secondary text-sm" style="text-decoration:none;">← Campañas</a>' +
+            '<h1 style="font-size:22px;font-weight:700;margin-top:4px;">' + escapeHtml(camp.name) + '</h1>' +
+            '<div class="text-secondary text-sm">' + escapeHtml(camp.script || 'Sin guion') + '</div></div>' +
+            '<div style="display:flex;align-items:center;gap:8px;">' + statusSel + '</div>' +
+        '</div>' +
+        '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));margin-bottom:16px;">' +
+            '<div class="stat-card"><div class="stat-label">Total</div><div class="stat-value" style="font-size:22px;">' + camp.total + '</div></div>' +
+            '<div class="stat-card"><div class="stat-label">Marcadas</div><div class="stat-value" style="font-size:22px;">' + camp.dialed + '</div></div>' +
+            '<div class="stat-card"><div class="stat-label">Pendientes</div><div class="stat-value" style="font-size:22px;">' + camp.pending + '</div></div>' +
+            '<div class="stat-card"><div class="stat-label">Conectadas</div><div class="stat-value" style="font-size:22px;">' + camp.answered + '</div></div>' +
+        '</div>' +
+        '<div class="grid" style="display:grid;grid-template-columns:1fr 1.4fr;gap:16px;align-items:start;">' +
+            '<div class="card"><div class="card-header"><h2>Marcar ahora</h2></div><div class="card-body" style="text-align:center;">' +
+                '<div id="dial-now" style="padding:8px 0 18px;">' +
+                    (camp.status !== 'active'
+                        ? '<p class="text-secondary">La campaña no está activa.</p>'
+                        : (_dialCurrent && _dialCurrent.campaign.id === camp.id && _dialCurrent.number
+                            ? ('<div class="dial-number-display" style="font-size:26px;font-weight:700;margin:12px 0;">' + escapeHtml(_dialCurrent.number.phone) + '</div>' +
+                               '<div class="text-secondary mb-2">' + escapeHtml(_dialCurrent.number.contact_name || 'Sin nombre') + '</div>' +
+                               '<div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+                                   '<button class="btn btn-primary" onclick="renderDialCallControls()">Llamar por Web</button>' +
+                               '</div>' +
+                               '<div class="dial-result-box" style="border-top:1px solid var(--border);padding-top:12px;">' +
+                                   '<div class="form-group"><label>Resultado</label><select id="dial-result">' + dialResultOptions() + '</select></div>' +
+                                   '<div class="form-group mt-2"><label>Nota</label><textarea id="dial-note" rows="2" placeholder="Nota opcional..."></textarea></div>' +
+                                   '<button class="btn btn-primary btn-block mt-2" onclick="submitDialResult(' + camp.id + ')">Guardar resultado</button>' +
+                                   '<button class="btn btn-secondary btn-block mt-2" onclick="releaseDialNumber(' + camp.id + ')">Descartar y siguiente</button>' +
+                               '</div>')
+                            : '<button class="btn btn-primary btn-lg" onclick="takeDialNext(' + camp.id + ')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><path d="M5 3l-4 6 3 3 2-1-2 4 1 1 4-2-1 2 3 3 6-4-1-4-2 2-2-3 3-2 3-2z"/></svg> Siguiente número</button>')) +
+                '</div>' +
+            '</div></div>' +
+            (isTeamLead ? '<div class="card"><div class="card-header"><h2>Añadir números</h2></div><div class="card-body">' +
+                '<div class="form-group"><label>Desde un grupo</label><select id="dial-import-group" onchange="dialImportGroupChanged(this)"><option value="">-- Seleccione --</option>' + (window._dialGroups || []).map(function(g){return '<option value="'+g.id+'">'+escapeHtml(g.name)+' ('+g.contact_count+')</option>';}).join('') + '</select></div>' +
+                '<div class="form-group mt-2"><label>O pega números (uno por línea / comas)</label><textarea id="dial-import-numbers" rows="3" placeholder="5526 057 993, +527226452713, ..."></textarea></div>' +
+                '<div id="dial-import-error" style="display:none" class="alert alert-error"></div>' +
+                '<button class="btn btn-primary mt-2" onclick="importDialNumbers(' + camp.id + ')">Importar</button>' +
+            '</div></div>' : '') +
+            '<div class="card" style="grid-column:1/-1;"><div class="card-header"><h2>Registro</h2><span class="text-secondary" style="font-size:12px;">Últimos 500</span></div><div class="card-body" style="padding-top:0;overflow-x:auto;"><table class="table"><thead><tr><th>Teléfono</th><th>Nombre</th><th>Resultado</th><th>Agente</th><th>Duración</th></tr></thead><tbody>' + numRows + '</tbody></table></div></div>' +
+        '</div>';
+}
+
+async function takeDialNext(cid) {
+    try {
+        var d = await api('/api/dial/campaigns/' + cid + '/next', { method: 'POST' });
+        _dialCurrent = { campaign: (await api('/api/dial/campaigns/' + cid)).campaign, number: d.number };
+        renderDialWorkbench(_dialCurrent.campaign, (await api('/api/dial/campaigns/' + cid)).numbers);
+    } catch (e) {
+        showToast(e.message || 'No hay más números', 'error');
+    }
+}
+
+function renderDialCallControls() {
+    var el = document.getElementById('dial-now');
+    if (!el || !_dialCurrent || !_dialCurrent.number) return;
+    el.innerHTML =
+        '<div class="dial-number-display" style="font-size:24px;font-weight:700;margin:8px 0;">' + escapeHtml(_dialCurrent.number.phone) + '</div>' +
+        '<div class="text-secondary mb-2">' + escapeHtml(_dialCurrent.number.contact_name || 'Sin nombre') + '</div>' +
+        '<div id="dial-call-status" class="alert alert-info" style="margin-bottom:10px;"><strong>Preparando la llamada...</strong></div>' +
+        '<div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+            '<button class="btn btn-primary" onclick="dialCallFromWeb()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Llamar</button>' +
+            '<button class="btn btn-secondary" onclick="hangupDialCall()">Colgar</button>' +
+        '</div>' +
+        '<div class="dial-result-box" style="border-top:1px solid var(--border);padding-top:12px;">' +
+            '<div class="form-group"><label>Resultado</label><select id="dial-result">' + dialResultOptions() + '</select></div>' +
+            '<div class="form-group mt-2"><label>Nota</label><textarea id="dial-note" rows="2" placeholder="Nota opcional..."></textarea></div>' +
+            '<button class="btn btn-primary btn-block mt-2" onclick="submitDialResult(' + (_dialCurrent.campaign ? _dialCurrent.campaign.id : 0) + ')">Guardar resultado</button>' +
+            '<button class="btn btn-secondary btn-block mt-2" onclick="releaseDialNumber(' + (_dialCurrent.campaign ? _dialCurrent.campaign.id : 0) + ')">Descartar y siguiente</button>' +
+        '</div>';
+    // Auto-trigger the Web call.
+    dialCallFromWeb();
+}
+
+var _dialCallTimer = null;
+var _dialCallStart = 0;
+
+async function dialCallFromWeb() {
+    if (!_dialCurrent || !_dialCurrent.number) return;
+    var statusEl = document.getElementById('dial-call-status');
+    try {
+        var stats = await api('/api/voice/statistics');
+        if (stats.configured && stats.provider === 'infin8linx' && !stats.can_call) {
+            if (statusEl) statusEl.innerHTML = '<strong style="color:#DC2626;">No tienes extensión asignada.</strong> Un administrador debe asignarte una en Gestión de Usuarios.';
+            return;
+        }
+        webphoneCall(null, _dialCurrent.number.phone);
+        _dialCallStart = Date.now();
+        if (statusEl) statusEl.innerHTML = '<strong>Llamando a ' + escapeHtml(_dialCurrent.number.phone) + '...</strong> Se abrirá la ventana de llamada Web.';
+        startDialCallTimer();
+    } catch (e) {
+        if (statusEl) statusEl.innerHTML = '<strong style="color:#DC2626;">' + escapeHtml(e.message) + '</strong>';
+    }
+}
+
+function startDialCallTimer() {
+    stopDialCallTimer();
+    _dialCallTimer = setInterval(function() {
+        var el = document.getElementById('dial-call-status');
+        if (el) {
+            var sec = Math.round((Date.now() - _dialCallStart) / 1000);
+            el.innerHTML = '<strong>Llamada en curso...</strong> ' + formatDuration(sec);
+        }
+    }, 1000);
+}
+
+function stopDialCallTimer() {
+    if (_dialCallTimer) { clearInterval(_dialCallTimer); _dialCallTimer = null; }
+}
+
+function hangupDialCall() {
+    stopDialCallTimer();
+    webphoneHangup();
+    var el = document.getElementById('dial-call-status');
+    if (el) el.innerHTML = '<strong>Llamada terminada.</strong>';
+}
+
+function releaseDialNumber(cid) {
+    if (_dialCurrent && _dialCurrent.number) {
+        submitDialResult(cid, true).then(function() {
+            _dialCurrent = null;
+            openDialCampaign(cid);
+        });
+    }
+}
+
+async function submitDialResult(cid, forceNext) {
+    if (!_dialCurrent || !_dialCurrent.number) return;
+    var resultEl = document.getElementById('dial-result');
+    var noteEl = document.getElementById('dial-note');
+    var result = resultEl ? resultEl.value : 'no-answer';
+    var note = noteEl ? noteEl.value : '';
+    var duration = Math.round((Date.now() - (_dialCallStart || Date.now())) / 1000);
+    try {
+        await api('/api/dial/campaigns/' + cid + '/numbers/' + _dialCurrent.number.id + '/result', {
+            method: 'POST',
+            body: JSON.stringify({ result: result, note: note, duration: duration })
+        });
+        stopDialCallTimer();
+        if (forceNext) return true;
+        showToast('Resultado guardado', 'ok');
+        _dialCurrent = null;
+        openDialCampaign(cid);
+        return true;
+    } catch (e) {
+        showToast(e.message || 'Error al guardar', 'error');
+        return false;
+    }
+}
+
+function importDialNumbers(cid) {
+    var groupId = document.getElementById('dial-import-group').value;
+    var numbersTxt = document.getElementById('dial-import-numbers').value;
+    var body = {};
+    if (groupId) body.group_id = groupId;
+    var nums = (numbersTxt || '').split(/[,;，；\s]+/).map(function(s) { return s.trim(); }).filter(Boolean);
+    if (nums.length) body.numbers = nums;
+    if (!body.group_id && !body.numbers) {
+        setAlert('dial-import-error', 'Selecciona un grupo o pega números');
+        return;
+    }
+    api('/api/dial/campaigns/' + cid + '/numbers', { method: 'POST', body: JSON.stringify(body) })
+        .then(function() {
+            closeModal();
+            openDialCampaign(cid);
+            showToast('Números importados', 'ok');
+        })
+        .catch(function(e) { setAlert('dial-import-error', e.message); });
+}
+
+async function updateDialCampaignStatus(status) {
+    if (!_dialCurrent) return;
+    try {
+        await api('/api/dial/campaigns/' + _dialCurrent.campaign.id, {
+            method: 'PUT', body: JSON.stringify({ status: status })
+        });
+    } catch (e) { showToast(e.message, 'error'); }
 }
 
 function switchVoiceMode(mode, btn) {

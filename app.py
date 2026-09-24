@@ -820,6 +820,56 @@ def init_db():
             );
         """)
 
+        # ---- Predictive dialing (外呼队列 / marcador predictivo) ----
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS dial_campaigns (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                script TEXT NOT NULL DEFAULT '',
+                country VARCHAR(5) NOT NULL DEFAULT '',
+                status VARCHAR(20) NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active','paused','done')),
+                total INTEGER NOT NULL DEFAULT 0,
+                dialed INTEGER NOT NULL DEFAULT 0,
+                answered INTEGER NOT NULL DEFAULT 0,
+                team_creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_dial_campaigns_status ON dial_campaigns(status);
+            CREATE INDEX IF NOT EXISTS idx_dial_campaigns_team ON dial_campaigns(team_creator_id);
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS dial_campaign_numbers (
+                id SERIAL PRIMARY KEY,
+                campaign_id INTEGER NOT NULL REFERENCES dial_campaigns(id) ON DELETE CASCADE,
+                contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+                contact_name VARCHAR(255) NOT NULL DEFAULT '',
+                phone VARCHAR(50) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','calling','done')),
+                result VARCHAR(30) NOT NULL DEFAULT ''
+                    CHECK(result IN ('','answered','no-answer','busy','failed',
+                                     'follow-up','not-interested','wrong-number','hangup')),
+                note VARCHAR(500) NOT NULL DEFAULT '',
+                agent_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                locked_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                locked_at TIMESTAMP,
+                dialed_at TIMESTAMP,
+                duration INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_dial_num_campaign ON dial_campaign_numbers(campaign_id, status);
+            CREATE INDEX IF NOT EXISTS idx_dial_num_locked ON dial_campaign_numbers(locked_by);
+        """)
+
         # Migrations for existing databases - add missing columns
         def pg_column_exists(table, column):
             cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name=%s AND column_name=%s", (table, column))
@@ -1565,6 +1615,56 @@ def init_db():
                 UNIQUE(extnumber, country),
                 FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL
             );
+
+            -- ---- Predictive dialing (外呼队列 / marcador predictivo) ----
+            CREATE TABLE IF NOT EXISTS dial_campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                script TEXT NOT NULL DEFAULT '',
+                country TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active','paused','done')),
+                total INTEGER NOT NULL DEFAULT 0,
+                dialed INTEGER NOT NULL DEFAULT 0,
+                answered INTEGER NOT NULL DEFAULT 0,
+                team_creator_id INTEGER,
+                assigned_to INTEGER,
+                created_by INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (team_creator_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_dial_campaigns_status ON dial_campaigns(status);
+            CREATE INDEX IF NOT EXISTS idx_dial_campaigns_team ON dial_campaigns(team_creator_id);
+
+            CREATE TABLE IF NOT EXISTS dial_campaign_numbers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER NOT NULL,
+                contact_id INTEGER,
+                contact_name TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','calling','done')),
+                result TEXT NOT NULL DEFAULT ''
+                    CHECK(result IN ('','answered','no-answer','busy','failed',
+                                     'follow-up','not-interested','wrong-number','hangup')),
+                note TEXT NOT NULL DEFAULT '',
+                agent_id INTEGER,
+                locked_by INTEGER,
+                locked_at TEXT,
+                dialed_at TEXT,
+                duration INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (campaign_id) REFERENCES dial_campaigns(id) ON DELETE CASCADE,
+                FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL,
+                FOREIGN KEY (agent_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (locked_by) REFERENCES users(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_dial_num_campaign ON dial_campaign_numbers(campaign_id, status);
+            CREATE INDEX IF NOT EXISTS idx_dial_num_locked ON dial_campaign_numbers(locked_by);
         ''')
         # Create default admin if not exists
         cursor = db.execute("SELECT id FROM users WHERE username='admin'")
@@ -5063,6 +5163,7 @@ AVAILABLE_PAGES = [
     {'id': 'send', 'label': 'Enviar SMS', 'icon': 'send'},
     {'id': 'records', 'label': 'Registros SMS', 'icon': 'activity'},
     {'id': 'calls', 'label': 'Llamadas', 'icon': 'phone'},
+    {'id': 'predictive-dial', 'label': 'Marcador Predictivo', 'icon': 'phone'},
     {'id': 'email', 'label': 'Correos', 'icon': 'mail'},
     {'id': 'email-records', 'label': 'Registros de Correo', 'icon': 'activity'},
     {'id': 'email-records-team', 'label': 'Correos del Equipo', 'icon': 'activity'},
@@ -5102,12 +5203,12 @@ DEFAULT_ROLE_PERMISSIONS = {
     'admin': [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions'],
     'team_admin': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'email', 'email-records', 'email-records-team', 'email-replies', 'content-search', 'users',
+        'calls', 'predictive-dial', 'email', 'email-records', 'email-records-team', 'email-replies', 'content-search', 'users',
         'my-account', 'my-team', 'all-teams', 'retention', 'email-senders',
     ],
     'team_member': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'email', 'email-records', 'email-replies', 'my-account',
+        'calls', 'predictive-dial', 'email', 'email-records', 'email-replies', 'my-account',
     ],
 }
 
@@ -5116,7 +5217,7 @@ DEFAULT_ROLE_PERMISSIONS = {
 # features without forcing an admin to re-check permissions for existing teams.
 # Admin-only pages (e.g. email-config) must never be added here.
 AUTO_GRANT_PAGES = {'email', 'email-records', 'email-records-team', 'email-replies',
-                    'email-senders'}
+                    'email-senders', 'predictive-dial'}
 
 @app.route('/api/role-permissions', methods=['GET'])
 @admin_required
@@ -10586,6 +10687,335 @@ def voice_test_config():
                         'scheme': scheme,
                         'token_preview': (token[:6] + '...' + token[-4:]) if len(token) > 12 else 'OK'})
     return jsonify({'error': 'Proveedor no soportado'}), 400
+
+
+# ---------------------------------------------------------------------------
+# Predictive dialing (外呼队列 / marcador predictivo)
+# ---------------------------------------------------------------------------
+# An agent work queue: an admin/team-lead creates a campaign from a group or a
+# list of numbers, agents pull one number at a time ("next"), dial it via the
+# WebRTC softphone, then record the outcome. Numbers are locked per agent to
+# avoid double work, and stats aggregate per campaign and per agent.
+
+DIAL_RESULT_LABELS = {
+    'answered': 'Respondió',
+    'no-answer': 'Sin respuesta',
+    'busy': 'Ocupado',
+    'failed': 'Falló',
+    'follow-up': 'Seguimiento',
+    'not-interested': 'No interesado',
+    'wrong-number': 'Número incorrecto',
+    'hangup': 'Colgó',
+}
+
+
+def _dial_scope_where(c_alias, n_alias, user, role):
+    """Restrict a predictive-dial campaign query to what this user may see.
+
+    admin  -> all campaigns
+    team_admin -> campaigns of the team it manages (team_creator_id == its id)
+    team_member / custom roles -> campaigns assigned specifically to them
+    """
+    if role == 'admin':
+        return '1=1', []
+    if role == 'team_admin':
+        return ('%s.team_creator_id = %d' % (c_alias, user['id'])), []
+    return ('%s.assigned_to = %d' % (c_alias, user['id'])), []
+
+
+@app.route('/api/dial/campaigns', methods=['GET'])
+@login_required
+def dial_list_campaigns():
+    db = get_db()
+    user = g.user
+    role = user.get('role')
+    cw, cp = _dial_scope_where('c', None, user, role)
+    total = db.execute(
+        "SELECT COUNT(*) AS c FROM dial_campaigns c WHERE " + cw, cp
+    ).fetchone()['c']
+    rows = db.execute(
+        "SELECT c.*, u.username AS creator_username, u.full_name AS creator_full_name, "
+        "a.username AS assignee_username, a.full_name AS assignee_full_name "
+        "FROM dial_campaigns c "
+        "LEFT JOIN users u ON u.id = c.created_by "
+        "LEFT JOIN users a ON a.id = c.assigned_to "
+        "WHERE " + cw + " ORDER BY c.id DESC", cp
+    ).fetchall()
+    items = []
+    for r in rows:
+        if not isinstance(r, dict):
+            r = dict(r)
+        items.append({
+            'id': r['id'], 'name': r['name'], 'script': r['script'],
+            'country': r['country'] or '', 'status': r['status'],
+            'total': r['total'] or 0, 'dialed': r['dialed'] or 0,
+            'answered': r['answered'] or 0,
+            'pending': max(0, (r['total'] or 0) - (r['dialed'] or 0)),
+            'team_creator_id': r['team_creator_id'],
+            'assigned_to': r['assigned_to'],
+            'assignee_username': r.get('assignee_username') or '',
+            'assignee_full_name': r.get('assignee_full_name') or '',
+            'created_by': r['created_by'],
+            'creator_username': r.get('creator_username') or '',
+            'creator_full_name': r.get('creator_full_name') or '',
+            'created_at': r['created_at'],
+        })
+    return jsonify({'campaigns': items, 'total': total})
+
+
+@app.route('/api/dial/campaigns', methods=['POST'])
+@login_required
+def dial_create_campaign():
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'Nombre de campaña requerido'}), 400
+    user = g.user
+    role = user.get('role')
+    if role == 'team_member' or (role not in ('admin', 'team_admin')):
+        return jsonify({'error': 'Solo Administradores pueden crear campañas'}), 403
+    script = (data.get('script') or '').strip()
+    country = normalize_country(data.get('country'))
+    assigned_to = None
+    # team_admin may assign the campaign to a member under its management.
+    if role == 'team_admin':
+        assigned_to = data.get('assigned_to') or user['id']
+    team_creator_id = user['id'] if role == 'team_admin' else None
+    db = get_db()
+    cur = db.execute(
+        "INSERT INTO dial_campaigns (name, script, country, status, "
+        "team_creator_id, assigned_to, created_by) "
+        "VALUES (?, ?, ?, 'active', ?, ?, ?)",
+        (name, script, country, team_creator_id, assigned_to, user['id']))
+    db.commit()
+    return jsonify({'message': 'Campaña creada', 'id': cur.lastrowid}), 201
+
+
+@app.route('/api/dial/campaigns/<int:cid>', methods=['GET', 'PUT', 'DELETE'])
+@login_required
+def dial_campaign_detail(cid):
+    db = get_db()
+    row = db.execute("SELECT * FROM dial_campaigns WHERE id = ?", (cid,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Campaña no encontrada'}), 404
+    camp = dict(row)
+    user = g.user
+    role = user.get('role')
+    ok = (role == 'admin'
+          or (role == 'team_admin' and camp.get('team_creator_id') == user['id'])
+          or (camp.get('assigned_to') and camp.get('assigned_to') == user['id']))
+    if not ok:
+        return jsonify({'error': 'Sin permisos sobre esta campaña'}), 403
+
+    if request.method == 'GET':
+        numbers = db.execute(
+            "SELECT n.id, n.contact_id, n.contact_name, n.phone, n.status, n.result, "
+            "n.note, n.agent_id, n.duration, n.dialed_at, "
+            "u.username AS agent_username, u.full_name AS agent_full_name "
+            "FROM dial_campaign_numbers n "
+            "LEFT JOIN users u ON u.id = n.agent_id "
+            "WHERE n.campaign_id = ? ORDER BY n.id DESC LIMIT 500",
+            (cid,)).fetchall()
+        items = []
+        for n in numbers:
+            nd = dict(n) if not isinstance(n, tuple) else n
+            items.append({
+                'id': nd['id'], 'contact_id': nd['contact_id'],
+                'contact_name': nd['contact_name'] or '', 'phone': nd['phone'],
+                'status': nd['status'], 'result': nd['result'] or '',
+                'result_label': DIAL_RESULT_LABELS.get(nd['result'] or '', ''),
+                'note': nd['note'] or '', 'agent_id': nd['agent_id'],
+                'duration': nd['duration'] or 0, 'dialed_at': nd['dialed_at'],
+                'agent_username': nd.get('agent_username') or '',
+                'agent_full_name': nd.get('agent_full_name') or '',
+            })
+        return jsonify({'campaign': camp, 'numbers': items})
+
+    if request.method == 'PUT':
+        data = request.get_json(silent=True) or {}
+        name = (data.get('name') or '').strip()
+        script = (data.get('script') or '').strip()
+        status = (data.get('status') or '').strip()
+        if status and status not in ('active', 'paused', 'done'):
+            return jsonify({'error': 'Estado no válido'}), 400
+        db.execute(
+            "UPDATE dial_campaigns SET name=?, script=?, status=?, updated_at=datetime('now') WHERE id=?",
+            (name if name else camp['name'],
+             script if script is not None else camp['script'],
+             status or camp['status'], cid))
+        db.commit()
+        return jsonify({'message': 'Campaña actualizada'})
+
+    # DELETE
+    db.execute("DELETE FROM dial_campaigns WHERE id = ?", (cid,))
+    db.commit()
+    return jsonify({'message': 'Campaña eliminada'})
+
+
+@app.route('/api/dial/campaigns/<int:cid>/numbers', methods=['POST'])
+@login_required
+def dial_add_numbers(cid):
+    data = request.get_json(silent=True) or {}
+    numbers = data.get('numbers') or []
+    group_id = data.get('group_id')
+    db = get_db()
+    row = db.execute("SELECT * FROM dial_campaigns WHERE id = ?", (cid,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Campaña no encontrada'}), 404
+    camp = dict(row)
+    user = g.user
+    role = user.get('role')
+    ok = (role == 'admin'
+          or (role == 'team_admin' and camp.get('team_creator_id') == user['id'])
+          or (camp.get('assigned_to') and camp.get('assigned_to') == user['id']))
+    if not ok:
+        return jsonify({'error': 'Sin permisos sobre esta campaña'}), 403
+
+    # Gather target numbers: from a group (respecting contact scope) or raw list.
+    targets = []  # list of (phone, contact_name, contact_id)
+    if group_id:
+        where = ['g.id = ?']
+        params = [group_id]
+        scope_where, scope_params = _scope_where('c', user['id'], role)
+        if scope_where != '1=1':
+            where.append(scope_where)
+            params.extend(scope_params)
+        rows = db.execute(
+            "SELECT DISTINCT c.id AS contact_id, c.phone, c.name FROM contacts c "
+            "JOIN group_members gm ON gm.contact_id = c.id "
+            "JOIN groups g ON g.id = gm.group_id "
+            "WHERE " + ' AND '.join(where),
+            params).fetchall()
+        for r in rows:
+            d = dict(r)
+            if d.get('phone'):
+                targets.append((d['phone'], d.get('name') or '', d.get('contact_id')))
+    if isinstance(numbers, str):
+        numbers = [numbers]
+    for raw in (numbers or []):
+        ph = str(raw).strip()
+        if ph:
+            targets.append((ph, '', None))
+
+    if not targets:
+        return jsonify({'error': 'No hay números para importar'}), 400
+    # De-duplicate against already queued numbers.
+    existing = set()
+    for r in db.execute("SELECT phone FROM dial_campaign_numbers WHERE campaign_id = ?", (cid,)).fetchall():
+        existing.add(r[0])
+    added = 0
+    for phone, cname, cid2 in targets:
+        if phone in existing:
+            continue
+        db.execute(
+            "INSERT INTO dial_campaign_numbers (campaign_id, contact_id, contact_name, phone) "
+            "VALUES (?, ?, ?, ?)", (cid, cid2, cname, phone))
+        existing.add(phone)
+        added += 1
+    db.execute(
+        "UPDATE dial_campaigns SET total = (SELECT COUNT(*) FROM dial_campaign_numbers WHERE campaign_id=?), "
+        "updated_at = datetime('now') WHERE id = ?", (cid, cid))
+    db.commit()
+    return jsonify({'message': '%d número(s) añadidos' % added, 'added': added})
+
+
+@app.route('/api/dial/campaigns/<int:cid>/next', methods=['POST'])
+@login_required
+def dial_next_number(cid):
+    """Atomically hand the next pending number to the requesting agent."""
+    db = get_db()
+    row = db.execute("SELECT * FROM dial_campaigns WHERE id = ?", (cid,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Campaña no encontrada'}), 404
+    camp = dict(row)
+    user = g.user
+    role = user.get('role')
+    if camp.get('status') != 'active':
+        return jsonify({'error': 'La campaña no está activa'}), 400
+    # Release this agent's stale locks (crashed sessions).
+    db.execute(
+        "UPDATE dial_campaign_numbers SET status='pending', locked_by=NULL, locked_at=NULL "
+        "WHERE locked_by = ? AND status = 'calling'", (user['id'],))
+    db.commit()
+
+    # Pick the oldest unanswered number that no one else holds.
+    cand = db.execute(
+        "SELECT id FROM dial_campaign_numbers "
+        "WHERE campaign_id = ? AND status = 'pending' ORDER BY id ASC LIMIT 1",
+        (cid,)).fetchone()
+    if not cand:
+        return jsonify({'error': 'No hay más números pendientes', 'empty': True}), 404
+    nid = cand[0]
+    db.execute(
+        "UPDATE dial_campaign_numbers SET status='calling', locked_by=?, locked_at=datetime('now'), agent_id=? "
+        "WHERE id = ?", (user['id'], user['id'], nid))
+    db.commit()
+    rec = db.execute(
+        "SELECT id, contact_name, phone, contact_id FROM dial_campaign_numbers WHERE id = ?",
+        (nid,)).fetchone()
+    d = dict(rec)
+    d['contact_id'] = d.get('contact_id') or None
+    return jsonify({'number': d})
+
+
+@app.route('/api/dial/campaigns/<int:cid>/numbers/<int:nid>/result', methods=['POST'])
+@login_required
+def dial_number_result(cid, nid):
+    data = request.get_json(silent=True) or {}
+    result = (data.get('result') or '').strip()
+    note = (data.get('note') or '').strip()
+    duration = int(data.get('duration') or 0)
+    if result not in DIAL_RESULT_LABELS:
+        return jsonify({'error': 'Resultado no válido'}), 400
+    db = get_db()
+    rec = db.execute(
+        "SELECT * FROM dial_campaign_numbers WHERE id = ? AND campaign_id = ?",
+        (nid, cid)).fetchone()
+    if not rec:
+        return jsonify({'error': 'Número no encontrado'}), 404
+    nd = dict(rec)
+    user = g.user
+    # Only the locking agent (or an admin) can mark the result.
+    ok = (user.get('role') == 'admin' or nd.get('locked_by') == user['id'])
+    if not ok:
+        return jsonify({'error': 'Este número está asignado a otro agente'}), 403
+    db.execute(
+        "UPDATE dial_campaign_numbers SET status='done', result=?, note=?, duration=?, "
+        "locked_by=NULL, locked_at=NULL, dialed_at=datetime('now'), updated_at=datetime('now') "
+        "WHERE id = ?", (result, note, duration, nid))
+    db.commit()
+    db.execute(
+        "UPDATE dial_campaigns SET answered = (SELECT COUNT(*) FROM dial_campaign_numbers "
+        "WHERE campaign_id=? AND result='answered'), "
+        "dialed = (SELECT COUNT(*) FROM dial_campaign_numbers WHERE campaign_id=? AND status='done'), "
+        "updated_at=datetime('now') WHERE id=?",
+        (cid, cid, cid))
+    db.commit()
+    return jsonify({'message': 'Resultado guardado'})
+
+
+@app.route('/api/dial/statistics', methods=['GET'])
+@login_required
+def dial_statistics():
+    db = get_db()
+    user = g.user
+    role = user.get('role')
+    cw, cp = _dial_scope_where('c', None, user, role)
+    agg = db.execute(
+        "SELECT COUNT(*) AS campaigns, COALESCE(SUM(c.total),0) AS total, "
+        "COALESCE(SUM(c.dialed),0) AS dialed, COALESCE(SUM(c.answered),0) AS answered "
+        "FROM dial_campaigns c WHERE " + cw, cp).fetchone()
+    a = dict(agg)
+    pending = max(0, int(a['total']) - int(a['dialed']))
+    success = (int(a['answered']) / int(a['dialed'])) * 100 if int(a['dialed']) else 0
+    return jsonify({
+        'campaigns': int(a['campaigns']),
+        'total': int(a['total']),
+        'dialed': int(a['dialed']),
+        'answered': int(a['answered']),
+        'pending': pending,
+        'success_rate': round(success, 1),
+    })
 
 
 # ---------------------------------------------------------------------------
