@@ -4901,32 +4901,13 @@ async function dialCallFromWeb() {
     if (!_dialCurrent || !_dialCurrent.number) return;
     var statusEl = document.getElementById('dial-call-status');
     var phone = _dialCurrent.number.phone;
-    var name = _dialCurrent.number.contact_name || '';
-    try {
-        var stats = await api('/api/voice/statistics');
-        if (stats.configured && stats.provider === 'infin8linx' && !stats.can_call) {
-            if (statusEl) statusEl.innerHTML = '<strong style="color:#DC2626;">No tienes extensión asignada.</strong> Un administrador debe asignarte una en Gestión de Usuarios.';
-            return;
-        }
-        // Llamada por linea SIP (VOS3000/Infinity MakeCall) gestionada por el servidor,
-        // no por el softphone/telefono web del navegador.
-        var res = await api('/api/voice/call', {
-            method: 'POST',
-            body: JSON.stringify({
-                phones: [phone],
-                script: '(llamada desde marcador predictivo)',
-                contact_names: (function () { var m = {}; m[phone] = name; return m; })()
-            })
-        });
-        if (_dialCurrent) _dialCurrent.call_sid = (res.results && res.results[0] && res.results[0].call_sid) || '';
-        _dialCallStart = Date.now();
-        if (statusEl) statusEl.innerHTML = (res.simulated
-            ? '<strong>Llamando a ' + escapeHtml(phone) + '...</strong> (modo simulacion)'
-            : '<strong>Llamando a ' + escapeHtml(phone) + '...</strong> Via linea SIP.');
-        startDialCallTimer();
-    } catch (e) {
-        if (statusEl) statusEl.innerHTML = '<strong style="color:#DC2626;">' + escapeHtml(e.message) + '</strong>';
-    }
+    // Telefono web (WebRTC): el softphone del navegador se registra en Asterisk
+    // y la llamada sale por la linea/trunk VOS3000. No depende de la extension
+    // Infinity (extnumber) del usuario, por eso no se bloquea por ella.
+    webphoneCall(null, phone);
+    _dialCallStart = Date.now();
+    if (statusEl) statusEl.innerHTML = '<strong>Llamando a ' + escapeHtml(phone) + '...</strong> Via telefono web (linea VOS3000).';
+    startDialCallTimer();
 }
 
 function startDialCallTimer() {
@@ -4946,14 +4927,7 @@ function stopDialCallTimer() {
 
 function hangupDialCall() {
     stopDialCallTimer();
-    var sid = (_dialCurrent && _dialCurrent.call_sid) || '';
-    if (sid) {
-        // Colgar por linea SIP via servidor
-        api('/api/voice/hangup', { method: 'POST', body: JSON.stringify({ call_sid: sid }) })
-            .catch(function () {});
-    } else {
-        webphoneHangup();
-    }
+    webphoneHangup();
     var el = document.getElementById('dial-call-status');
     if (el) el.innerHTML = '<strong>Llamada terminada.</strong>';
 }
