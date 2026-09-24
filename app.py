@@ -10946,6 +10946,10 @@ def dial_campaign_detail(cid):
                 'agent_username': nd.get('agent_username') or '',
                 'agent_full_name': nd.get('agent_full_name') or '',
             })
+        pending_n = db.execute(
+            "SELECT COUNT(*) AS n FROM dial_campaign_numbers "
+            "WHERE campaign_id = ? AND status = 'pending'", (cid,)).fetchone()
+        camp['pending'] = int(pending_n['n'])
         return jsonify({'campaign': camp, 'numbers': items})
 
     if request.method == 'PUT':
@@ -10991,7 +10995,7 @@ def dial_add_numbers(cid):
     # Gather target numbers: from a group (respecting contact scope) or raw list.
     targets = []  # list of (phone, contact_name, contact_id)
     if group_id:
-        where = ['g.id = ?']
+        where = ['c.group_id = ?']
         params = [group_id]
         scope_where, scope_params = _scope_where('c', user['id'], role)
         if scope_where != '1=1':
@@ -10999,8 +11003,7 @@ def dial_add_numbers(cid):
             params.extend(scope_params)
         rows = db.execute(
             "SELECT DISTINCT c.id AS contact_id, c.phone, c.name FROM contacts c "
-            "JOIN group_members gm ON gm.contact_id = c.id "
-            "JOIN groups g ON g.id = gm.group_id "
+            "JOIN contact_groups cg ON cg.id = c.group_id "
             "WHERE " + ' AND '.join(where),
             params).fetchall()
         for r in rows:
