@@ -315,6 +315,7 @@
     remoteStream = null;
     lastRemoteTrack = null;
     remoteAudio.muted = false;
+    notifyParent({ type: "webphone-idle" });
   }
 
   function showDialer() {
@@ -473,4 +474,51 @@
       }
     } catch (e) { /* corrupt storage */ }
   })();
+
+  // ---- Parent-window control (contact page click-to-call) ----------------
+  // The SPA embeds this page in an off-screen iframe; credentials are shared
+  // via same-origin localStorage, so this page auto-registers. The parent
+  // posts message commands; we post back status so the parent can toast.
+  function notifyParent(msg) {
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ source: "webphone", type: msg.type }, "*");
+      }
+    } catch (e) { /* noop */ }
+  }
+  if (window !== window.top) {
+    window.addEventListener("message", function (ev) {
+      var d = ev.data;
+      if (!d || d.source !== "app") { return; }
+      if (d.type === "webphone-dial") {
+        var target = String(d.number || "").replace(/[^0-9+*#]/g, "");
+        if (!target) { notifyParent({ type: "webphone-toast", message: "Número inválido", level: "error" }); return; }
+        if (!ua) {
+          notifyParent({ type: "webphone-not-registered" });
+          return;
+        }
+        if (currentSession) {
+          notifyParent({ type: "webphone-toast", message: "Ya hay una llamada en curso", level: "error" });
+          return;
+        }
+        try {
+          forceRemotePlay();
+          var s = ua.invite(target, { media: { render: { remote: remoteAudio } } });
+          attachSession(s);
+          notifyParent({ type: "webphone-dialing", number: target });
+          notifyParent({ type: "webphone-toast", message: "Llamando...", level: "info" });
+        } catch (e) {
+          notifyParent({ type: "webphone-toast", message: "Error al llamar: " + e.message, level: "error" });
+        }
+      } else if (d.type === "webphone-hangup") {
+        try {
+          if (currentSession) { currentSession.terminate(); }
+          resetCall();
+        } catch (e) { /* noop */ }
+        notifyParent({ type: "webphone-idle" });
+      } else if (d.type === "webphone-status") {
+        notifyParent({ type: "webphone-status", registered: !!(ua && ua.isConnected && ua.isConnected()) });
+      }
+    });
+  }
 })();

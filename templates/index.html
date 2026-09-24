@@ -240,7 +240,13 @@
         </div>
     </div>
 
+    <!-- Off-screen WebRTC softphone host: reuses the standalone phone page,
+         whose credentials are shared via same-origin localStorage. -->
+    <iframe id="webphone-frame" src="/static/phone/index.html"
+        style="position:fixed; left:-9999px; top:0; width:1px; height:1px; border:0; opacity:0; pointer-events:none;"
+        title="Teléfono Web" aria-hidden="true"></iframe>
+
     <script src="/static/js/mobile.js?v=20260915m103"></script>
-    <script src="/static/js/app.js?v=20260918m170"></script>
+    <script src="/static/js/app.js?v=webphone"></script>
 </body>
 </html>
