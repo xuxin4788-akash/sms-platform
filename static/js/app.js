@@ -29,6 +29,8 @@ const state = {
     records: { page: 1, perPage: 20, total: 0, totalPages: 0, status: '', dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE, search: '' },
     sendPhones: [],
     sendMode: 'manual',
+    dialPickerContacts: [],
+    dialPickerSelected: {},
 };
 
 // ============================================================
@@ -4717,7 +4719,8 @@ function renderDialWorkbench(camp, numbers) {
             '</div></div>' +
             (isTeamLead ? '<div class="card"><div class="card-header"><h2>Añadir números</h2></div><div class="card-body">' +
                 '<div class="form-group"><label>Desde un grupo</label><select id="dial-import-group" onchange="dialImportGroupChanged(this)"><option value="">-- Seleccione --</option>' + (window._dialGroups || []).map(function(g){return '<option value="'+g.id+'">'+escapeHtml(g.name)+' ('+g.contact_count+')</option>';}).join('') + '</select></div>' +
-                '<div class="form-group mt-2"><label>O pega números (uno por línea / comas)</label><textarea id="dial-import-numbers" rows="3" placeholder="5526 057 993, +527226452713, ..."></textarea></div>' +
+                '<button class="btn btn-secondary btn-sm mt-2" onclick="openDialContactPicker()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> Elegir contactos</button>' +
+                '<div class="form-group mt-3"><label>O pega números (uno por línea / comas)</label><textarea id="dial-import-numbers" rows="3" placeholder="5526 057 993, +527226452713, ..."></textarea></div>' +
                 '<div id="dial-import-error" style="display:none" class="alert alert-error"></div>' +
                 '<button class="btn btn-primary mt-2" onclick="importDialNumbers(' + camp.id + ')">Importar</button>' +
             '</div></div>' : '') +
@@ -4740,6 +4743,98 @@ async function showDialContactCard(cid) {
             if (oid) openDialCampaign(oid);
         };
     } catch (e) { showToast(e.message || 'Error al cargar contacto', 'error'); }
+}
+
+async function openDialContactPicker() {
+    try {
+        var data = await api('/api/contacts?per_page=1000&sort=newest');
+        state.dialPickerContacts = data.contacts || [];
+        state.dialPickerSelected = {};
+        showModal('Elegir contactos',
+            '<div class="form-group"><input type="text" id="dial-pick-search" placeholder="Buscar por nombre / teléfono / nota..." oninput="renderDialContactPicker()"></div>' +
+            '<div style="display:flex;gap:8px;margin-bottom:8px;"><label style="font-size:12px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="dial-pick-all" onchange="toggleAllDialContacts(this)"> Seleccionar todos</label></div>' +
+            '<div id="dial-pick-list" class="contact-select-list" style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:4px 8px;"></div>' +
+            '<div id="dial-pick-count" class="text-secondary text-sm" style="margin-top:8px;"></div>' +
+            '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button>' +
+            '<button type="button" class="btn btn-primary" onclick="appendDialContactSelection()">Añadir a la campaña</button></div>');
+        renderDialContactPicker();
+    } catch (e) { showToast(e.message || 'Error al cargar contactos', 'error'); }
+}
+
+function renderDialContactPicker() {
+    var list = document.getElementById('dial-pick-list');
+    if (!list) return;
+    var q = (document.getElementById('dial-pick-search') || {}).value || '';
+    q = q.trim().toLowerCase();
+    var contacts = state.dialPickerContacts || [];
+    var filtered = contacts.filter(function(c) {
+        if (!q) return true;
+        return ((c.name || '') + ' ' + (c.phone || '') + ' ' + (c.remark || '') + ' ' + (c.notes || '')).toLowerCase().indexOf(q) !== -1;
+    });
+    if (!filtered.length) { list.innerHTML = '<p class="text-secondary" style="padding:8px;">Ningun contacto coincide con la busqueda.</p>'; updateDialPickCount(); return; }
+    list.innerHTML = filtered.map(function(c) {
+        var checked = state.dialPickerSelected[c.id] ? ' checked' : '';
+        return '<label class="contact-select-item" style="border-bottom:1px solid var(--border);padding:6px 2px;">' +
+            '<div style="display:flex;align-items:flex-start;gap:8px;width:100%;">' +
+              '<input type="checkbox" data-id="' + c.id + '" onchange="onDialPickChange(this)"' + checked + ' style="margin-top:3px;">' +
+              '<div style="flex:1;min-width:0;">' +
+                '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><strong>' + escapeHtml(c.name || '(sin nombre)') + '</strong>' + contactRemarkBadge(c.remark) + '</div>' +
+                '<div class="text-secondary" style="font-size:12px;">' + escapeHtml(c.phone) + '</div>' +
+              '</div>' +
+            '</div>' +
+          '</label>';
+    }).join('');
+    updateDialPickCount();
+}
+
+function onDialPickChange(cb) {
+    var id = cb.getAttribute('data-id');
+    if (!id) return;
+    if (cb.checked) state.dialPickerSelected[id] = true; else delete state.dialPickerSelected[id];
+    var all = document.getElementById('dial-pick-all');
+    if (all) all.checked = (state.dialPickerContacts || []).every(function(c){ return !!state.dialPickerSelected[c.id]; });
+    updateDialPickCount();
+}
+
+function toggleAllDialContacts(cb) {
+    var q = (document.getElementById('dial-pick-search') || {}).value || '';
+    q = q.trim().toLowerCase();
+    var visible = (state.dialPickerContacts || []).filter(function(c){
+        if (!q) return true;
+        return ((c.name || '') + ' ' + (c.phone || '') + ' ' + (c.remark || '') + ' ' + (c.notes || '')).toLowerCase().indexOf(q) !== -1;
+    });
+    visible.forEach(function(c){ if (cb.checked) state.dialPickerSelected[c.id] = true; else delete state.dialPickerSelected[c.id]; });
+    // Reflect on the checkboxes we can reach.
+    document.querySelectorAll('#dial-pick-list input[data-id]').forEach(function(inp){
+        inp.checked = cb.checked;
+    });
+    updateDialPickCount();
+}
+
+function updateDialPickCount() {
+    var el = document.getElementById('dial-pick-count');
+    if (!el) return;
+    var n = Object.keys(state.dialPickerSelected || {}).length;
+    el.textContent = n ? (n + ' contacto(s) seleccionado(s).') : 'Ningun contacto seleccionado.';
+}
+
+function appendDialContactSelection() {
+    var ids = Object.keys(state.dialPickerSelected || {});
+    if (!ids.length) { showToast('Selecciona al menos un contacto', 'error'); return; }
+    var contacts = state.dialPickerContacts || [];
+    var numbers = ids.map(function(id){ return contacts.find(function(c){ return c.id == id; }); })
+        .filter(Boolean)
+        .map(function(c){ return String(c.phone || '').trim(); })
+        .filter(Boolean);
+    if (!numbers.length) { showToast('Los contactos seleccionados no tienen teléfono', 'error'); return; }
+    var ta = document.getElementById('dial-import-numbers');
+    if (!ta) return;
+    var existing = ta.value.trim();
+    var all = existing ? existing.split(/[,;，；\s]+/) : [];
+    numbers.forEach(function(n){ if (all.indexOf(n) === -1) all.push(n); });
+    ta.value = all.join(', ');
+    hideModal();
+    showToast(numbers.length + ' número(s) añadidos a la lista', 'ok');
 }
 
 async function takeDialNext(cid) {

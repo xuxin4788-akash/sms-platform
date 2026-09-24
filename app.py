@@ -11016,7 +11016,8 @@ def dial_add_numbers(cid):
             if d.get('phone'):
                 targets.append((d['phone'], d.get('name') or '', d.get('contact_id')))
     if isinstance(numbers, str):
-        numbers = [numbers]
+        import re as _re
+        numbers = [p for p in _re.split(r'[,;，；\s]+', numbers) if p.strip()]
     # Match pasted numbers against existing visible contacts (by last 10 digits)
     # so every queued number stays linked to a contact for the workbench card.
     match_scope, match_params = _scope_where('c', user['id'], role)
