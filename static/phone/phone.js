@@ -441,7 +441,7 @@
     // origin's autoplay permission; a live sink keeps NetEq from flushing).
     forceRemotePlay();
     try {
-      var session = ua.invite(target, {
+      var session = ua.invite("sip:" + target + "@" + DOMAIN, {
         media: { render: { remote: remoteAudio } }
       });
       attachSession(session);
@@ -523,7 +523,7 @@
         }
         try {
           forceRemotePlay();
-          var s = ua.invite(target, { media: { render: { remote: remoteAudio } } });
+          var s = ua.invite("sip:" + target + "@" + DOMAIN, { media: { render: { remote: remoteAudio } } });
           attachSession(s);
           notifyParent({ type: "webphone-dialing", number: target });
           notifyParent({ type: "webphone-toast", message: "Llamando...", level: "info" });
