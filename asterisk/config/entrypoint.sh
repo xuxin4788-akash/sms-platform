@@ -18,6 +18,10 @@ CONF=/etc/asterisk
 : "${PEER_SECRET:=}"
 : "${PEER_START:=1001}"
 : "${PEER_END:=1020}"
+# --- Predictive dialing / AMI (server-side originate) ---
+: "${AMI_ENABLED:=no}"
+: "${AMI_USER:=picD}"
+: "${AMI_SECRET:=}"
 
 if [ -z "$PEER_SECRET" ]; then
     echo "[entrypoint] ERROR: PEER_SECRET must be set in the environment (.env)." >&2
@@ -47,6 +51,16 @@ render "$SRC/modules.conf"     "$CONF/modules.conf"
 render "$SRC/http.conf"       "$CONF/http.conf"
 render "$SRC/rtp.conf"        "$CONF/rtp.conf"
 render "$SRC/extensions.conf" "$CONF/extensions.conf"
+if [ "${AMI_ENABLED}" = "1" ]; then
+    sed \
+        -e "s|__AMI_ENABLED__|yes|g" \
+        -e "s|__AMI_USER__|${AMI_USER}|g" \
+        -e "s|__AMI_SECRET__|${AMI_SECRET}|g" \
+        "$SRC/manager.conf" > "$CONF/manager.conf"
+    echo "[entrypoint] AMI enabled (user=${AMI_USER}) for predictive dialing"
+else
+    printf '[general]\nenabled = no\n' > "$CONF/manager.conf"
+fi
 
 # pjsip.conf = transport/trunk head + one block per generated peer.
 render "$SRC/pjsip.conf.head" "$CONF/pjsip.conf"

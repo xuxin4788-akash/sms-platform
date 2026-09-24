@@ -4732,7 +4732,10 @@ function renderDialWorkbench(camp, numbers) {
                                    '<button class="btn btn-primary btn-block mt-2" onclick="submitDialResult(' + camp.id + ')">Guardar resultado</button>' +
                                    '<button class="btn btn-secondary btn-block mt-2" onclick="releaseDialNumber(' + camp.id + ')">Descartar y siguiente</button>' +
                                '</div>')
-                            : '<button class="btn btn-primary btn-lg" onclick="takeDialNext(' + camp.id + ')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><path d="M5 3l-4 6 3 3 2-1-2 4 1 1 4-2-1 2 3 3 6-4-1-4-2 2-2-3 3-2 3-2z"/></svg> Siguiente número</button>')) +
+                            : '<div style="display:flex;flex-direction:column;gap:10px;align-items:center;width:100%;">' +
+                               '<button class="btn btn-primary btn-lg" style="width:100%;" onclick="takeDialNext(' + camp.id + ')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><path d="M5 3l-4 6 3 3 2-1-2 4 1 1 4-2-1 2 3 3 6-4-1-4-2 2-2-3 3-2 3-2z"/></svg> Siguiente número</button>' +
+                               '<button class="btn btn-secondary btn-lg" style="width:100%;" onclick="startPredictiveDial(' + camp.id + ')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> Modo predictivo (simultáneo 3)</button>' +
+                           '</div>')) +
                 '</div>' +
             '</div></div>' +
             (isTeamLead ? '<div class="card"><div class="card-header"><h2>Añadir números</h2></div><div class="card-body">' +
@@ -4865,6 +4868,70 @@ async function takeDialNext(cid) {
     }
 }
 
+// ---- Predictive dialing (并发预拨，N=3) --------------------------------------
+// Grabs a batch of pending numbers at once via /predictive, auto-dials them one
+// by one through the Web softphone (routed via the VOS3000 trunk), and when a
+// result is saved the not-picked losers are released back to the queue via
+// /predictive/release, so the platform keeps a "dial several, keep the answered".
+var _predictiveBatch = null; // { campaign, list:[numbers], idx }
+
+async function startPredictiveDial(cid) {
+    try {
+        var res = await api('/api/dial/campaigns/' + cid + '/predictive', { method: 'POST', body: JSON.stringify({ count: 3 }) });
+        var nums = res.numbers || [];
+        if (!nums.length) { showToast('No hay más números pendientes', 'error'); return; }
+        _predictiveBatch = { campaign: (await api('/api/dial/campaigns/' + cid)).campaign, list: nums, idx: 0 };
+        _dialCurrent = { campaign: _predictiveBatch.campaign, number: nums[0] };
+        renderDialWorkbench(_predictiveBatch.campaign, (await api('/api/dial/campaigns/' + cid)).numbers);
+        showToast('Lote predictivo: ' + nums.length + ' número(s) en cola, autoconexión', 'ok');
+        dialPredictiveCurrent();
+    } catch (e) {
+        showToast(e.message || 'No hay más números pendientes', 'error');
+    }
+}
+
+function dialPredictiveCurrent() {
+    if (!_predictiveBatch || !_predictiveBatch.list || !_dialCurrent || !_dialCurrent.number) return;
+    var statusEl = document.getElementById('dial-call-status');
+    var phone = _dialCurrent.number.phone;
+    webphoneCall(null, phone);
+    _dialCallStart = Date.now();
+    if (statusEl) statusEl.innerHTML = '<strong>Marca predictiva a ' + escapeHtml(phone) + '...</strong> Via telefono web (linea VOS3000).';
+    startDialCallTimer();
+}
+
+function nextPredictiveNumber() {
+    if (!_predictiveBatch || !_predictiveBatch.list) return;
+    var cid = _predictiveBatch.campaign.id;
+    _predictiveBatch.idx++;
+    var nums = _predictiveBatch.list;
+    if (_predictiveBatch.idx >= nums.length) {
+        stopDialCallTimer();
+        showToast('Lote predictivo completado', 'ok');
+        _predictiveBatch = null;
+        _dialCurrent = null;
+        openDialCampaign(cid);
+        return;
+    }
+    var next = nums[_predictiveBatch.idx];
+    _dialCurrent = { campaign: { id: cid, name: (_predictiveBatch.campaign.name || ''), status: 'active' }, number: next };
+    renderDialWorkbench(_predictiveBatch.campaign, []);
+    dialPredictiveCurrent();
+}
+
+async function releasePredictiveLosers(cid, keepId) {
+    try {
+        if (!_predictiveBatch || !_predictiveBatch.list) return;
+        var losers = _predictiveBatch.list
+            .filter(function(n){ return n.id != keepId; })
+            .map(function(n){ return n.id; });
+        if (losers.length) {
+            await api('/api/dial/campaigns/' + cid + '/predictive/release', { method: 'POST', body: JSON.stringify({ nids: losers }) });
+        }
+    } catch (e) { /* non-fatal */ }
+    _predictiveBatch = null;
+}
+
 // One-tap "next number" for a plain agent from the queue card: picks the first
 // active campaign within their scope that still has pending numbers.
 async function takeMyNext() {
@@ -4895,8 +4962,12 @@ function renderDialCallControls() {
             '<button class="btn btn-primary btn-block mt-2" onclick="submitDialResult(' + (_dialCurrent.campaign ? _dialCurrent.campaign.id : 0) + ')">Guardar resultado</button>' +
             '<button class="btn btn-secondary btn-block mt-2" onclick="releaseDialNumber(' + (_dialCurrent.campaign ? _dialCurrent.campaign.id : 0) + ')">Descartar y siguiente</button>' +
         '</div>';
-    // Auto-trigger the Web call.
-    dialCallFromWeb();
+    // Auto-trigger the Web call (predictive auto-dials; manual keeps a button).
+    if (_predictiveBatch) {
+        dialPredictiveCurrent();
+    } else {
+        dialCallFromWeb();
+    }
 }
 
 var _dialCallTimer = null;
@@ -4939,7 +5010,15 @@ function hangupDialCall() {
 
 function releaseDialNumber(cid) {
     if (_dialCurrent && _dialCurrent.number) {
+        var keepId = _dialCurrent.number.id;
         submitDialResult(cid, true).then(function() {
+            if (_predictiveBatch) {
+                releasePredictiveLosers(cid, keepId).then(function() {
+                    _dialCurrent = null;
+                    nextPredictiveNumber();
+                });
+                return;
+            }
             _dialCurrent = null;
             openDialCampaign(cid);
         });
@@ -4962,6 +5041,13 @@ async function submitDialResult(cid, forceNext) {
         if (forceNext) return true;
         showToast('Resultado guardado', 'ok');
         _dialCurrent = null;
+        if (_predictiveBatch) {
+            var cur = _predictiveBatch.list[_predictiveBatch.idx];
+            var keepId = cur ? cur.id : null;
+            await releasePredictiveLosers(cid, keepId);
+            nextPredictiveNumber();
+            return true;
+        }
         openDialCampaign(cid);
         return true;
     } catch (e) {

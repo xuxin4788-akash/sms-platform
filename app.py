@@ -11199,6 +11199,94 @@ def dial_number_result(cid, nid):
     return jsonify({'message': 'Resultado guardado'})
 
 
+DIAL_PREDICTIVE_DEFAULT = 3   # default concurrent pre-dials per batch
+
+
+@app.route('/api/dial/campaigns/<int:cid>/predictive', methods=['POST'])
+@login_required
+def dial_predictive_next(cid):
+    """Predictive mode: atomically hand up to N pending numbers to the agent.
+
+    Unlike the manual 'next' (one number at a time), this returns a small batch
+    that the Asterisk predictive context will dial *concurrently*. The caller
+    passes the batch numbers to Asterisk (server-side originate); whichever
+    answers first is bridged to the agent's WebRTC extension, the rest are
+    released back via /predictive/release.
+    """
+    db = get_db()
+    row = db.execute("SELECT * FROM dial_campaigns WHERE id = ?", (cid,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Campaña no encontrada'}), 404
+    camp = dict(row)
+    user = g.user
+    if camp.get('status') != 'active':
+        return jsonify({'error': 'La campaña no está activa'}), 400
+    try:
+        count = max(1, min(int((request.get_json(silent=True) or {}).get('count') or DIAL_PREDICTIVE_DEFAULT), 8))
+    except (TypeError, ValueError):
+        count = DIAL_PREDICTIVE_DEFAULT
+
+    # Release this agent's stale locks (crashed sessions).
+    db.execute(
+        "UPDATE dial_campaign_numbers SET status='pending', locked_by=NULL, locked_at=NULL "
+        "WHERE locked_by = ? AND status = 'calling'", (user['id'],))
+    db.commit()
+
+    cands = db.execute(
+        "SELECT id FROM dial_campaign_numbers "
+        "WHERE campaign_id = ? AND status = 'pending' ORDER BY id ASC LIMIT ?",
+        (cid, count)).fetchall()
+    if not cands:
+        return jsonify({'error': 'No hay más números pendientes', 'empty': True}), 404
+    nids = [c['id'] for c in cands]
+    qmarks = ','.join('?' * len(nids))
+    args = [user['id'], user['id']] + nids
+    db.execute(
+        "UPDATE dial_campaign_numbers SET status='calling', locked_by=?, locked_at=datetime('now'), agent_id=? "
+        "WHERE id IN (%s)" % qmarks, args)
+    db.commit()
+    recs = db.execute(
+        "SELECT id, contact_name, phone, contact_id FROM dial_campaign_numbers "
+        "WHERE id IN (%s) ORDER BY id ASC" % qmarks, nids).fetchall()
+    out = []
+    for r in recs:
+        d = dict(r)
+        d['contact_id'] = d.get('contact_id') or None
+        out.append(d)
+    return jsonify({'numbers': out, 'count': len(out)})
+
+
+@app.route('/api/dial/campaigns/<int:cid>/predictive/release', methods=['POST'])
+@login_required
+def dial_predictive_release(cid):
+    """Release numbers that were pre-dialed but lost/cancelled back to pending.
+
+    After the predictive batch resolves (one winner bridged to the agent), the
+    frontend/Asterisk returns the non-connected ids here so they can be retried.
+    """
+    data = request.get_json(silent=True) or {}
+    nids = [int(x) for x in (data.get('nids') or []) if str(x).isdigit()]
+    if not nids:
+        return jsonify({'error': 'nids requeridos'}), 400
+    db = get_db()
+    user = g.user
+    qmarks = ','.join('?' * len(nids))
+    # Only the locking agent (or an admin) may release these rows back to pending.
+    rows = db.execute(
+        "SELECT id, campaign_id, locked_by FROM dial_campaign_numbers WHERE id IN (%s)" % qmarks,
+        nids).fetchall()
+    mine = [r['id'] for r in rows
+            if r['campaign_id'] == cid and (user.get('role') == 'admin' or r.get('locked_by') == user['id'])]
+    if not mine:
+        return jsonify({'error': 'Nada que liberar'}), 400
+    qm = ','.join('?' * len(mine))
+    db.execute(
+        "UPDATE dial_campaign_numbers SET status='pending', locked_by=NULL, locked_at=NULL, agent_id=NULL "
+        "WHERE id IN (%s)" % qm, mine)
+    db.commit()
+    return jsonify({'released': len(mine)})
+
+
 @app.route('/api/dial/statistics', methods=['GET'])
 @login_required
 def dial_statistics():
