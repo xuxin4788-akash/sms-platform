@@ -1463,6 +1463,9 @@ if (window.addEventListener) {
             _webphoneReady = true;
             webphoneFlushPending();
         }
+        else if (d.type === 'webphone-debug') {
+            dbg('[iframe] ' + (d.message || ''));
+        }
         else if (d.type === 'webphone-status') {
             _webphoneReady = !!d.registered;
             if (_webphoneReady) { webphoneFlushPending(); }

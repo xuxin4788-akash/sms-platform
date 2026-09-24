@@ -16,16 +16,58 @@
   var timerStart = 0;
   var localMicStream = null;
 
+  // ---- Diagnostics bridge ------------------------------------------------
+  // Forward internal logs/errors from this (off-screen) iframe to the parent's
+  // floating debug card so a failed invite is visible without opening DevTools
+  // against the iframe. Defined before use; notifyParent is declared later but
+  // these helpers only call it asynchronously (hoisted function is available).
+  function plog(msg) {
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ source: "webphone", type: "webphone-debug", message: String(msg) }, "*");
+      }
+      console.log("[phone]", msg);
+    } catch (e) { /* noop */ }
+  }
+  window.addEventListener("error", function (ev) {
+    plog("window.error: " + (ev && ev.message) + " @ " + (ev && ev.filename) + ":" + (ev && ev.lineno));
+  });
+  window.addEventListener("unhandledrejection", function (ev) {
+    var r = ev && ev.reason;
+    plog("unhandledrejection: " + (r && (r.message || r.name) ? (r.name + " " + r.message) : String(r)));
+  });
+
+  function wirePcLog(pc) {
+    if (!pc || pc.__wpPcLogged) { return; }
+    pc.__wpPcLogged = true;
+    try {
+      pc.addEventListener("iceconnectionstatechange", function () {
+        plog("ICE state=" + pc.iceConnectionState);
+      });
+      pc.addEventListener("icegatheringstatechange", function () {
+        plog("ICE gathering=" + pc.iceGatheringState);
+      });
+      pc.addEventListener("signalingstatechange", function () {
+        plog("signaling state=" + pc.signalingState);
+      });
+    } catch (e) { /* noop */ }
+  }
+
   // Intercept getUserMedia so we can meter the EXACT mic stream that SIP.js
   // uses (reading a sender track into a new MediaStream does not carry level).
   if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
     var origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = function (constraints) {
+      plog("getUserMedia solicitado...");
       return origGetUserMedia(constraints).then(function (stream) {
         if (stream && stream.getAudioTracks && stream.getAudioTracks().length) {
           localMicStream = stream;
+          plog("microfono OK (" + stream.getAudioTracks().length + " pista(s))");
         }
         return stream;
+      }, function (err) {
+        plog("getUserMedia FALLO: " + (err && err.name) + " " + (err && err.message));
+        throw err;
       });
     };
   }
@@ -238,17 +280,21 @@
   // call. Every failure path is reported back to the parent so the dial never
   // gets stuck in a silent "calling" state.
   function startOutboundCall(rawTarget) {
+    plog("startOutboundCall entrada=\"" + rawTarget + "\" registered=" + registered + " ua=" + !!ua);
     var target = String(rawTarget == null ? "" : rawTarget).replace(/[^0-9+*#]/g, "");
     if (!target) {
       notifyParent({ type: "webphone-toast", message: "Número inválido", level: "error" });
+      plog("numero vacio/ invalido");
       return null;
     }
     if (!registered || !ua) {
+      plog("no registrado, aborto");
       notifyParent({ type: "webphone-not-registered" });
       return null;
     }
     // Release a stale session so it never blocks subsequent dials.
     if (currentSession) {
+      plog("sesion previa encontrada, la termino");
       try { currentSession.terminate(); } catch (e) { /* noop */ }
       currentSession = null;
     }
@@ -259,11 +305,14 @@
       var user = uri.charAt(0) === "+" ? uri.slice(1) : uri;
       uri = "sip:" + user + "@" + DOMAIN;
     }
+    plog("URI destino=" + uri + ", pido microfono...");
     forceRemotePlay();
     var s;
     try {
       s = ua.invite(uri, { media: { render: { remote: remoteAudio } } });
+      plog("ua.invite devolvio session=" + !!s);
     } catch (e) {
+      plog("ua.invite LANZO: " + e.name + " " + e.message);
       notifyParent({ type: "webphone-toast", message: "Error al llamar: " + e.message, level: "error" });
       notifyParent({ type: "webphone-idle" });
       return null;
@@ -279,6 +328,19 @@
     callBtn.disabled = true;
     callState.textContent = "Conectando...";
     forceRemotePlay();
+
+    // Surface PeerConnection / ICE state changes to the parent debug card.
+    try {
+      var sdh0 = session.sessionDescriptionHandler;
+      if (sdh0 && sdh0.peerConnection) { wirePcLog(sdh0.peerConnection); }
+      else {
+        // The PC may be created slightly later; retry once on the next tick.
+        setTimeout(function () {
+          var sdh1 = session.sessionDescriptionHandler;
+          if (sdh1 && sdh1.peerConnection) { wirePcLog(sdh1.peerConnection); }
+        }, 0);
+      }
+    } catch (e) { /* logging only */ }
 
     function bindLocalMedia() {
       if (localMicStream) {
