@@ -10889,15 +10889,20 @@ def dial_create_campaign():
         return jsonify({'error': 'Nombre de campaña requerido'}), 400
     user = g.user
     role = user.get('role')
-    if role == 'team_member' or (role not in ('admin', 'team_admin')):
-        return jsonify({'error': 'Solo Administradores pueden crear campañas'}), 403
     script = (data.get('script') or '').strip()
     country = normalize_country(data.get('country'))
     assigned_to = None
-    # team_admin may assign the campaign to a member under its management.
+    team_creator_id = None
     if role == 'team_admin':
+        # team_admin may assign the campaign to a member under its management.
         assigned_to = data.get('assigned_to') or user['id']
-    team_creator_id = user['id'] if role == 'team_admin' else None
+        team_creator_id = user['id']
+    elif role == 'team_member':
+        # Delegated: a regular agent may launch their own campaign. It is
+        # permanently assigned to them and scoped to their team so the leader
+        # (and admin) can still see it; they cannot assign it to anyone else.
+        assigned_to = user['id']
+        team_creator_id = user.get('team_creator_id')
     db = get_db()
     cur = db.execute(
         "INSERT INTO dial_campaigns (name, script, country, status, "

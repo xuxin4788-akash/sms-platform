@@ -4579,7 +4579,7 @@ async function renderDial(container) {
         container.innerHTML =
             '<div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">' +
                 '<h1 style="font-size:22px;font-weight:700;">Marcador Predictivo</h1>' +
-                (isTeamLead ? '<button class="btn btn-primary" onclick="openNewCampaign()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Nueva Campaña</button>' : '') +
+                '<button class="btn btn-primary" onclick="openNewCampaign()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Nueva Campaña</button>' +
             '</div>' +
             '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));margin:16px 0;">' +
                 '<div class="stat-card"><div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div><div class="stat-label">Campañas</div><div class="stat-value" style="font-size:22px;">' + stats.campaigns + '</div></div>' +
@@ -4662,7 +4662,10 @@ function dialResultOptions(selected) {
 
 function renderDialWorkbench(camp, numbers) {
     var container = document.getElementById('page-content');
-    var isTeamLead = state.user.role === 'admin' || state.user.role === 'team_admin';
+    // Who may manage this campaign: system/team admins, or the agent the
+    // campaign is assigned to (a delegated launch is auto-assigned to them).
+    var isTeamLead = state.user.role === 'admin' || state.user.role === 'team_admin'
+        || (camp.assigned_to && camp.assigned_to === state.user.id);
     var statusSel = '<select id="dial-status" onchange="updateDialCampaignStatus(this.value)" style="margin-right:8px;">' +
         '<option value="active"' + (camp.status === 'active' ? ' selected' : '') + '>Activa</option>' +
         '<option value="paused"' + (camp.status === 'paused' ? ' selected' : '') + '>Pausada</option>' +
