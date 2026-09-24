@@ -1000,6 +1000,11 @@ def init_db():
                     raise
             # Speed up dashboard SUM / group-by aggregation.
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_records_creator_segments ON sms_records(created_by, billed_segments)")
+        # Bounded contact-list aggregation: index the aggregation columns so the
+        # 180-day window GROUP BY on the large history tables stays cheap.
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_records_created_at ON sms_records(created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sms_records_phone ON sms_records(phone)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_voice_records_phone ON voice_records(phone)")
         # Widen the status CHECK constraint to allow 'delivered' (final delivery).
         cur.execute("""
             SELECT conname FROM pg_constraint
@@ -5730,10 +5735,24 @@ def list_contacts():
         rec_scope_voc = " WHERE vr.created_by = ? OR vr.created_by IN (SELECT id FROM users WHERE team_creator_id = ?)"
         rec_params = [session.get('user_id'), session.get('user_id')]
 
+    if get_db().db_type == 'postgres':
+        _win_sms = "sr.created_at >= CURRENT_TIMESTAMP - INTERVAL '180 days'"
+        _win_voc = "vr.created_at >= CURRENT_TIMESTAMP - INTERVAL '180 days'"
+    else:
+        _win_sms = "sr.created_at >= datetime('now','-180 days')"
+        _win_voc = "vr.created_at >= datetime('now','-180 days')"
+    # Bounded aggregation: the 180-day window keeps the GROUP BY on the
+    # large history tables indexed/bounded instead of a full-table scan.
+    _sms_cond, _voc_cond = _win_sms, _win_voc
+    if rec_scope_sms.strip():
+        _sms_cond = "(" + rec_scope_sms.strip().replace("WHERE", "", 1).strip() + ") AND (" + _win_sms + ")"
+    if rec_scope_voc.strip():
+        _voc_cond = "(" + rec_scope_voc.strip().replace("WHERE", "", 1).strip() + ") AND (" + _win_voc + ")"
+
     stats_join = (
-        f" LEFT JOIN (SELECT {sms_key} AS k, COUNT(*) AS n FROM sms_records sr{rec_scope_sms} GROUP BY k) sms_s "
+        f" LEFT JOIN (SELECT {sms_key} AS k, COUNT(*) AS n FROM sms_records sr WHERE {_sms_cond} GROUP BY k) sms_s "
         f"ON sms_s.k = {c_key}"
-        f" LEFT JOIN (SELECT {voc_key} AS k, COUNT(*) AS n, COALESCE(SUM(CASE WHEN vr.status='completed' THEN vr.duration ELSE 0 END),0) AS t FROM voice_records vr{rec_scope_voc} GROUP BY k) voc_s "
+        f" LEFT JOIN (SELECT {voc_key} AS k, COUNT(*) AS n, COALESCE(SUM(CASE WHEN vr.status='completed' THEN vr.duration ELSE 0 END),0) AS t FROM voice_records vr WHERE {_voc_cond} GROUP BY k) voc_s "
         f"ON voc_s.k = {c_key}"
     )
 

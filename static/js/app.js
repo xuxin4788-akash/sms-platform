@@ -1015,7 +1015,7 @@ async function handleAddContact(event) {
 
 async function showEditContactModal(id, onDone) {
     try {
-        var contactData = await api('/api/contacts?per_page=1000');
+        var contactData = await api('/api/contacts?per_page=1000&sort=newest');
         var groupsData = await api('/api/groups');
         var appsData = await api('/api/apps');
         var contact = contactData.contacts.find(function(c) { return c.id === id; });
@@ -1708,7 +1708,7 @@ function removePhone(index) {
 
 async function loadContactsForSelection() {
     try {
-        var data = await api('/api/contacts?per_page=1000');
+        var data = await api('/api/contacts?per_page=1000&sort=newest');
         var list = document.getElementById('contacts-select-list');
         if (list) {
             list.innerHTML = data.contacts.length === 0
@@ -1727,7 +1727,7 @@ async function loadGroupContacts(groupId) {
     var preview = document.getElementById('group-contacts-preview');
     if (!groupId) { preview.innerHTML = ''; state.sendPhones = []; return; }
     try {
-        var data = await api('/api/contacts?group_id=' + groupId + '&per_page=1000');
+        var data = await api('/api/contacts?group_id=' + groupId + '&per_page=1000&sort=newest');
         state.sendPhones = data.contacts.map(function(c) { return c.phone; });
         preview.innerHTML = '<span class="badge badge-blue">' + data.contacts.length + ' contactos seleccionados</span>';
     } catch (err) { preview.innerHTML = '<span class="text-secondary">' + err.message + '</span>'; }
@@ -4896,7 +4896,7 @@ async function loadVoiceContactsForSelection() {
     if (!list) return;
     list.innerHTML = '<p class="text-secondary">Cargando contactos...</p>';
     try {
-        var data = await api('/api/contacts?per_page=1000');
+        var data = await api('/api/contacts?per_page=1000&sort=newest');
         state.voiceCall.contactList = data.contacts || [];
         renderVoiceContactList();
     } catch (e) {
@@ -4978,7 +4978,7 @@ async function loadVoiceGroupContacts(groupId) {
     var preview = document.getElementById('voice-group-preview');
     if (!groupId) { if (preview) preview.textContent = ''; state.voiceCall.groupPhones = []; return; }
     try {
-        var data = await api('/api/contacts?group_id=' + groupId + '&per_page=1000');
+        var data = await api('/api/contacts?group_id=' + groupId + '&per_page=1000&sort=newest');
         var phones = (data.contacts || []).map(function(c){ return normalizePhone(c.phone); });
         state.voiceCall.groupPhones = phones;
         if (preview) preview.textContent = phones.length + ' contacto(s) en el grupo.';
@@ -5859,7 +5859,7 @@ async function loadEmailContactsForSelection() {
     if (!list) return;
     list.innerHTML = '<p class="text-secondary">Cargando contactos...</p>';
     try {
-        var data = await api('/api/contacts?per_page=1000');
+        var data = await api('/api/contacts?per_page=1000&sort=newest');
         state.emailSend.contactList = (data.contacts || []).filter(function(c) { return c.email && c.email.trim(); });
         renderEmailContactList();
     } catch (e) {
