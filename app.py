@@ -8602,6 +8602,7 @@ def check_sms_charset():
 # Daily auto-clear contacts (background thread)
 # ============================================================
 AUTO_CLEAR_LOCK_ID = 82347109
+SMS_RETENTION_LOCK_ID = 82347111
 
 # Contacts created by users with NO employee category are retained for this
 # many days, then deleted by the daily job. (Finite category windows always
@@ -8849,6 +8850,84 @@ def _auto_clear_loop():
         except Exception as exc:
             app.logger.warning('[auto-clear] loop error: %s', exc)
         time.sleep(30)
+
+
+# ============================================================
+# SMS records retention (optional, opt-in via SMS_RETENTION_DAYS)
+# ============================================================
+def run_sms_retention(triggered_by='scheduler'):
+    """Delete sms_records older than SMS_RETENTION_DAYS (opt-in).
+
+    This is DISABLED by default so old data is never removed unexpectedly.
+    Set env SMS_RETENTION_DAYS=N (N>0) to keep only the last N days of
+    sms_records and delete the rest. Voice/email records are untouched.
+    A cross-worker lock guarantees a single gunicorn worker cleans.
+    """
+    db = get_db()
+    days = int(os.environ.get('SMS_RETENTION_DAYS', '0') or 0)
+    if days <= 0:
+        return {'deleted': 0, 'retention_days': 0, 'enabled': False}
+    lock_acquired = False
+    try:
+        if get_db_type() == 'postgres':
+            cur = db.execute("SELECT pg_try_advisory_lock(?) AS got", (SMS_RETENTION_LOCK_ID,))
+            row = cur.fetchone()
+            got = row['got'] if isinstance(row, dict) else row[0]
+            lock_acquired = bool(got)
+        else:
+            db.execute("CREATE TABLE IF NOT EXISTS maintenance_locks (lock_name TEXT PRIMARY KEY, locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            db.execute("DELETE FROM maintenance_locks WHERE lock_name='sms_retention' AND locked_at < datetime('now', '-1 day')")
+            try:
+                db.execute("INSERT INTO maintenance_locks(lock_name) VALUES('sms_retention')")
+                db.commit()
+                lock_acquired = True
+            except Exception:
+                lock_acquired = False
+        if not lock_acquired:
+            app.logger.info('[sms-retention] skipped: another worker holds the lock')
+            return {'deleted': 0, 'retention_days': days, 'enabled': True, 'skipped': True}
+        if get_db_type() == 'postgres':
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            deleted = db.execute(
+                "DELETE FROM sms_records WHERE created_at < %s",
+                (cutoff,)
+            ).rowcount
+        else:
+            cutoff = f"datetime('now', '-{days} days')"
+            cur = db.execute(f"SELECT COUNT(*) AS n FROM sms_records WHERE created_at < {cutoff}")
+            row = cur.fetchone()
+            total = int(row['n'] if isinstance(row, dict) else row[0])
+            db.execute(f"DELETE FROM sms_records WHERE created_at < {cutoff}")
+            deleted = total
+        db.commit()
+        app.logger.info('[sms-retention] deleted %s rows older than %s days (%s)', deleted, days, triggered_by)
+        return {'deleted': deleted, 'retention_days': days, 'enabled': True}
+    except Exception as exc:
+        db.rollback()
+        app.logger.warning('[sms-retention] run failed: %s', exc)
+        return {'deleted': 0, 'retention_days': days, 'enabled': True, 'error': str(exc)}
+    finally:
+        if lock_acquired and get_db_type() == 'postgres':
+            try:
+                db.execute("SELECT pg_advisory_unlock(?)", (SMS_RETENTION_LOCK_ID,))
+                db.commit()
+            except Exception:
+                pass
+
+
+def sms_retention_loop():
+    """Background worker: delete old sms_records every 6 hours when enabled."""
+    app.logger.info('[sms-retention] background loop started')
+    time.sleep(30)
+    while True:
+        try:
+            with app.app_context():
+                days = int(os.environ.get('SMS_RETENTION_DAYS', '0') or 0)
+                if days > 0:
+                    run_sms_retention('scheduler')
+        except Exception as exc:
+            app.logger.warning('[sms-retention] loop error: %s', exc)
+        time.sleep(21600)  # every 6 hours
 
 
 @app.route('/api/config/auto-clear', methods=['GET'])
@@ -13281,6 +13360,11 @@ app.logger.info('SMS delivery-report worker thread started')
 _email_queue_thread = threading.Thread(target=email_queue_loop, name='email-queue', daemon=True)
 _email_queue_thread.start()
 app.logger.info('Email queue worker thread started')
+
+# Optional SMS retention worker (active only when SMS_RETENTION_DAYS>0).
+_retention_thread = threading.Thread(target=sms_retention_loop, name='sms-retention', daemon=True)
+_retention_thread.start()
+app.logger.info('SMS retention worker thread started')
 
 if __name__ == '__main__':
     port = int(os.environ.get('DEPLOY_RUN_PORT', 5000))
