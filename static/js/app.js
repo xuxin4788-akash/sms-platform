@@ -397,6 +397,14 @@ function closeModal(event) {
     if (event.target === document.getElementById('modal-overlay')) hideModal();
 }
 
+// Show an inline form error inside the element with the given id.
+function setAlert(elId, msg) {
+    var el = document.getElementById(elId);
+    if (!el) { showToast(msg, 'error'); return; }
+    el.textContent = msg;
+    el.style.display = 'block';
+}
+
 // ============================================================
 // Auth
 // ============================================================
@@ -4639,7 +4647,7 @@ async function createDialCampaign() {
     if (assign && assign.value) body.assigned_to = assign.value;
     try {
         var res = await api('/api/dial/campaigns', { method: 'POST', body: JSON.stringify(body) });
-        closeModal();
+        hideModal();
         renderDial(document.getElementById('page-content'));
         showToast('Campaña creada', 'ok');
     } catch (e) { setAlert('dial-c-error', e.message); }
@@ -4972,7 +4980,7 @@ function importDialNumbers(cid) {
     }
     api('/api/dial/campaigns/' + cid + '/numbers', { method: 'POST', body: JSON.stringify(body) })
         .then(function() {
-            closeModal();
+            hideModal();
             openDialCampaign(cid);
             showToast('Números importados', 'ok');
         })
