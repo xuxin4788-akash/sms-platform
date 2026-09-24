@@ -1352,17 +1352,19 @@ function webphoneCall(btn, name) {
     var phone = webphoneNormalize(rawPhone);
     dbg('click boton, numero="' + rawPhone + '" -> "' + phone + '"');
     if (!phone) { showToast('Numero invalido', 'error'); dbg('numero invalido'); return; }
-    // Toggle: if this button is mid-call, hang up instead of dialling again.
-    if (_webphoneActiveBtn === btn) {
+    // Toggle only applies to real on-page buttons (btn != null): if that specific
+    // button is mid-call, hang up instead of dialling again. Predictive dial
+    // calls webphoneCall(null, phone), so btn is null — it must ALWAYS dial.
+    if (btn !== null && _webphoneActiveBtn === btn) {
         dbg('toggle -> colgar');
         webphoneHangup();
         return;
     }
-    if (_webphoneActiveBtn) { showToast('Ya hay una llamada en curso (colgala antes)', 'error'); dbg('rechazado: ya hay llamada'); return; }
+    if (btn !== null && _webphoneActiveBtn) { showToast('Ya hay una llamada en curso (colgala antes)', 'error'); dbg('rechazado: ya hay llamada'); return; }
     var frame = webphoneFrame();
     if (!frame) { showToast('Telefono Web no disponible', 'error'); dbg('no se pudo crear iframe'); return; }
-    _webphoneActiveBtn = btn;
-    webphoneSetBtn(btn, true);
+    if (btn !== null) _webphoneActiveBtn = btn;
+    if (btn !== null) webphoneSetBtn(btn, true);
     showToast('Llamando por Teléfono Web...', 'info');
     webphoneShowCard(rawPhone || phone);
     if (_webphoneReady) {
