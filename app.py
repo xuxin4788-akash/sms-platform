@@ -542,6 +542,7 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
                 description TEXT DEFAULT '',
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
@@ -1084,6 +1085,10 @@ def init_db():
         if not pg_column_exists('contacts', 'email'):
             cur.execute("ALTER TABLE contacts ADD COLUMN email VARCHAR(255) DEFAULT ''")
 
+        # contact_groups migrations: created_by lets members validate ownership of a group.
+        if not pg_column_exists('contact_groups', 'created_by'):
+            cur.execute("ALTER TABLE contact_groups ADD COLUMN created_by INTEGER REFERENCES users(id) ON DELETE SET NULL")
+
         # sms_records migrations
         if not pg_column_exists('sms_records', 'msgid'):
             cur.execute("ALTER TABLE sms_records ADD COLUMN msgid VARCHAR(255) DEFAULT ''")
@@ -1368,6 +1373,7 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 description TEXT DEFAULT '',
+                created_by INTEGER,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -1764,6 +1770,12 @@ def init_db():
         # Migration: add created_by to contacts if missing (older SQLite DBs)
         try:
             db.execute("ALTER TABLE contacts ADD COLUMN created_by INTEGER")
+            db.commit()
+        except Exception:
+            pass
+        # Migration: add created_by to contact_groups if missing (older SQLite DBs)
+        try:
+            db.execute("ALTER TABLE contact_groups ADD COLUMN created_by INTEGER")
             db.commit()
         except Exception:
             pass
@@ -6261,7 +6273,8 @@ def create_group():
     if not name:
         return jsonify({'error': 'El nombre del grupo es requerido'}), 400
     db = get_db()
-    db.execute("INSERT INTO contact_groups (name, description) VALUES (?, ?)", (name, description))
+    db.execute("INSERT INTO contact_groups (name, description, created_by) VALUES (?, ?, ?)",
+               (name, description, session['user_id']))
     db.commit()
     return jsonify({'message': 'Grupo creado'}), 201
 
