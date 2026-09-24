@@ -11000,6 +11000,13 @@ def dial_add_numbers(cid):
     # Gather target numbers: from a group (respecting contact scope) or raw list.
     targets = []  # list of (phone, contact_name, contact_id)
     if group_id:
+        # Non-admins may only import from a group created by their own account.
+        if role != 'admin':
+            grp = db.execute(
+                "SELECT created_by FROM contact_groups WHERE id = ?",
+                (group_id,)).fetchone()
+            if not grp or grp['created_by'] != user['id']:
+                return jsonify({'error': 'Solo puedes usar tus propios grupos'}), 403
         where = ['c.group_id = ?']
         params = [group_id]
         scope_where, scope_params = _scope_where('c', user['id'], role)

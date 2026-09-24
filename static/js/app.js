@@ -4565,7 +4565,10 @@ async function renderDial(container) {
             api('/api/dial/campaigns'),
             api('/api/groups')
         ]);
-        window._dialGroups = groupsData.groups || [];
+        window._dialGroups = (groupsData.groups || []).filter(function(g) {
+            // Each agent may only pick from groups created by their own account.
+            return state.user.role === 'admin' || g.created_by === state.user.id;
+        });
         loadDialUsers();
         var isTeamLead = state.user.role === 'admin' || state.user.role === 'team_admin';
         var rows = campaigns.campaigns.map(function(c) {
