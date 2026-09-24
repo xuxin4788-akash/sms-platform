@@ -4556,6 +4556,7 @@ async function renderDial(container) {
             api('/api/groups')
         ]);
         window._dialGroups = groupsData.groups || [];
+        loadDialUsers();
         var isTeamLead = state.user.role === 'admin' || state.user.role === 'team_admin';
         var rows = campaigns.campaigns.map(function(c) {
             var rate = c.dialed ? Math.round(c.answered / c.dialed * 100) : 0;
@@ -4606,17 +4607,13 @@ function openNewCampaign() {
     var assignOpts = (window._dialUsers || []).map(function(u) {
         return '<option value="' + u.id + '">' + escapeHtml(u.full_name || u.username) + '</option>';
     }).join('');
-    modal.innerHTML =
-        '<div class="modal-content" style="max-width:560px;">' +
-            '<div class="modal-header"><h2>Nueva Campaña de Marcación</h2><button class="modal-close" onclick="closeModal()">×</button></div>' +
-            '<div class="form-group"><label>Nombre de la campaña *</label><input type="text" id="dial-c-name" placeholder="Ej: Bienvenida Clientes"></div>' +
-            '<div class="form-group mt-3"><label>País</label><select id="dial-c-country"><option value="">General</option>' + countryOpts + '</select></div>' +
-            (state.user.role === 'team_admin' ? '<div class="form-group mt-3"><label>Asignar a (agente)</label><select id="dial-c-assign"><option value="">Todos los agentes del equipo</option>' + assignOpts + '</select></div>' : '') +
-            '<div class="form-group mt-3"><label>Guion sugerido (opcional)</label><textarea id="dial-c-script" rows="4" placeholder="Hola {nombre}, le llamamos para..."></textarea></div>' +
-            '<div id="dial-c-error" class="alert alert-error" style="display:none;"></div>' +
-            '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;"><button class="btn btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="createDialCampaign()">Crear</button></div>' +
-        '</div>';
-    showModal();
+    showModal('Nueva Campaña de Marcación',
+        '<div class="form-group"><label>Nombre de la campaña *</label><input type="text" id="dial-c-name" placeholder="Ej: Bienvenida Clientes"></div>' +
+        '<div class="form-group mt-3"><label>País</label><select id="dial-c-country"><option value="">General</option>' + countryOpts + '</select></div>' +
+        (state.user.role === 'team_admin' ? '<div class="form-group mt-3"><label>Asignar a (agente)</label><select id="dial-c-assign"><option value="">Todos los agentes del equipo</option>' + assignOpts + '</select></div>' : '') +
+        '<div class="form-group mt-3"><label>Guion sugerido (opcional)</label><textarea id="dial-c-script" rows="4" placeholder="Hola {nombre}, le llamamos para..."></textarea></div>' +
+        '<div id="dial-c-error" class="alert alert-error" style="display:none;"></div>' +
+        '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="button" class="btn btn-primary" onclick="createDialCampaign()">Crear</button></div>');
 }
 
 async function loadDialUsers() {
