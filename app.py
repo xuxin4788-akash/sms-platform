@@ -877,8 +877,28 @@ def init_db():
             return cur.fetchone() is not None
 
         def pg_table_exists(table):
-            cur.execute("SELECT 1 FROM information_schema.tables WHERE table_name=%s", (table,))
+            cur.execute("SELECT 1 FROM information_schema.tables WHERE table_name=%s" , (table,))
             return cur.fetchone() is not None
+
+        # Backfill columns on dial tables created before locking was introduced,
+        # otherwise the next-number UPDATE fails with "column locked_by does not
+        # exist" -> HTTP 500 on production PostgreSQL.
+        for _col, _ddl in (
+            ('locked_by', "ALTER TABLE dial_campaign_numbers ADD COLUMN locked_by INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+            ('locked_at', "ALTER TABLE dial_campaign_numbers ADD COLUMN locked_at TIMESTAMP"),
+            ('note', "ALTER TABLE dial_campaign_numbers ADD COLUMN note VARCHAR(500) NOT NULL DEFAULT ''"),
+            ('duration', "ALTER TABLE dial_campaign_numbers ADD COLUMN duration INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if not pg_column_exists('dial_campaign_numbers', _col):
+                cur.execute(_ddl)
+        for _col, _ddl in (
+            ('team_creator_id', "ALTER TABLE dial_campaigns ADD COLUMN team_creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+            ('assigned_to', "ALTER TABLE dial_campaigns ADD COLUMN assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+            ('created_by', "ALTER TABLE dial_campaigns ADD COLUMN created_by INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+            ('updated_at', "ALTER TABLE dial_campaigns ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT NOW()"),
+        ):
+            if not pg_column_exists('dial_campaigns', _col):
+                cur.execute(_ddl)
 
         # user_categories (clasificacion de empleados + retencion de contactos)
         if not pg_table_exists('user_categories'):
