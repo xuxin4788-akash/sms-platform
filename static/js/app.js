@@ -1247,7 +1247,10 @@ async function dialZoiper(phone, name) {
 // can run while the user browses any page of the SPA.
 function webphoneFrame() {
     var f = document.getElementById('webphone-frame');
-    if (f) { return f; }
+    if (f) {
+      if (!f.__wpLoadHooked) { f.__wpLoadHooked = true; f.addEventListener('load', webphoneOnFrameLoaded); }
+      return f;
+    }
     // The iframe lives in index.html (inside the app image), but to avoid
     // depending on an image rebuild we create it here on demand. Static
     // assets are served directly by nginx from the host ./static mount.
@@ -1260,6 +1263,8 @@ function webphoneFrame() {
       f.title = 'Teléfono Web';
       f.setAttribute('aria-hidden', 'true');
       f.style.cssText = 'position:fixed; left:-9999px; top:0; width:1px; height:1px; border:0; opacity:0; pointer-events:none;';
+      f.__wpLoadHooked = true;
+      f.addEventListener('load', webphoneOnFrameLoaded);
       document.body.appendChild(f);
     } catch (e) { return null; }
     return f;
@@ -1267,6 +1272,44 @@ function webphoneFrame() {
 var _webphoneActiveBtn = null;
 var _webphoneReady = false;
 var _webphonePending = [];
+var _webphoneLoaded = false;
+
+// ---- Floating diagnostic card ------------------------------------------
+// Records each handshake step so failures are visible without DevTools.
+function webphoneEnsureDebug() {
+    var box = document.getElementById('webphone-debug');
+    if (box) { return box; }
+    try {
+        box = document.createElement('div');
+        box.id = 'webphone-debug';
+        box.style.cssText = 'position:fixed; right:12px; bottom:12px; z-index:99999; width:300px; max-height:220px; overflow:auto; background:rgba(15,23,42,.94); color:#E2E8F0; font:11px/1.5 ui-monospace,Menlo,Consolas,monospace; border-radius:8px; padding:8px; box-shadow:0 8px 24px rgba(0,0,0,.35);';
+        var head = document.createElement('div');
+        head.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; color:#93C5FD;';
+        head.innerHTML = '<span>WebPhone debug</span>';
+        var cls = document.createElement('button');
+        cls.textContent = 'x'; cls.style.cssText = 'background:none;border:0;color:#94A3B8;cursor:pointer;font-size:12px;';
+        cls.onclick = function () { box.style.display = 'none'; };
+        head.appendChild(cls);
+        var log = document.createElement('div'); log.id = 'webphone-debug-log';
+        box.appendChild(head); box.appendChild(log);
+        document.body.appendChild(box);
+    } catch (e) { /* noop */ }
+    return box;
+}
+function dbg(msg) {
+    try {
+        webphoneEnsureDebug();
+        var log = document.getElementById('webphone-debug-log');
+        if (!log) { return; }
+        var line = document.createElement('div');
+        var t = new Date();
+        line.textContent = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2) + ':' + ('0' + t.getSeconds()).slice(-2) + '  ' + msg;
+        log.appendChild(line);
+        while (log.childNodes.length > 60) { log.removeChild(log.firstChild); }
+        log.scrollTop = log.scrollHeight;
+    } catch (e) { /* noop */ }
+}
+
 function webphoneSetBtn(btn, active) {
     if (!btn) { return; }
     btn.style.color = active ? '#F59E0B' : '#6366F1';
@@ -1274,32 +1317,39 @@ function webphoneSetBtn(btn, active) {
 }
 function webphonePost(msg) {
     var frame = webphoneFrame();
-    if (!frame || !frame.contentWindow) { showToast('Telefono Web no disponible', 'error'); return false; }
+    if (!frame || !frame.contentWindow) { dbg('post FALLO: sin iframe'); showToast('Telefono Web no disponible', 'error'); return false; }
     frame.contentWindow.postMessage(msg, '*');
+    dbg('-> envio ' + msg.type + (msg.number ? (' ' + msg.number) : ''));
     return true;
 }
-function webphoneDial(phone) {
-    if (!_webphoneReady) { _webphonePending.push(phone); return; }
-    webphonePost({ source: 'app', type: 'webphone-dial', number: phone });
+function webphoneFlushPending() {
+    if (!_webphoneReady) { return; }
+    var q = _webphonePending; _webphonePending = [];
+    q.forEach(function (n) { webphonePost({ source: 'app', type: 'webphone-dial', number: n }); });
 }
 function webphoneCall(btn, name) {
     var phone = btn ? String(btn.getAttribute('data-phone') || '').replace(/[^\d+]/g, '') : '';
-    if (!phone) { showToast('Numero invalido', 'error'); return; }
+    dbg('click boton, numero="' + (btn ? btn.getAttribute('data-phone') : '') + '" -> "' + phone + '"');
+    if (!phone) { showToast('Numero invalido', 'error'); dbg('numero invalido'); return; }
     // Toggle: if this button is mid-call, hang up instead of dialling again.
     if (_webphoneActiveBtn === btn) {
+        dbg('toggle -> colgar');
         webphoneHangup();
         return;
     }
-    if (_webphoneActiveBtn) { showToast('Ya hay una llamada en curso (colgala antes)', 'error'); return; }
+    if (_webphoneActiveBtn) { showToast('Ya hay una llamada en curso (colgala antes)', 'error'); dbg('rechazado: ya hay llamada'); return; }
     var frame = webphoneFrame();
-    if (!frame) { showToast('Telefono Web no disponible', 'error'); return; }
+    if (!frame) { showToast('Telefono Web no disponible', 'error'); dbg('no se pudo crear iframe'); return; }
     _webphoneActiveBtn = btn;
     webphoneSetBtn(btn, true);
     showToast('Llamando por Teléfono Web...', 'info');
-    // Drive the iframe; if it is not ready yet the dial is queued and flushed
-    // when the phone page reports registration/status.
-    if (_webphoneReady) { webphonePost({ source: 'app', type: 'webphone-dial', number: phone }); }
-    else { _webphonePending.push(phone); webphonePost({ source: 'app', type: 'webphone-status' }); }
+    if (_webphoneReady) {
+        webphonePost({ source: 'app', type: 'webphone-dial', number: phone });
+    } else {
+        _webphonePending.push(phone);
+        dbg('no listo; encolado y consulto estado (loaded=' + _webphoneLoaded + ')');
+        webphonePost({ source: 'app', type: 'webphone-status' });
+    }
     // Fallback: if the iframe never answers, reset button after 2 min.
     setTimeout(function () { if (_webphoneActiveBtn === btn) { _webphoneActiveBtn = null; webphoneSetBtn(btn, false); } }, 120000);
 }
@@ -1316,17 +1366,14 @@ if (window.addEventListener) {
     window.addEventListener('message', function (ev) {
         var d = ev.data;
         if (!d || d.source !== 'webphone') { return; }
+        dbg('<- recibo ' + d.type + (d.registered !== undefined ? (' registered=' + d.registered) : '') + (d.cause ? (' cause=' + d.cause) : ''));
         if (d.type === 'webphone-registered') {
             _webphoneReady = true;
-            var q = _webphonePending; _webphonePending = [];
-            q.forEach(function (n) { webphonePost({ source: 'app', type: 'webphone-dial', number: n }); });
+            webphoneFlushPending();
         }
         else if (d.type === 'webphone-status') {
             _webphoneReady = !!d.registered;
-            if (_webphoneReady) {
-                var q2 = _webphonePending; _webphonePending = [];
-                q2.forEach(function (n) { webphonePost({ source: 'app', type: 'webphone-dial', number: n }); });
-            }
+            if (_webphoneReady) { webphoneFlushPending(); }
         }
         else if (d.type === 'webphone-dialing') { /* button already lit */ }
         else if (d.type === 'webphone-idle') { webphoneReset(); }
@@ -1345,6 +1392,19 @@ if (window.addEventListener) {
             showToast(d.message || '', d.level === 'error' ? 'error' : (d.level === 'info' ? 'info' : 'success'));
         }
     });
+}
+
+// Probe registration state shortly after the iframe finishes loading, and
+// retry a few times (the phone page auto-registers asynchronously).
+function webphoneOnFrameLoaded() {
+    _webphoneLoaded = true;
+    dbg('iframe cargado');
+    var tries = 0;
+    var iv = setInterval(function () {
+        tries++;
+        webphonePost({ source: 'app', type: 'webphone-status' });
+        if (_webphoneReady || tries >= 8) { clearInterval(iv); }
+    }, 700);
 }
 
 // ============================================================
