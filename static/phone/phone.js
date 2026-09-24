@@ -233,6 +233,45 @@
     } catch (e) { /* noop */ }
   }
 
+  /* ---------------- Unified outbound call ---------------- */
+  // Clears any stale session, builds an explicit sip target URI and starts the
+  // call. Every failure path is reported back to the parent so the dial never
+  // gets stuck in a silent "calling" state.
+  function startOutboundCall(rawTarget) {
+    var target = String(rawTarget == null ? "" : rawTarget).replace(/[^0-9+*#]/g, "");
+    if (!target) {
+      notifyParent({ type: "webphone-toast", message: "Número inválido", level: "error" });
+      return null;
+    }
+    if (!registered || !ua) {
+      notifyParent({ type: "webphone-not-registered" });
+      return null;
+    }
+    // Release a stale session so it never blocks subsequent dials.
+    if (currentSession) {
+      try { currentSession.terminate(); } catch (e) { /* noop */ }
+      currentSession = null;
+    }
+    // Build a full SIP URI. A bare number is parsed as host by SIP.js 0.15 and
+    // the INVITE is never transmitted. If it already looks like a URI, keep it.
+    var uri = target;
+    if (!/^sips?:/i.test(uri)) {
+      var user = uri.charAt(0) === "+" ? uri.slice(1) : uri;
+      uri = "sip:" + user + "@" + DOMAIN;
+    }
+    forceRemotePlay();
+    var s;
+    try {
+      s = ua.invite(uri, { media: { render: { remote: remoteAudio } } });
+    } catch (e) {
+      notifyParent({ type: "webphone-toast", message: "Error al llamar: " + e.message, level: "error" });
+      notifyParent({ type: "webphone-idle" });
+      return null;
+    }
+    attachSession(s);
+    return s;
+  }
+
   /* ---------------- Session wiring ---------------- */
   function attachSession(session) {
     currentSession = session;
@@ -433,21 +472,12 @@
   });
 
   callBtn.addEventListener("click", function () {
-    var target = numberInput.value.replace(/[^0-9+*#]/g, "");
-    if (!ua || !target) { callState.textContent = "Ingresa un número"; return; }
-    callState.textContent = "Marcando...";
-    // Start the <audio> sink inside this gesture so it is already "playing"
-    // by the time SIP.js assigns the remote MediaStream (Chrome keeps the
-    // origin's autoplay permission; a live sink keeps NetEq from flushing).
+    var target = numberInput.value;
+    if (!target || !String(target).replace(/[^0-9+*#]/g, "")) { callState.textContent = "Ingresa un número"; return; }
+    // Force the <audio> sink to play inside this gesture (autoplay unlock).
     forceRemotePlay();
-    try {
-      var session = ua.invite("sip:" + target + "@" + DOMAIN, {
-        media: { render: { remote: remoteAudio } }
-      });
-      attachSession(session);
-    } catch (e) {
-      callState.textContent = "Error: " + e.message;
-    }
+    var session = startOutboundCall(target);
+    if (session) { callState.textContent = "Marcando..."; }
   });
 
   hangupBtn.addEventListener("click", function () {
@@ -511,25 +541,10 @@
       var d = ev.data;
       if (!d || d.source !== "app") { return; }
       if (d.type === "webphone-dial") {
-        var target = String(d.number || "").replace(/[^0-9+*#]/g, "");
-        if (!target) { notifyParent({ type: "webphone-toast", message: "Número inválido", level: "error" }); return; }
-        if (!registered || !ua) {
-          notifyParent({ type: "webphone-not-registered" });
-          return;
-        }
-        if (currentSession) {
-          notifyParent({ type: "webphone-toast", message: "Ya hay una llamada en curso", level: "error" });
-          return;
-        }
-        try {
-          forceRemotePlay();
-          var s = ua.invite("sip:" + target + "@" + DOMAIN, { media: { render: { remote: remoteAudio } } });
-          attachSession(s);
-          notifyParent({ type: "webphone-dialing", number: target });
-          notifyParent({ type: "webphone-toast", message: "Llamando...", level: "info" });
-        } catch (e) {
-          notifyParent({ type: "webphone-toast", message: "Error al llamar: " + e.message, level: "error" });
-          notifyParent({ type: "webphone-idle" });
+        var s = startOutboundCall(d.number);
+        if (s) {
+          var tn = String(d.number || "").replace(/[^0-9+*#]/g, "");
+          notifyParent({ type: "webphone-dialing", number: tn });
         }
       } else if (d.type === "webphone-hangup") {
         try {
