@@ -21,7 +21,7 @@ const state = {
     user: null,
     currentPage: 'dashboard',
     dashboard: { dateFrom: '', dateTo: '', userId: '', users: null, reportTz: 'carrier' },
-    myTeam: { dateFrom: '', dateTo: '', userId: '' },
+    myTeam: { dateFrom: '', dateTo: '', userId: '', tab: 'sms' },
     allTeams: { dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE },
     userUsage: { dateFrom: '', dateTo: '' },
     contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '', remark: '',
@@ -3268,7 +3268,7 @@ async function renderMyTeam(container) {
             var members = myTeam.members || [];
             var roleLabels = { admin: 'Administrador', team_admin: 'Admin. de Equipo', team_member: 'Miembro' };
             var memberRows = members.length === 0
-                ? '<tr><td colspan="13" class="text-center text-secondary" style="padding:24px;">Sin cuentas</td></tr>'
+                ? '<tr><td colspan="10" class="text-center text-secondary" style="padding:24px;">Sin cuentas</td></tr>'
                 : members.map(function(mem) {
                     var rate = Number(mem.rate) || 0;
                     var rateBadge = rate >= 90 ? 'badge-green' : (rate >= 70 ? 'badge-orange' : 'badge-red');
@@ -3283,14 +3283,44 @@ async function renderMyTeam(container) {
                         '<td style="text-align:right;color:var(--danger);">' + (mem.failed || 0) + '</td>' +
                         '<td style="text-align:right;color:var(--primary);font-weight:600;" title="Precio por SMS facturado (por pais)">' + formatPrice(Number(mem.unit_price) || 0) + '</td>' +
                         '<td style="text-align:right;color:var(--primary);font-weight:600;">' + formatCost(Number(mem.cost) || 0) + '</td>' +
-                        '<td style="text-align:right;">' + (mem.calls || 0) + '</td>' +
-                        '<td style="text-align:right;color:var(--success);">' + (mem.answered || 0) + '</td>' +
-                        '<td style="text-align:right;" class="text-secondary text-sm">' + (mem.talk_time ? formatDuration(mem.talk_time) : '0s') + '</td>' +
                         '<td style="text-align:right;"><span class="badge ' + rateBadge + '">' + rate + '%</span></td>' +
                         '<td class="text-secondary text-sm">' + (mem.last_activity ? timeAgo(mem.last_activity) : 'Sin actividad') + '</td>' +
                         '</tr>';
                 }).join('');
-            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Datos por Cuenta</h3><span class="badge badge-blue header-badge">' + members.length + ' cuentas</span></div><div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;" title="SMS facturados por segmento">SMS Fact.</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;" title="Precio por SMS facturado (por pais)">Precio</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Llamadas</th><th style="text-align:right;">Conectadas</th><th style="text-align:right;">Tiempo</th><th style="text-align:right;">Exito</th><th>Ultima Actividad</th></tr></thead><tbody>' + memberRows + '</tbody></table></div></div>';
+            // Phone (telefono web) per-account rows: dialed, connected, duration.
+            var phoneRows = members.length === 0
+                ? '<tr><td colspan="8" class="text-center text-secondary" style="padding:24px;">Sin cuentas</td></tr>'
+                : members.map(function(mem) {
+                    var pcalls = Number(mem.calls) || 0;
+                    var panswered = Number(mem.answered) || 0;
+                    var ptime = Number(mem.talk_time) || 0;
+                    var prate = pcalls > 0 ? (panswered / pcalls * 100).toFixed(1) : '0.0';
+                    var prateBadge = prate >= 80 ? 'badge-green' : (prate >= 50 ? 'badge-orange' : 'badge-red');
+                    var nameCell = '<strong>' + escapeHtml(mem.full_name || mem.username) + '</strong>' +
+                        (mem.full_name ? '<div style="font-size:12px;color:#64748B;margin-top:2px;">' + escapeHtml(mem.username) + '</div>' : '');
+                    return '<tr>' +
+                        '<td>' + nameCell + '</td>' +
+                        '<td><span class="badge badge-blue">' + (roleLabels[mem.role] || mem.role) + '</span></td>' +
+                        '<td style="text-align:right;">' + pcalls + '</td>' +
+                        '<td style="text-align:right;color:var(--success);">' + panswered + '</td>' +
+                        '<td style="text-align:right;color:#2563EB;font-weight:600;">' + (ptime ? formatDuration(ptime) : '0s') + '</td>' +
+                        '<td style="text-align:right;"><span class="badge ' + prateBadge + '">' + prate + '%</span></td>' +
+                        '<td style="text-align:right;"><span class="badge badge-primary">' + (mem.extnumber || '—') + '</span></td>' +
+                        '<td style="text-align:right;">' + (mem.calls ? mem.answered + '/' + mem.calls : '—') + '</td>' +
+                        '</tr>';
+                }).join();
+            if (typeof state.myTeam.tab !== 'string') state.myTeam.tab = 'sms';
+            var smsTabBtn = state.myTeam.tab === 'sms' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+            var phTabBtn = state.myTeam.tab === 'phone' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+            html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Datos por Cuenta</h3><span class="badge badge-blue header-badge">' + members.length + ' cuentas</span>' +
+                '<div style="margin-left:auto;display:flex;gap:8px;">' +
+                    '<button class="' + smsTabBtn + '" onclick="setMyTeamTab(1)">SMS</button>' +
+                    '<button class="' + phTabBtn + '" onclick="setMyTeamTab(2)">Telefono Web</button>' +
+                '</div></div>' +
+                (state.myTeam.tab === 'phone'
+                    ? '<div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Llamadas</th><th style="text-align:right;">Conectadas</th><th style="text-align:right;">Tiempo</th><th style="text-align:right;">Exito</th><th style="text-align:right;">Extension</th><th style="text-align:right;">Conect/Llam</th></tr></thead><tbody>' + phoneRows + '</tbody></table></div>'
+                    : '<div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;" title="SMS facturados por segmento">SMS Fact.</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;" title="Precio por SMS facturado (por pais)">Precio</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Exito</th><th>Ultima Actividad</th></tr></thead><tbody>' + memberRows + '</tbody></table></div>') +
+                '</div>';
         } else {
             html += '<div class="card mb-4"><div class="card-body"><div class="empty-state"><h3>Sin datos de equipo</h3><p>No tienes acceso a datos de equipo.</p></div></div></div>';
         }
@@ -3313,6 +3343,11 @@ function resetMyTeamFilters() {
     state.myTeam.dateFrom = '';
     state.myTeam.dateTo = '';
     state.myTeam.userId = '';
+    renderMyTeam(document.getElementById('page-content'));
+}
+
+function setMyTeamTab(tab) {
+    state.myTeam.tab = tab === 2 ? 'phone' : 'sms';
     renderMyTeam(document.getElementById('page-content'));
 }
 
