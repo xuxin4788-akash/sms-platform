@@ -4618,6 +4618,7 @@ function renderWebphoneStatsHtml(stats) {
     }).join('');
 
     return '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Estadisticas de Telefono Web</h1>' +
+        '<p class="text-secondary mb-3" style="font-size:14px;">Datos por cuenta: una fila por cuenta (administrador). Totales globales del periodo.</p>' +
         '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));margin-bottom:20px;">' +
             webphoneStatCard('blue', 'Hoy', stats.today_calls) +
             webphoneStatCard('green', 'Contestadas', stats.answered) +
@@ -4638,7 +4639,7 @@ function renderWebphoneStatsHtml(stats) {
                 '<button class="btn btn-primary btn-sm" onclick="loadWebphoneDaily(1)">Filtrar</button>' +
                 '<button class="btn btn-secondary btn-sm" onclick="clearWebphoneDaily()">Limpiar</button>' +
             '</div>' +
-            '<h2 style="font-size:16px;font-weight:600;margin-bottom:12px;">Resumen por cuenta y dia (una fila por cuenta y dia)</h2>' +
+            '<h2 style="font-size:16px;font-weight:600;margin-bottom:12px;">Datos por cuenta</h2>' +
             '<div id="wp-daily-container"><div class="text-center text-secondary" style="padding:24px;">Cargando...</div></div>' +
         '</div></div>';
 }
@@ -4665,33 +4666,36 @@ async function loadWebphoneDaily(page) {
     if (dt && dt.value) qs.push('date_to=' + encodeURIComponent(dt.value));
     try {
         var data = await api('/api/webphone/statistics?' + qs.join('&'));
-        if (!data.daily_rows || !data.daily_rows.length) {
+        if (!data.account_rows || !data.account_rows.length) {
             box.innerHTML = '<div class="text-center text-secondary" style="padding:24px;">No hay llamadas de telefono web en el periodo</div>';
             return;
         }
-        var rows = data.daily_rows.map(function (r) {
+        var rows = data.account_rows.map(function (r) {
+            var name = r.full_name || r.username || 'Cuenta ' + r.user_id;
+            var rateColor = r.answer_rate >= 80 ? 'badge-green' : (r.answer_rate >= 50 ? '' : 'badge-red');
             return '<tr>' +
-                '<td>' + formatDay(r.day) + '</td>' +
-                '<td><strong>' + escapeHtml(r.full_name || r.username || 'Cuenta ' + r.user_id) + '</strong>' +
-                    (r.full_name ? '<div class="text-secondary text-sm">@' + escapeHtml(r.username || '') + '</div>' : '') + '</td>' +
-                '<td>' + r.total_calls + '</td>' +
+                '<td><strong>' + escapeHtml(name) + '</strong>' +
+                    (r.full_name && r.username ? '<div class="text-secondary text-sm">@' + escapeHtml(r.username) + '</div>' : '') + '</td>' +
+                '<td><span class="badge">' + escapeHtml(r.role_label || r.role || '') + '</span></td>' +
+                '<td>'+ r.total_calls + '</td>' +
                 '<td><span class="badge badge-green">' + r.answered + '</span></td>' +
                 '<td><span class="badge badge-red">' + r.failed + '</span></td>' +
                 '<td>' + r.terminated + '</td>' +
-                '<td>' + formatDuration(r.total_duration) + '</td>' +
-                '<td>' + r.answer_rate + '%</td>' +
+                '<td style="color:#2563EB;font-weight:600;">' + formatDuration(r.total_duration) + '</td>' +
+                '<td><span class="badge ' + rateColor + '">' + r.answer_rate + '%</span></td>' +
+                '<td class="text-secondary text-sm">' + (r.last_active_at ? timeAgo(r.last_active_at) : '—') + '</td>' +
             '</tr>';
         }).join('');
-        var pages = Math.max(1, Math.ceil(data.daily_total / data.per_page));
+        var pages = Math.max(1, Math.ceil(data.account_total / data.per_page));
         var pager = page > 1 || pages > 1
             ? '<div class="pagination" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">' +
-                '<span class="text-secondary text-sm">' + data.daily_total + ' registros · pagina ' + page + ' de ' + pages + '</span>' +
+                '<span class="text-secondary text-sm">' + data.account_total + ' cuentas · pagina ' + page + ' de ' + pages + '</span>' +
                 '<div style="display:flex;gap:8px;">' +
                     (page > 1 ? '<button class="btn btn-secondary btn-sm" onclick="loadWebphoneDaily(' + (page - 1) + ')">Anterior</button>' : '') +
                     (page < pages ? '<button class="btn btn-secondary btn-sm" onclick="loadWebphoneDaily(' + (page + 1) + ')">Siguiente</button>' : '') +
                 '</div></div>'
             : '';
-        box.innerHTML = '<div class="table-container"><table><thead><tr><th>Fecha</th><th>Cuenta</th><th>Total</th><th>Contestadas</th><th>Fallidas</th><th>Terminadas</th><th>Duracion</th><th>Tasa contacto</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + pager;
+        box.innerHTML = '<div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th>Llamadas</th><th>Conectadas</th><th>Fallidas</th><th>Terminadas</th><th>Tiempo</th><th>Exito</th><th>Ultima actividad</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + pager;
     } catch (err) {
         box.innerHTML = '<div class="text-center text-secondary" style="padding:24px;">' + escapeHtml(err.message) + '</div>';
     }

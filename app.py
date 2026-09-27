@@ -10685,36 +10685,42 @@ def webphone_statistics():
         f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
         "AND date(r.initiated_at)=?", scope_params + [today]).fetchone()['c']
 
-    # Per-account per-day aggregate rows (one row per account per day).
+    # Per-account aggregate rows (one row per account) — admin-oriented Datos por Cuenta.
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
     day_where = ["1=1"]
     day_params = []
     if date_from:
-        day_where.append("date(d.initiated_at) >= date(?)")
+        day_where.append("date(r.initiated_at) >= date(?)")
         day_params.append(date_from)
     if date_to:
-        day_where.append("date(d.initiated_at) <= date(?)")
+        day_where.append("date(r.initiated_at) <= date(?)")
         day_params.append(date_to)
     inner_sql = (f"SELECT r.created_by AS user_id, u.id AS uid, u.username, u.full_name, "
-                 f"date(r.initiated_at) AS day, "
+                 f"u.role AS role, "
+                 f"COALESCE(rp.label, u.role) AS role_label, "
                  f"COUNT(*) AS total_calls, "
                  f"COALESCE(SUM(CASE WHEN r.outcome='answered' THEN 1 ELSE 0 END),0) AS answered, "
                  f"COALESCE(SUM(CASE WHEN r.outcome='terminated' THEN 1 ELSE 0 END),0) AS terminated, "
                  f"COALESCE(SUM(CASE WHEN r.outcome IN ('failed','rejected','no-answer','busy','canceled') "
                  f"THEN 1 ELSE 0 END),0) AS failed, "
-                 f"COALESCE(SUM(CASE WHEN r.outcome='answered' THEN r.duration ELSE 0 END),0) AS total_duration "
+                 f"COALESCE(SUM(CASE WHEN r.outcome='answered' THEN r.duration ELSE 0 END),0) AS total_duration, "
+                 f"MAX(r.initiated_at) AS last_active_at "
                  f"FROM webphone_records r LEFT JOIN users u ON u.id=r.created_by "
-                 f"WHERE {where_sql} GROUP BY r.created_by, u.id, u.username, u.full_name, "
-                 f"date(r.initiated_at)")
-    day_total_sql = f"SELECT COUNT(*) AS c FROM ({inner_sql}) d WHERE {' AND '.join(day_where)}"
-    day_total = db.execute(day_total_sql, list(scope_params) + day_params).fetchone()['c']
+                 f"LEFT JOIN role_permissions rp ON rp.role=u.role "
+                 f"WHERE {where_sql} GROUP BY r.created_by, u.id, u.username, u.full_name, u.role, rp.label")
+    full_where = (' AND '.join(day_where)).replace('date(r.initiated_at)', 'date(d.initiated_at)')
+    inner_filtered = inner_sql
+    # filter date inside the grouped query by wrapping
+    cnt_inner = (f"SELECT user_id FROM ({inner_sql}) d WHERE {full_where}")
+    account_total_sql = f"SELECT COUNT(*) AS c FROM ({cnt_inner}) d"
+    account_total = db.execute(account_total_sql, list(scope_params) + day_params).fetchone()['c']
 
     page = request.args.get('page', 1, type=int)
-    per_page = min(request.args.get('per_page', 20, type=int), 200)
+    per_page = min(request.args.get('per_page', 25, type=int), 200)
     offset = (page - 1) * per_page
-    rows_sql = (f"SELECT * FROM ({inner_sql}) d WHERE {' AND '.join(day_where)} "
-                f"ORDER BY d.day DESC, d.user_id ASC LIMIT ? OFFSET ?")
+    rows_sql = (f"SELECT * FROM ({inner_sql}) d WHERE {full_where} "
+                f"ORDER BY d.total_calls DESC, d.user_id ASC LIMIT ? OFFSET ?")
     rows = db.execute(rows_sql,
                       list(scope_params) + day_params + [per_page, offset]).fetchall()
     items = []
@@ -10742,7 +10748,7 @@ def webphone_statistics():
         'avg_duration': round(avg_duration, 1),
         'answer_rate': round(answer_rate, 1),
         'last_7_days': last7,
-        'daily_rows': items, 'daily_total': day_total,
+        'account_rows': items, 'account_total': account_total,
         'page': page, 'per_page': per_page,
     }
 
