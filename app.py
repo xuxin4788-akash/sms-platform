@@ -178,6 +178,23 @@ def sms_billing_segments(content):
     return 1 if n <= 70 else -(-n // 67)
 
 
+def sms_billing_segments_short(sent_msg, raw_msg):
+    """Bill on the ACTUAL wire text (shortened payment links), not the raw link.
+
+    The per-recipient delivered body is `sent_msg` (payment links already
+    shortened, GSM-normalized). Billing length therefore reflects what the
+    carrier actually charges for — a short link does not inflate the count.
+    The LANGUAGE CLASS is still taken from the ORIGINAL pre-normalization
+    message (`raw_msg`) so accented Spanish keeps the 70-char rate even though
+    the accents are stripped on the wire."""
+    if not sent_msg:
+        return 0
+    n = len(sent_msg)
+    if sms_billing_class(raw_msg) == 'latin':
+        return 1 if n <= 160 else -(-n // 153)
+    return 1 if n <= 70 else -(-n // 67)
+
+
 # Authoritative GSM-only normalization (single source of truth on the server).
 # Mirrors the web textarea mapping (static/js/app.js SMS_ASCII_MAP): accented
 # vowels and Spanish-specific glyphs are transliterated to plain ASCII; any
@@ -6618,10 +6635,9 @@ def send_sms():
         phone = normalize_phone(raw_phone)
         name = contact_names.get(raw_phone, '') or contact_names.get(phone, '')
         msg = build_sms_message(content, raw_phone, contact_names, contact_cache, shorten_links=True)
-        # Billing rated on the ORIGINAL pre-normalization message (Spanish marks
-        # stripped on the wire must still bill at the 70-char Spanish rate).
-        bill_segments = sms_billing_segments(
-            build_sms_message_raw(raw_content, raw_phone, contact_names, contact_cache))
+        # Bill on the ACTUAL short-link wire text, keeping the original language class.
+        bill_segments = sms_billing_segments_short(
+            msg, build_sms_message_raw(raw_content, raw_phone, contact_names, contact_cache))
         result = sms_api_send_single(phone, msg, sms_config)
         api_code = result.get('code', -1)
         api_msg = result.get('msg', '')
@@ -6657,9 +6673,9 @@ def send_sms():
             msg = build_sms_message(content, raw, contact_names, contact_cache, shorten_links=True)
             phone_content_pairs.append((phone, msg))
             phone_name_map[phone] = (name, msg)
-            # Billing on the ORIGINAL (pre-normalization) per-recipient text.
-            phone_bill_segments[phone] = sms_billing_segments(
-                build_sms_message_raw(raw_content, raw, contact_names, contact_cache))
+            # Bill on the ACTUAL short-link wire text, keeping the original language class.
+            phone_bill_segments[phone] = sms_billing_segments_short(
+                msg, build_sms_message_raw(raw_content, raw, contact_names, contact_cache))
 
         # Split into batches of 200
         for batch_start in range(0, len(phone_content_pairs), 200):
@@ -6714,8 +6730,8 @@ def send_sms():
                 continue
             name = contact_names.get(phone, '')
             msg = build_sms_message(content, phone, contact_names, contact_cache, shorten_links=True)
-            bill_segments = sms_billing_segments(
-                build_sms_message_raw(raw_content, phone, contact_names, contact_cache))
+            bill_segments = sms_billing_segments_short(
+                msg, build_sms_message_raw(raw_content, phone, contact_names, contact_cache))
             db.execute(
                 "INSERT INTO sms_records (phone, contact_name, content, status, api_msg, billed_segments, sent_at, created_by) VALUES (?, ?, ?, 'sent', ?, ?, datetime('now'), ?)",
                 (phone, name, msg, 'API no configurada - envio simulado', bill_segments, g.user['id'])
