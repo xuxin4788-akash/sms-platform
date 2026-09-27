@@ -855,6 +855,31 @@ def init_db():
             );
         """)
 
+        # ---- Web phone (SIP.js / Telefono Web) call records ----
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS webphone_records (
+                id SERIAL PRIMARY KEY,
+                call_token VARCHAR(40) NOT NULL DEFAULT '',
+                phone VARCHAR(50) NOT NULL DEFAULT '',
+                contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+                contact_name VARCHAR(255) NOT NULL DEFAULT '',
+                extnumber VARCHAR(100) NOT NULL DEFAULT '',
+                outcome VARCHAR(20) NOT NULL DEFAULT 'unknown'
+                    CHECK(outcome IN ('answered','terminated','failed','rejected',
+                                     'no-answer','busy','canceled','unknown')),
+                duration INTEGER NOT NULL DEFAULT 0,
+                reason VARCHAR(255) NOT NULL DEFAULT '',
+                initiated_at TIMESTAMP,
+                finished_at TIMESTAMP,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_webphone_records_creator ON webphone_records(created_by, created_at);
+            CREATE INDEX IF NOT EXISTS idx_webphone_records_outcome ON webphone_records(outcome);
+        """)
+
 
         # Migrations for existing databases - add missing columns
         def pg_column_exists(table, column):
@@ -1612,6 +1637,29 @@ def init_db():
                 UNIQUE(extnumber, country),
                 FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL
             );
+
+            -- Web phone (SIP.js / Telefono Web) call records
+            CREATE TABLE IF NOT EXISTS webphone_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_token TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL DEFAULT '',
+                contact_id INTEGER,
+                contact_name TEXT NOT NULL DEFAULT '',
+                extnumber TEXT NOT NULL DEFAULT '',
+                outcome TEXT NOT NULL DEFAULT 'unknown'
+                    CHECK(outcome IN ('answered','terminated','failed','rejected',
+                                     'no-answer','busy','canceled','unknown')),
+                duration INTEGER NOT NULL DEFAULT 0,
+                reason TEXT NOT NULL DEFAULT '',
+                initiated_at TEXT,
+                finished_at TEXT,
+                created_by INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_webphone_records_creator ON webphone_records(created_by, created_at);
+            CREATE INDEX IF NOT EXISTS idx_webphone_records_outcome ON webphone_records(outcome);
 
         ''')
         # Create default admin if not exists
@@ -5190,6 +5238,7 @@ AVAILABLE_PAGES = [
     {'id': 'send', 'label': 'Enviar SMS', 'icon': 'send'},
     {'id': 'records', 'label': 'Registros SMS', 'icon': 'activity'},
     {'id': 'calls', 'label': 'Llamadas', 'icon': 'phone'},
+    {'id': 'webphone-stats', 'label': 'Telefono Web', 'icon': 'phone'},
     {'id': 'email', 'label': 'Correos', 'icon': 'mail'},
     {'id': 'email-records', 'label': 'Registros de Correo', 'icon': 'activity'},
     {'id': 'email-records-team', 'label': 'Correos del Equipo', 'icon': 'activity'},
@@ -5229,12 +5278,12 @@ DEFAULT_ROLE_PERMISSIONS = {
     'admin': [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions'],
     'team_admin': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'email', 'email-records', 'email-records-team', 'email-replies', 'content-search', 'users',
+        'calls', 'webphone-stats', 'email', 'email-records', 'email-records-team', 'email-replies', 'content-search', 'users',
         'my-account', 'my-team', 'all-teams', 'retention', 'email-senders',
     ],
     'team_member': [
         'dashboard', 'contacts', 'groups', 'templates', 'send', 'records',
-        'calls', 'email', 'email-records', 'email-replies', 'my-account',
+        'calls', 'webphone-stats', 'email', 'email-records', 'email-replies', 'my-account',
     ],
 }
 
@@ -5243,7 +5292,7 @@ DEFAULT_ROLE_PERMISSIONS = {
 # features without forcing an admin to re-check permissions for existing teams.
 # Admin-only pages (e.g. email-config) must never be added here.
 AUTO_GRANT_PAGES = {'email', 'email-records', 'email-records-team', 'email-replies',
-                    'email-senders'}
+                    'email-senders', 'webphone-stats'}
 
 @app.route('/api/role-permissions', methods=['GET'])
 @admin_required
@@ -10390,6 +10439,188 @@ def voice_statistics():
         'caller_ext': caller_ext,
         'can_call': can_call,
     })
+
+
+# ---------------------------------------------------------------------------
+# Web phone (SIP.js / Telefono Web) call records + statistics
+# ---------------------------------------------------------------------------
+# The in-page softphone (static/phone iframe) reports call lifecycle events to
+# the SPA; the SPA posts them here so each web call is recorded and metered.
+# Call records use the same role scope as SMS/voice.
+
+WEBPHONE_OUTCOMES = {
+    'answered', 'terminated', 'failed', 'rejected',
+    'no-answer', 'busy', 'canceled', 'unknown',
+}
+
+
+@app.route('/api/webphone/records', methods=['POST'])
+@login_required
+def webphone_record_create():
+    """Persist a web-phone call event.
+
+    A call is created once with a client-generated ``call_token``; subsequent
+    events with the same token update the same row (answer -> finished). Body:
+    {call_token, phone, contact_id, extnumber, outcome, duration, reason,
+     initiated_at, finished_at}. Returns the saved row.
+    """
+    data = request.get_json(silent=True) or {}
+    token = (data.get('call_token') or '').strip()[:40]
+    phone = (data.get('phone') or '').strip()[:50]
+    extnumber = (data.get('extnumber') or '').strip()[:100]
+    outcome = (data.get('outcome') or 'unknown').strip()
+    if outcome not in WEBPHONE_OUTCOMES:
+        outcome = 'unknown'
+    reason = (data.get('reason') or '').strip()[:255]
+    try:
+        duration = max(0, int(data.get('duration') or 0))
+    except (TypeError, ValueError):
+        duration = 0
+    contact_id = data.get('contact_id') or None
+    contact_name = (data.get('contact_name') or '').strip()[:255]
+    now_ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    initiated_at = data.get('initiated_at') or now_ts
+    finished_at = data.get('finished_at') or (now_ts if outcome in ('answered', 'failed', 'rejected', 'no-answer', 'busy', 'canceled') else None)
+
+    db = get_db()
+    uid = g.user['id']
+    existing = None
+    if token:
+        existing = db.execute(
+            "SELECT * FROM webphone_records WHERE call_token=? AND created_by=? LIMIT 1",
+            (token, uid)).fetchone()
+
+    if existing:
+        # Merge: never downgrade an answered outcome, keep the earliest
+        # initiated_at, take the larger duration.
+        old = existing
+        new_outcome = old['outcome']
+        if outcome == 'answered' or (new_outcome != 'answered' and outcome != 'unknown'):
+            new_outcome = outcome
+        new_duration = max(int(old['duration'] or 0), duration)
+        new_initiated = old['initiated_at'] or initiated_at
+        new_finished = finished_at or old['finished_at']
+        db.execute(
+            "UPDATE webphone_records SET phone=?, extnumber=?, outcome=?, duration=?, "
+            "reason=?, contact_id=COALESCE(?, contact_id), contact_name=?, "
+            "initiated_at=?, finished_at=? WHERE id=?",
+            (phone or old['phone'], extnumber or old['extnumber'], new_outcome,
+             new_duration, reason or old['reason'], contact_id,
+             contact_name or old['contact_name'], new_initiated, new_finished,
+             old['id']))
+        db.commit()
+        row = db.execute("SELECT * FROM webphone_records WHERE id=?", (old['id'],)).fetchone()
+    else:
+        if not token:
+            token = 'WP' + uuid.uuid4().hex[:16]
+        cur = db.execute(
+            "INSERT INTO webphone_records (call_token, phone, contact_id, contact_name, "
+            "extnumber, outcome, duration, reason, initiated_at, finished_at, created_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (token, phone, contact_id, contact_name, extnumber, outcome, duration,
+             reason, initiated_at, finished_at, uid))
+        db.commit()
+        row = db.execute("SELECT * FROM webphone_records WHERE id=?", (cur.lastrowid,)).fetchone()
+    return jsonify({'record': dict(row)})
+
+
+@app.route('/api/webphone/records', methods=['GET'])
+@login_required
+def webphone_records_list():
+    """List web-phone call records with role-based scope and filters."""
+    db = get_db()
+    page = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 20, type=int), 500)
+    outcome = request.args.get('outcome', '').strip()
+    search = request.args.get('search', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    scope_mode = request.args.get('scope', 'auto').strip()
+    offset = (page - 1) * per_page
+
+    where = ['1=1']
+    params = []
+    sw, sp = _scope_where('r', g.user['id'], g.user['role'], scope_mode)
+    where.append(sw)
+    params.extend(sp)
+    if outcome:
+        where.append('r.outcome = ?')
+        params.append(outcome)
+    if search:
+        where.append('(r.phone LIKE ? OR r.contact_name LIKE ? OR r.extnumber LIKE ?)')
+        like = f'%{search}%'
+        params.extend([like, like, like])
+    if date_from:
+        where.append("date(r.initiated_at) >= date(?)")
+        params.append(date_from)
+    if date_to:
+        where.append("date(r.initiated_at) <= date(?)")
+        params.append(date_to)
+    where_sql = ' AND '.join(where)
+
+    total = db.execute(
+        f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql}", params
+    ).fetchone()['c']
+    rows = db.execute(
+        f"SELECT r.*, u.username AS sender_username, u.full_name AS sender_full_name "
+        f"FROM webphone_records r LEFT JOIN users u ON u.id=r.created_by "
+        f"WHERE {where_sql} ORDER BY r.id DESC LIMIT ? OFFSET ?",
+        params + [per_page, offset]).fetchall()
+    items = [_row_with_dates(dict(r), ('initiated_at', 'finished_at', 'created_at'))
+             for r in rows]
+    return jsonify({'records': items, 'total': total, 'page': page, 'per_page': per_page})
+
+
+@app.route('/api/webphone/statistics', methods=['GET'])
+@login_required
+@stats_cache_namespace('webphone_stats')
+def webphone_statistics():
+    """Aggregate web-phone call stats within the caller's role scope."""
+    db = get_db()
+    scope_mode = request.args.get('scope', 'auto').strip()
+    sw, sp = _scope_where('r', g.user['id'], g.user['role'], scope_mode)
+    where_sql = '1=1 AND ' + sw
+
+    total = db.execute(
+        f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql}", sp
+    ).fetchone()['c']
+    answered = db.execute(
+        f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
+        "AND r.outcome='answered'", sp).fetchone()['c']
+    failed = db.execute(
+        f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
+        "AND r.outcome IN ('failed','rejected','no-answer','busy','canceled')",
+        sp).fetchone()['c']
+    terminated = db.execute(
+        f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
+        "AND r.outcome='terminated'", sp).fetchone()['c']
+    total_duration = db.execute(
+        f"SELECT COALESCE(SUM(duration),0) AS s FROM webphone_records r "
+        f"WHERE {where_sql} AND r.outcome='answered'", sp).fetchone()['s'] or 0
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    today_calls = db.execute(
+        f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
+        "AND date(r.initiated_at)=?", sp + [today]).fetchone()['c']
+    last7 = []
+    for i in range(6, -1, -1):
+        day = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+        c = db.execute(
+            f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
+            "AND date(r.initiated_at)=?", sp + [day]).fetchone()['c']
+        last7.append({'date': day, 'count': c})
+
+    answer_rate = (answered / total * 100) if total else 0
+    avg_duration = (total_duration / answered) if answered else 0
+    return {
+        'today_calls': today_calls, 'total': total, 'answered': answered,
+        'failed': failed, 'terminated': terminated,
+        'pending_outcome': max(0, total - answered - failed - terminated),
+        'total_duration': int(total_duration),
+        'avg_duration': round(avg_duration, 1),
+        'answer_rate': round(answer_rate, 1),
+        'last_7_days': last7,
+    }
 
 
 @app.route('/api/voice/hangup', methods=['POST'])

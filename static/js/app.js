@@ -576,6 +576,7 @@ function navigateTo(page) {
         case 'send': renderSendSMS(content); break;
         case 'records': renderRecords(content); break;
         case 'calls': renderCalls(content); break;
+        case 'webphone-stats': renderWebphoneStats(content); break;
         case 'email':
             renderEmailSend(content); break;
         case 'email-records':
@@ -1284,6 +1285,7 @@ function webphoneFrame() {
 var _webphoneActiveBtn = null;
 var _webphoneReady = false;
 var _webphonePending = [];
+var _webphoneContactId = '';
 var _webphoneLoaded = false;
 
 // ---- Floating diagnostic card ------------------------------------------
@@ -1353,6 +1355,7 @@ function webphoneCall(btn, name) {
     var phone = webphoneNormalize(rawPhone);
     dbg('click boton, numero="' + rawPhone + '" -> "' + phone + '"');
     if (!phone) { showToast('Numero invalido', 'error'); dbg('numero invalido'); return; }
+    _webphoneContactId = btn ? (btn.getAttribute('data-contact-id') || '') : '';
     // Toggle only applies to real on-page buttons (btn != null): if that specific
     // button is mid-call, hang up instead of dialling again. Programmatic calls
     // use webphoneCall(null, phone), so btn is null — it must ALWAYS dial.
@@ -1386,6 +1389,25 @@ function webphoneHangup() {
 function webphoneReset() {
     _webphonePending = [];
     if (_webphoneActiveBtn) { webphoneSetBtn(_webphoneActiveBtn, false); _webphoneActiveBtn = null; }
+    _webphoneContactId = '';
+}
+
+async function reportWebphoneRecord(d) {
+    var payload = {
+        outcome: d.outcome || 'no-answer',
+        phone: d.number || '',
+        extnumber: d.extension || '',
+        duration: Number(d.duration || 0),
+        reason: d.reason || '',
+        contact_id: _webphoneContactId || ''
+    };
+    if (!payload.phone) { return; }
+    try {
+        await api('/api/webphone/records', { method: 'POST', body: payload });
+        dbg('registro webphone reportado: ' + payload.outcome + ' ' + payload.duration + 's');
+    } catch (e) {
+        dbg('fallo reporte webphone: ' + (e && e.message ? e.message : e));
+    }
 }
 
 // ---- Floating call window ----------------------------------------------
@@ -1481,7 +1503,10 @@ if (window.addEventListener) {
         }
         else if (d.type === 'webphone-session-ended') {
             dbg('fin de llamada: ' + d.outcome + (d.reason ? (' razon=' + d.reason) : ''));
-            if (d.reason) { showToast('Llamada ' + d.outcome + ': ' + d.reason, 'error'); }
+            reportWebphoneRecord(d);
+            if (d.reason && (d.outcome === 'failed' || d.outcome === 'rejected')) {
+                showToast('Llamada ' + d.outcome + ': ' + d.reason, 'error');
+            }
             setCardStatusText('Finalizada (' + (d.reason || d.outcome) + ')');
             setTimeout(function () { if (!_webphoneActiveBtn) { webphoneHideCard(); } }, 2500);
         }
@@ -4553,9 +4578,136 @@ async function renderCalls(container) {
     }
 }
 
+const WEBPHONE_OUTCOME_LABELS = {
+    answered: 'Contestada',
+    terminated: 'Terminada',
+    failed: 'Fallida',
+    rejected: 'Rechazada',
+    'no-answer': 'Sin respuesta',
+    busy: 'Ocupado',
+    canceled: 'Cancelada',
+    unknown: 'Desconocida',
+};
+
+async function renderWebphoneStats(container) {
+    container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    try {
+        var stats = await api('/api/webphone/statistics');
+        container.innerHTML = renderWebphoneStatsHtml(stats);
+        loadWebphoneRecords(1);
+    } catch (err) {
+        container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
+    }
+}
+
+function renderWebphoneStatsHtml(stats) {
+    var bars = (stats.last_7_days || []).map(function (d) {
+        var max = Math.max.apply(null, stats.last_7_days.map(function (x) { return x.count; }).concat([1]));
+        var h = Math.round((d.count / max) * 60);
+        return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;">' +
+            '<div class="text-secondary text-sm">' + d.count + '</div>' +
+            '<div style="width:24px;min-height:4px;height:' + Math.max(h, 4) + 'px;background:linear-gradient(180deg,#6366F1,#A5B4FC);border-radius:4px 4px 0 0;"></div>' +
+            '<div class="text-secondary text-sm">' + d.date.slice(5) + '</div></div>';
+    }).join('');
+
+    return '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Estadisticas de Telefono Web</h1>' +
+        '<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));margin-bottom:20px;">' +
+            webphoneStatCard('blue', 'Hoy', stats.today_calls) +
+            webphoneStatCard('green', 'Contestadas', stats.answered) +
+            webphoneStatCard('red', 'Fallidas / Sin resp.', stats.failed) +
+            webphoneStatCard('', 'Terminadas', stats.terminated) +
+            webphoneStatCard('', 'Tasa de contacto', stats.answer_rate + '%') +
+            webphoneStatCard('', 'Duracion total', formatDuration(stats.total_duration)) +
+            webphoneStatCard('', 'Duracion media', formatDuration(Math.round(stats.avg_duration))) +
+        '</div>' +
+        '<div class="card mb-4"><div class="card-body"><h2 style="font-size:16px;font-weight:600;margin-bottom:16px;">Llamadas los ultimos 7 dias</h2>' +
+            '<div style="display:flex;align-items:flex-end;gap:8px;min-height:110px;">' + bars + '</div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body" style="padding-bottom:0;">' +
+            '<div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;">' +
+                '<input type="text" id="wp-search" placeholder="Buscar telefono, contacto o extension..." onkeydown="if(event.key===\'Enter\')loadWebphoneRecords(1)" style="flex:1;min-width:200px;">' +
+                '<button class="btn btn-primary btn-sm" onclick="loadWebphoneRecords(1)">Buscar</button>' +
+                '<select id="wp-outcome" onchange="loadWebphoneRecords(1)"><option value="">Todos los resultados</option>' +
+                    Object.keys(WEBPHONE_OUTCOME_LABELS).map(function (o) {
+                        return '<option value="' + o + '">' + WEBPHONE_OUTCOME_LABELS[o] + '</option>';
+                    }).join('') +
+                '</select>' +
+                '<input type="date" id="wp-date-from" lang="es" onchange="loadWebphoneRecords(1)">' +
+                '<input type="date" id="wp-date-to" lang="es" onchange="loadWebphoneRecords(1)">' +
+                '<button class="btn btn-secondary btn-sm" onclick="clearWebphoneFilters()">Limpiar</button>' +
+            '</div>' +
+        '</div><div id="wp-records-container"><div class="text-center text-secondary" style="padding:24px;">Cargando registros...</div></div></div>';
+}
+
+function webphoneStatCard(color, label, value) {
+    var icon = '';
+    if (color === 'blue') icon = '<div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div>';
+    else if (color === 'green') icon = '<div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div>';
+    else if (color === 'red') icon = '<div class="stat-icon" style="background:#FEF2F2;color:#DC2626;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div>';
+    return '<div class="stat-card">' + icon + '<div class="stat-label">' + label + '</div><div class="stat-value" style="font-size:22px;">' + value + '</div></div>';
+}
+
+function clearWebphoneFilters() {
+    var s = document.getElementById('wp-search');
+    var o = document.getElementById('wp-outcome');
+    var df = document.getElementById('wp-date-from');
+    var dt = document.getElementById('wp-date-to');
+    if (s) s.value = '';
+    if (o) o.value = '';
+    if (df) df.value = '';
+    if (dt) dt.value = '';
+    loadWebphoneRecords(1);
+}
+
+async function loadWebphoneRecords(page) {
+    var box = document.getElementById('wp-records-container');
+    if (!box) return;
+    var qs = ['page=' + (page || 1), 'per_page=20'];
+    var s = document.getElementById('wp-search');
+    var o = document.getElementById('wp-outcome');
+    var df = document.getElementById('wp-date-from');
+    var dt = document.getElementById('wp-date-to');
+    if (s && s.value) qs.push('search=' + encodeURIComponent(s.value.trim()));
+    if (o && o.value) qs.push('outcome=' + encodeURIComponent(o.value));
+    if (df && df.value) qs.push('date_from=' + encodeURIComponent(df.value));
+    if (dt && dt.value) qs.push('date_to=' + encodeURIComponent(dt.value));
+    try {
+        var data = await api('/api/webphone/records?' + qs.join('&'));
+        if (!data.records.length) {
+            box.innerHTML = '<div class="text-center text-secondary" style="padding:32px;">No hay registros de telefono web</div>';
+            return;
+        }
+        var rows = data.records.map(function (r) {
+            var badgeCls = r.outcome === 'answered' ? 'badge-green'
+                : ((r.outcome === 'failed' || r.outcome === 'rejected' || r.outcome === 'busy') ? 'badge-red' : 'badge-gray');
+            return '<tr>' +
+                '<td>' + formatDate(r.initiated_at) + '</td>' +
+                '<td><strong>' + escapeHtml(r.phone || '') + '</strong>' +
+                    (r.contact_name ? '<div class="text-secondary text-sm">' + escapeHtml(r.contact_name) + '</div>' : '') + '</td>' +
+                '<td>' + escapeHtml(r.extnumber || '-') + '</td>' +
+                '<td><span class="badge ' + badgeCls + '">' + (WEBPHONE_OUTCOME_LABELS[r.outcome] || r.outcome) + '</span>' +
+                    (r.reason && r.outcome !== 'answered' ? '<div class="text-secondary text-sm">' + escapeHtml(r.reason) + '</div>' : '') + '</td>' +
+                '<td>' + (r.outcome === 'answered' ? formatDuration(r.duration) : '-') + '</td>' +
+                '<td>' + escapeHtml(r.sender_full_name || r.sender_username || '-') + '</td>' +
+            '</tr>';
+        }).join('');
+        var pages = Math.max(1, Math.ceil(data.total / data.per_page));
+        var pager = page > 1 || pages > 1
+            ? '<div class="pagination" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">' +
+                '<span class="text-secondary text-sm">' + data.total + ' registros · pagina ' + page + ' de ' + pages + '</span>' +
+                '<div style="display:flex;gap:8px;">' +
+                    (page > 1 ? '<button class="btn btn-secondary btn-sm" onclick="loadWebphoneRecords(' + (page - 1) + ')">Anterior</button>' : '') +
+                    (page < pages ? '<button class="btn btn-secondary btn-sm" onclick="loadWebphoneRecords(' + (page + 1) + ')">Siguiente</button>' : '') +
+                '</div></div>'
+            : '';
+        box.innerHTML = '<div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono / Contacto</th><th>Extension</th><th>Resultado</th><th>Duracion</th><th>Agente</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + pager;
+    } catch (err) {
+        box.innerHTML = '<div class="text-center text-secondary" style="padding:24px;">' + escapeHtml(err.message) + '</div>';
+    }
+}
+
 function switchVoiceMode(mode, btn) {
-    state.voiceCall.mode = mode;
-    document.querySelectorAll('#voice-manual, #voice-contacts, #voice-group').forEach(function(el){ el.style.display='none'; });
+    state.voiceCall.mode = mode;    document.querySelectorAll('#voice-manual, #voice-contacts, #voice-group').forEach(function(el){ el.style.display='none'; });
     var target = document.getElementById('voice-' + mode);
     if (target) target.style.display = 'block';
     btn.parentNode.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });

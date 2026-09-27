@@ -11,7 +11,13 @@
   var ua = null;
   var busy = false;
   var registered = false;
+  var myExtension = "";
   var currentSession = null;
+  var callContext = null; // {number, extension, connectedAt}
+  function connectedSeconds() {
+    if (!callContext || !callContext.connectedAt) { return 0; }
+    return Math.max(0, Math.floor(Date.now() / 1000) - callContext.connectedAt);
+  }
   var timerHandle = null;
   var timerStart = 0;
   var localMicStream = null;
@@ -307,6 +313,7 @@
     }
     plog("URI destino=" + uri + ", pido microfono...");
     forceRemotePlay();
+    callContext = {number: target, extension: myExtension, connectedAt: null};
     var s;
     try {
       s = ua.invite(uri, { media: { render: { remote: remoteAudio } } });
@@ -387,11 +394,12 @@
     session.on("accepted", function () {
       callState.textContent = "En llamada";
       startTimer();
+      if (callContext) { callContext.connectedAt = Math.floor(Date.now() / 1000); }
       forceRemotePlay();
       bindLocalMedia();
       monitorRemoteTrack();
       setTimeout(monitorRemoteTrack, 800);
-      notifyParent({ type: "webphone-answer" });
+      notifyParent({ type: "webphone-answer", number: callContext ? callContext.number : "", extension: myExtension });
     });
     function failInfo(response, cause) {
       var code = "", txt = "";
@@ -403,16 +411,23 @@
     }
     session.on("failed", function (response, cause) {
       callState.textContent = "Falló la llamada";
-      notifyParent({ type: "webphone-session-ended", outcome: "failed", reason: failInfo(response, cause) });
+      notifyParent({ type: "webphone-session-ended", outcome: "failed", reason: failInfo(response, cause),
+        number: callContext ? callContext.number : "", extension: myExtension, duration: connectedSeconds() });
       resetCall();
     });
     session.on("terminated", function () {
       callState.textContent = "Finalizada";
+      var dur = connectedSeconds();
+      var wasConnected = callContext && callContext.connectedAt;
+      notifyParent({ type: "webphone-session-ended", outcome: wasConnected ? "answered" : "no-answer",
+        reason: wasConnected ? "hangup" : "terminated",
+        number: callContext ? callContext.number : "", extension: myExtension, duration: dur });
       resetCall();
     });
     session.on("rejected", function (response, cause) {
       callState.textContent = "Rechazada";
-      notifyParent({ type: "webphone-session-ended", outcome: "rejected", reason: failInfo(response, cause) });
+      notifyParent({ type: "webphone-session-ended", outcome: "rejected", reason: failInfo(response, cause),
+        number: callContext ? callContext.number : "", extension: myExtension, duration: connectedSeconds() });
       resetCall();
     });
   }
@@ -428,6 +443,7 @@
     remoteStream = null;
     lastRemoteTrack = null;
     remoteAudio.muted = false;
+    callContext = null;
     notifyParent({ type: "webphone-idle" });
   }
 
@@ -446,6 +462,7 @@
   function connect(extension, password) {
     if (busy) { return; }
     busy = true;
+    myExtension = String(extension || "");
     showError("");
     loginBtn.disabled = true;
 
@@ -606,7 +623,7 @@
         var s = startOutboundCall(d.number);
         if (s) {
           var tn = String(d.number || "").replace(/[^0-9+*#]/g, "");
-          notifyParent({ type: "webphone-dialing", number: tn });
+          notifyParent({ type: "webphone-dialing", number: tn, extension: myExtension });
         }
       } else if (d.type === "webphone-hangup") {
         try {
