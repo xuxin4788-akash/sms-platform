@@ -569,7 +569,11 @@ function navigateTo(page) {
     switch (page) {
         case 'dashboard': renderDashboard(content); break;
         case 'contacts': renderContacts(content); break;
-        case 'groups': renderGroups(content); break;
+        case 'groups':
+            if (!state.user || (state.user.role !== 'admin' && !(state.user.permissions||[]).includes('groups'))) {
+                renderAccessDenied(content); break;
+            }
+            renderGroups(content); break;
         case 'templates': renderTemplates(content); break;
         case 'send': renderSendSMS(content); break;
         case 'records': renderRecords(content); break;

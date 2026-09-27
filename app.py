@@ -2854,6 +2854,79 @@ def manager_required(f):
         return f(*args, **kwargs)
     return decorated
 
+
+def _resolve_user_permissions(user):
+    """Resolve a user's effective page-level permission list (mirrors the logic
+    in get_me, reused server-side so data endpoints can hard-enforce the same
+    menu permissions an admin configured for roles/users).
+
+    admin -> every page; otherwise user override -> role_permissions ->
+    role defaults, always stripping admin-only pages and auto-granting
+    AUTO_GRANT_PAGES."""
+    import json as _json
+    role = user.get('role')
+    uid = user.get('id')
+    permissions = []
+    if role == 'admin':
+        return [p['id'] for p in AVAILABLE_PAGES] + ['role-permissions']
+    # user-level override
+    user_perms = []
+    has_user_config = False
+    _pu = user.get('permissions')
+    try:
+        if isinstance(_pu, (list, dict)):
+            user_perms = _pu if isinstance(_pu, list) else []
+            has_user_config = True
+        else:
+            _pu = _pu or ''
+            if _pu:
+                user_perms = _json.loads(_pu) if _pu else []
+                has_user_config = bool(_pu)
+    except Exception:
+        user_perms = []
+    if has_user_config:
+        permissions = user_perms or []
+    else:
+        row = get_db().execute("SELECT permissions FROM role_permissions WHERE role=?", (role,)).fetchone()
+        raw_perms = None
+        has_explicit = False
+        if row:
+            pr = row['permissions']
+            if isinstance(pr, (list, dict)):
+                raw_perms = pr if isinstance(pr, list) else []
+                has_explicit = True
+            else:
+                pr = pr or ''
+                try:
+                    raw_perms = _json.loads(pr) if pr else []
+                    has_explicit = bool(pr)
+                except Exception:
+                    raw_perms = []
+        if has_explicit:
+            permissions = raw_perms or []
+        else:
+            permissions = list(DEFAULT_ROLE_PERMISSIONS.get(role, []))
+    # Mirror get_me: strip admin-only, auto-grant roll-out pages.
+    permissions = [p for p in permissions if p not in ADMIN_ONLY_PAGES]
+    for p in AUTO_GRANT_PAGES:
+        if p not in permissions:
+            permissions.append(p)
+    return permissions
+
+
+def has_page_permission(user, page):
+    """True when a (already authenticated) user may access the given menu page,
+    enforcing the same permission rules shown in the role/user editors."""
+    try:
+        return page in _resolve_user_permissions(user)
+    except Exception:
+        # Failsafe: fall back to default role membership rather than blocking.
+        role = (user or {}).get('role')
+        try:
+            return page in DEFAULT_ROLE_PERMISSIONS.get(role, [])
+        except Exception:
+            return True
+
 # ============================================================
 # SMS API Integration (infin8linx)
 # ============================================================
@@ -5657,6 +5730,25 @@ def _scope_where_unnamed(uid: int, role, mode: str = 'auto') -> tuple[str, list]
     return "created_by = ?", [uid]
 
 
+def _scope_where_unnamed_aliased(alias: str, uid: int, role, mode: str = 'auto') -> tuple[str, list]:
+    """Same as _scope_where_unnamed but qualifies the owner column with an
+    explicit table alias (`alias.created_by`) to avoid ambiguity when the query
+    JOINs another table (e.g. contact_groups LEFT JOIN contacts) that also has a
+    created_by column."""
+    if mode == 'own':
+        return f"{alias}.created_by = ?", [uid]
+    if role == 'admin':
+        return "1=1", []
+    if role == 'team_admin':
+        owner = uid
+    else:
+        owner = _team_scope_owner_id(uid, role)
+    if owner is not None:
+        return (f"({alias}.created_by = ? OR {alias}.created_by IN "
+                f"(SELECT id FROM users WHERE team_creator_id = ?))", [owner, owner])
+    return f"{alias}.created_by = ?", [uid]
+
+
 def _scope_user_ids(uid: int, role) -> list[int]:
     """Return the list of user ids whose data is visible to the current user
     (for `IN (...)` filters). Admin returns [] meaning "all" (caller chooses)."""
@@ -6309,18 +6401,29 @@ def list_apps():
 @login_required
 def list_groups():
     db = get_db()
-    groups = db.execute("""
-        SELECT cg.*, COUNT(c.id) as contact_count
-        FROM contact_groups cg
-        LEFT JOIN contacts c ON c.group_id = cg.id
-        GROUP BY cg.id
-        ORDER BY cg.created_at DESC
-    """).fetchall()
+    # Team-scoped visibility (same rule as contacts/sms/email): admin sees all,
+    # team_admin sees their own team, member/custom role sees only their own.
+    # Note: the WHERE references cg.created_by (not created_by) because the
+    # LEFT JOIN to contacts also exposes a `created_by` column -> ambiguity.
+    where, scope_params = _scope_where_unnamed_aliased('cg', session.get('user_id'), session.get('role'))
+    groups = db.execute(
+        "SELECT cg.*, COUNT(c.id) as contact_count "
+        "FROM contact_groups cg "
+        "LEFT JOIN contacts c ON c.group_id = cg.id "
+        "WHERE " + where + " "
+        "GROUP BY cg.id "
+        "ORDER BY cg.created_at DESC",
+        scope_params
+    ).fetchall()
     return jsonify({'groups': [dict(gr) for gr in groups]})
 
 @app.route('/api/groups', methods=['POST'])
 @login_required
 def create_group():
+    # Hard-enforce the 'groups' page permission (mirrors the menu editor so an
+    # admin revoking "Grupos" genuinely blocks creating groups).
+    if not has_page_permission(g.user, 'groups'):
+        return jsonify({'error': 'Permisos insuficientes: no tienes acceso al modulo de grupos'}), 403
     data = request.get_json()
     name = data.get('name', '').strip()
     description = data.get('description', '').strip()
@@ -6335,9 +6438,15 @@ def create_group():
 @app.route('/api/groups/<int:group_id>', methods=['PUT'])
 @login_required
 def update_group(group_id):
+    if not has_page_permission(g.user, 'groups'):
+        return jsonify({'error': 'Permisos insuficientes: no tienes acceso al modulo de grupos'}), 403
     data = request.get_json()
     db = get_db()
-    group = db.execute("SELECT * FROM contact_groups WHERE id=?", (group_id,)).fetchone()
+    where, scope_params = _scope_where_unnamed(session.get('user_id'), session.get('role'))
+    group = db.execute(
+        "SELECT * FROM contact_groups WHERE id=? AND (" + where + ")",
+        [group_id] + scope_params
+    ).fetchone()
     if not group:
         return jsonify({'error': 'Grupo no encontrado'}), 404
     name = data.get('name', group['name'])
@@ -6349,8 +6458,14 @@ def update_group(group_id):
 @app.route('/api/groups/<int:group_id>', methods=['DELETE'])
 @login_required
 def delete_group(group_id):
+    if not has_page_permission(g.user, 'groups'):
+        return jsonify({'error': 'Permisos insuficientes: no tienes acceso al modulo de grupos'}), 403
     db = get_db()
-    group = db.execute("SELECT * FROM contact_groups WHERE id=?", (group_id,)).fetchone()
+    where, scope_params = _scope_where_unnamed(session.get('user_id'), session.get('role'))
+    group = db.execute(
+        "SELECT * FROM contact_groups WHERE id=? AND (" + where + ")",
+        [group_id] + scope_params
+    ).fetchone()
     if not group:
         return jsonify({'error': 'Grupo no encontrado'}), 404
     db.execute("UPDATE contacts SET group_id=NULL WHERE group_id=?", (group_id,))
