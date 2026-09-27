@@ -142,6 +142,12 @@ function formatDate(dateStr) {
     } catch { return dateStr; }
 }
 
+function formatDay(dayStr) {
+    if (!dayStr) return '-';
+    var s = String(dayStr).slice(0, 10); // YYYY-MM-DD
+    return s;
+}
+
 function formatCost(value) {
     const n = Number(value);
     const safe = isFinite(n) ? n : 0;
@@ -4594,7 +4600,8 @@ async function renderWebphoneStats(container) {
     try {
         var stats = await api('/api/webphone/statistics');
         container.innerHTML = renderWebphoneStatsHtml(stats);
-        loadWebphoneRecords(1);
+        attachWebphoneDateFilters();
+        loadWebphoneDaily(1);
     } catch (err) {
         container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
     }
@@ -4623,20 +4630,71 @@ function renderWebphoneStatsHtml(stats) {
         '<div class="card mb-4"><div class="card-body"><h2 style="font-size:16px;font-weight:600;margin-bottom:16px;">Llamadas los ultimos 7 dias</h2>' +
             '<div style="display:flex;align-items:flex-end;gap:8px;min-height:110px;">' + bars + '</div>' +
         '</div></div>' +
-        '<div class="card"><div class="card-body" style="padding-bottom:0;">' +
-            '<div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;">' +
-                '<input type="text" id="wp-search" placeholder="Buscar telefono, contacto o extension..." onkeydown="if(event.key===\'Enter\')loadWebphoneRecords(1)" style="flex:1;min-width:200px;">' +
-                '<button class="btn btn-primary btn-sm" onclick="loadWebphoneRecords(1)">Buscar</button>' +
-                '<select id="wp-outcome" onchange="loadWebphoneRecords(1)"><option value="">Todos los resultados</option>' +
-                    Object.keys(WEBPHONE_OUTCOME_LABELS).map(function (o) {
-                        return '<option value="' + o + '">' + WEBPHONE_OUTCOME_LABELS[o] + '</option>';
-                    }).join('') +
-                '</select>' +
-                '<input type="date" id="wp-date-from" lang="es" onchange="loadWebphoneRecords(1)">' +
-                '<input type="date" id="wp-date-to" lang="es" onchange="loadWebphoneRecords(1)">' +
-                '<button class="btn btn-secondary btn-sm" onclick="clearWebphoneFilters()">Limpiar</button>' +
+        '<div class="card mb-4"><div class="card-body">' +
+            '<div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' +
+                '<label class="text-secondary text-sm" style="align-self:center;">Periodo:</label>' +
+                '<input type="date" id="wp-date-from" lang="es" class="input" style="min-width:150px;">' +
+                '<input type="date" id="wp-date-to" lang="es" class="input" style="min-width:150px;">' +
+                '<button class="btn btn-primary btn-sm" onclick="loadWebphoneDaily(1)">Filtrar</button>' +
+                '<button class="btn btn-secondary btn-sm" onclick="clearWebphoneDaily()">Limpiar</button>' +
             '</div>' +
-        '</div><div id="wp-records-container"><div class="text-center text-secondary" style="padding:24px;">Cargando registros...</div></div></div>';
+            '<h2 style="font-size:16px;font-weight:600;margin-bottom:12px;">Resumen por cuenta y dia (una fila por cuenta y dia)</h2>' +
+            '<div id="wp-daily-container"><div class="text-center text-secondary" style="padding:24px;">Cargando...</div></div>' +
+        '</div></div>';
+}
+
+function attachWebphoneDateFilters() {
+    // (no-op; dates are read on demand by loadWebphoneDaily)
+}
+
+function clearWebphoneDaily() {
+    var df = document.getElementById('wp-date-from');
+    var dt = document.getElementById('wp-date-to');
+    if (df) df.value = '';
+    if (dt) dt.value = '';
+    loadWebphoneDaily(1);
+}
+
+async function loadWebphoneDaily(page) {
+    var box = document.getElementById('wp-daily-container');
+    if (!box) return;
+    var qs = ['page=' + (page || 1), 'per_page=25'];
+    var df = document.getElementById('wp-date-from');
+    var dt = document.getElementById('wp-date-to');
+    if (df && df.value) qs.push('date_from=' + encodeURIComponent(df.value));
+    if (dt && dt.value) qs.push('date_to=' + encodeURIComponent(dt.value));
+    try {
+        var data = await api('/api/webphone/statistics?' + qs.join('&'));
+        if (!data.daily_rows || !data.daily_rows.length) {
+            box.innerHTML = '<div class="text-center text-secondary" style="padding:24px;">No hay llamadas de telefono web en el periodo</div>';
+            return;
+        }
+        var rows = data.daily_rows.map(function (r) {
+            return '<tr>' +
+                '<td>' + formatDay(r.day) + '</td>' +
+                '<td><strong>' + escapeHtml(r.full_name || r.username || 'Cuenta ' + r.user_id) + '</strong>' +
+                    (r.full_name ? '<div class="text-secondary text-sm">@' + escapeHtml(r.username || '') + '</div>' : '') + '</td>' +
+                '<td>' + r.total_calls + '</td>' +
+                '<td><span class="badge badge-green">' + r.answered + '</span></td>' +
+                '<td><span class="badge badge-red">' + r.failed + '</span></td>' +
+                '<td>' + r.terminated + '</td>' +
+                '<td>' + formatDuration(r.total_duration) + '</td>' +
+                '<td>' + r.answer_rate + '%</td>' +
+            '</tr>';
+        }).join('');
+        var pages = Math.max(1, Math.ceil(data.daily_total / data.per_page));
+        var pager = page > 1 || pages > 1
+            ? '<div class="pagination" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">' +
+                '<span class="text-secondary text-sm">' + data.daily_total + ' registros · pagina ' + page + ' de ' + pages + '</span>' +
+                '<div style="display:flex;gap:8px;">' +
+                    (page > 1 ? '<button class="btn btn-secondary btn-sm" onclick="loadWebphoneDaily(' + (page - 1) + ')">Anterior</button>' : '') +
+                    (page < pages ? '<button class="btn btn-secondary btn-sm" onclick="loadWebphoneDaily(' + (page + 1) + ')">Siguiente</button>' : '') +
+                '</div></div>'
+            : '';
+        box.innerHTML = '<div class="table-container"><table><thead><tr><th>Fecha</th><th>Cuenta</th><th>Total</th><th>Contestadas</th><th>Fallidas</th><th>Terminadas</th><th>Duracion</th><th>Tasa contacto</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + pager;
+    } catch (err) {
+        box.innerHTML = '<div class="text-center text-secondary" style="padding:24px;">' + escapeHtml(err.message) + '</div>';
+    }
 }
 
 function webphoneStatCard(color, label, value) {
@@ -4645,65 +4703,6 @@ function webphoneStatCard(color, label, value) {
     else if (color === 'green') icon = '<div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div>';
     else if (color === 'red') icon = '<div class="stat-icon" style="background:#FEF2F2;color:#DC2626;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div>';
     return '<div class="stat-card">' + icon + '<div class="stat-label">' + label + '</div><div class="stat-value" style="font-size:22px;">' + value + '</div></div>';
-}
-
-function clearWebphoneFilters() {
-    var s = document.getElementById('wp-search');
-    var o = document.getElementById('wp-outcome');
-    var df = document.getElementById('wp-date-from');
-    var dt = document.getElementById('wp-date-to');
-    if (s) s.value = '';
-    if (o) o.value = '';
-    if (df) df.value = '';
-    if (dt) dt.value = '';
-    loadWebphoneRecords(1);
-}
-
-async function loadWebphoneRecords(page) {
-    var box = document.getElementById('wp-records-container');
-    if (!box) return;
-    var qs = ['page=' + (page || 1), 'per_page=20'];
-    var s = document.getElementById('wp-search');
-    var o = document.getElementById('wp-outcome');
-    var df = document.getElementById('wp-date-from');
-    var dt = document.getElementById('wp-date-to');
-    if (s && s.value) qs.push('search=' + encodeURIComponent(s.value.trim()));
-    if (o && o.value) qs.push('outcome=' + encodeURIComponent(o.value));
-    if (df && df.value) qs.push('date_from=' + encodeURIComponent(df.value));
-    if (dt && dt.value) qs.push('date_to=' + encodeURIComponent(dt.value));
-    try {
-        var data = await api('/api/webphone/records?' + qs.join('&'));
-        if (!data.records.length) {
-            box.innerHTML = '<div class="text-center text-secondary" style="padding:32px;">No hay registros de telefono web</div>';
-            return;
-        }
-        var rows = data.records.map(function (r) {
-            var badgeCls = r.outcome === 'answered' ? 'badge-green'
-                : ((r.outcome === 'failed' || r.outcome === 'rejected' || r.outcome === 'busy') ? 'badge-red' : 'badge-gray');
-            return '<tr>' +
-                '<td>' + formatDate(r.initiated_at) + '</td>' +
-                '<td><strong>' + escapeHtml(r.phone || '') + '</strong>' +
-                    (r.contact_name ? '<div class="text-secondary text-sm">' + escapeHtml(r.contact_name) + '</div>' : '') + '</td>' +
-                '<td>' + escapeHtml(r.extnumber || '-') + '</td>' +
-                '<td><span class="badge ' + badgeCls + '">' + (WEBPHONE_OUTCOME_LABELS[r.outcome] || r.outcome) + '</span>' +
-                    (r.reason && r.outcome !== 'answered' ? '<div class="text-secondary text-sm">' + escapeHtml(r.reason) + '</div>' : '') + '</td>' +
-                '<td>' + (r.outcome === 'answered' ? formatDuration(r.duration) : '-') + '</td>' +
-                '<td>' + escapeHtml(r.sender_full_name || r.sender_username || '-') + '</td>' +
-            '</tr>';
-        }).join('');
-        var pages = Math.max(1, Math.ceil(data.total / data.per_page));
-        var pager = page > 1 || pages > 1
-            ? '<div class="pagination" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">' +
-                '<span class="text-secondary text-sm">' + data.total + ' registros · pagina ' + page + ' de ' + pages + '</span>' +
-                '<div style="display:flex;gap:8px;">' +
-                    (page > 1 ? '<button class="btn btn-secondary btn-sm" onclick="loadWebphoneRecords(' + (page - 1) + ')">Anterior</button>' : '') +
-                    (page < pages ? '<button class="btn btn-secondary btn-sm" onclick="loadWebphoneRecords(' + (page + 1) + ')">Siguiente</button>' : '') +
-                '</div></div>'
-            : '';
-        box.innerHTML = '<div class="table-container"><table><thead><tr><th>Fecha</th><th>Telefono / Contacto</th><th>Extension</th><th>Resultado</th><th>Duracion</th><th>Agente</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + pager;
-    } catch (err) {
-        box.innerHTML = '<div class="text-center text-secondary" style="padding:24px;">' + escapeHtml(err.message) + '</div>';
-    }
 }
 
 function switchVoiceMode(mode, btn) {

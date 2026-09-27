@@ -878,6 +878,19 @@ def init_db():
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_webphone_records_creator ON webphone_records(created_by, created_at);
             CREATE INDEX IF NOT EXISTS idx_webphone_records_outcome ON webphone_records(outcome);
+            CREATE TABLE IF NOT EXISTS webphone_daily_stats (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                stat_date DATE NOT NULL,
+                total_calls INTEGER NOT NULL DEFAULT 0,
+                answered INTEGER NOT NULL DEFAULT 0,
+                terminated INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                total_duration INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                UNIQUE(user_id, stat_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_webphone_daily_user ON webphone_daily_stats(user_id, stat_date);
         """)
 
 
@@ -1660,6 +1673,22 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_webphone_records_creator ON webphone_records(created_by, created_at);
             CREATE INDEX IF NOT EXISTS idx_webphone_records_outcome ON webphone_records(outcome);
+
+            -- Web phone daily aggregate: one row per account per day
+            CREATE TABLE IF NOT EXISTS webphone_daily_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                stat_date TEXT NOT NULL,
+                total_calls INTEGER NOT NULL DEFAULT 0,
+                answered INTEGER NOT NULL DEFAULT 0,
+                terminated INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                total_duration INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, stat_date),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_webphone_daily_user ON webphone_daily_stats(user_id, stat_date);
 
         ''')
         # Create default admin if not exists
@@ -10454,6 +10483,52 @@ WEBPHONE_OUTCOMES = {
 }
 
 
+def _sync_webphone_daily(user_id, stat_date):
+    """Recompute + upsert the daily aggregate row for (account, date).
+
+    Keeps webphone_daily_stats consistent with webphone_records so each account
+    has exactly one row per day. Works on both SQLite and PostgreSQL.
+    """
+    db = get_db()
+    agg = db.execute(
+        "SELECT COUNT(*) AS total, "
+        "COALESCE(SUM(CASE WHEN outcome='answered' THEN 1 ELSE 0 END),0) AS answered, "
+        "COALESCE(SUM(CASE WHEN outcome='terminated' THEN 1 ELSE 0 END),0) AS terminated, "
+        "COALESCE(SUM(CASE WHEN outcome IN ('failed','rejected','no-answer','busy','canceled') "
+        "                 THEN 1 ELSE 0 END),0) AS failed, "
+        "COALESCE(SUM(CASE WHEN outcome='answered' THEN duration ELSE 0 END),0) AS dur "
+        "FROM webphone_records WHERE created_by=? AND date(initiated_at)=?",
+        (user_id, stat_date)).fetchone()
+    total = int(agg['total'] or 0)
+    answered = int(agg['answered'] or 0)
+    terminated = int(agg['terminated'] or 0)
+    failed = int(agg['failed'] or 0)
+    dur = int(agg['dur'] or 0)
+    pg = (db.db_type == 'postgres')
+    if pg:
+        db.execute(
+            "INSERT INTO webphone_daily_stats (user_id, stat_date, total_calls, answered, "
+            "terminated, failed, total_duration, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, NOW()) "
+            "ON CONFLICT (user_id, stat_date) DO UPDATE SET "
+            "total_calls=EXCLUDED.total_calls, answered=EXCLUDED.answered, "
+            "terminated=EXCLUDED.terminated, failed=EXCLUDED.failed, "
+            "total_duration=EXCLUDED.total_duration, updated_at=NOW()",
+            (user_id, stat_date, total, answered, terminated, failed, dur))
+    else:
+        db.execute(
+            "INSERT INTO webphone_daily_stats (user_id, stat_date, total_calls, answered, "
+            "terminated, failed, total_duration, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now')) "
+            "ON CONFLICT (user_id, stat_date) DO UPDATE SET "
+            "total_calls=excluded.total_calls, answered=excluded.answered, "
+            "terminated=excluded.terminated, failed=excluded.failed, "
+            "total_duration=excluded.total_duration, updated_at=datetime('now')",
+            (user_id, stat_date, total, answered, terminated, failed, dur))
+    db.commit()
+    return stat_date
+
+
 @app.route('/api/webphone/records', methods=['POST'])
 @login_required
 def webphone_record_create():
@@ -10521,6 +10596,12 @@ def webphone_record_create():
              reason, initiated_at, finished_at, uid))
         db.commit()
         row = db.execute("SELECT * FROM webphone_records WHERE id=?", (cur.lastrowid,)).fetchone()
+    # Keep the per-account per-day aggregate in sync
+    day = (row['initiated_at'] or now_ts)[:10]
+    try:
+        _sync_webphone_daily(uid, day)
+    except Exception:
+        pass
     return jsonify({'record': dict(row)})
 
 
@@ -10580,34 +10661,75 @@ def webphone_statistics():
     scope_mode = request.args.get('scope', 'auto').strip()
     sw, sp = _scope_where('r', g.user['id'], g.user['role'], scope_mode)
     where_sql = '1=1 AND ' + sw
+    scope_params = list(sp)
 
     total = db.execute(
-        f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql}", sp
+        f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql}", scope_params
     ).fetchone()['c']
     answered = db.execute(
         f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
-        "AND r.outcome='answered'", sp).fetchone()['c']
+        "AND r.outcome='answered'", scope_params).fetchone()['c']
     failed = db.execute(
         f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
         "AND r.outcome IN ('failed','rejected','no-answer','busy','canceled')",
-        sp).fetchone()['c']
+        scope_params).fetchone()['c']
     terminated = db.execute(
         f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
-        "AND r.outcome='terminated'", sp).fetchone()['c']
+        "AND r.outcome='terminated'", scope_params).fetchone()['c']
     total_duration = db.execute(
         f"SELECT COALESCE(SUM(duration),0) AS s FROM webphone_records r "
-        f"WHERE {where_sql} AND r.outcome='answered'", sp).fetchone()['s'] or 0
+        f"WHERE {where_sql} AND r.outcome='answered'", scope_params).fetchone()['s'] or 0
 
     today = datetime.now().strftime('%Y-%m-%d')
     today_calls = db.execute(
         f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
-        "AND date(r.initiated_at)=?", sp + [today]).fetchone()['c']
+        "AND date(r.initiated_at)=?", scope_params + [today]).fetchone()['c']
+
+    # Per-account per-day aggregate rows (one row per account per day).
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    day_where = ["1=1"]
+    day_params = []
+    if date_from:
+        day_where.append("date(d.initiated_at) >= date(?)")
+        day_params.append(date_from)
+    if date_to:
+        day_where.append("date(d.initiated_at) <= date(?)")
+        day_params.append(date_to)
+    inner_sql = (f"SELECT r.created_by AS user_id, u.id AS uid, u.username, u.full_name, "
+                 f"date(r.initiated_at) AS day, "
+                 f"COUNT(*) AS total_calls, "
+                 f"COALESCE(SUM(CASE WHEN r.outcome='answered' THEN 1 ELSE 0 END),0) AS answered, "
+                 f"COALESCE(SUM(CASE WHEN r.outcome='terminated' THEN 1 ELSE 0 END),0) AS terminated, "
+                 f"COALESCE(SUM(CASE WHEN r.outcome IN ('failed','rejected','no-answer','busy','canceled') "
+                 f"THEN 1 ELSE 0 END),0) AS failed, "
+                 f"COALESCE(SUM(CASE WHEN r.outcome='answered' THEN r.duration ELSE 0 END),0) AS total_duration "
+                 f"FROM webphone_records r LEFT JOIN users u ON u.id=r.created_by "
+                 f"WHERE {where_sql} GROUP BY r.created_by, u.id, u.username, u.full_name, "
+                 f"date(r.initiated_at)")
+    day_total_sql = f"SELECT COUNT(*) AS c FROM ({inner_sql}) d WHERE {' AND '.join(day_where)}"
+    day_total = db.execute(day_total_sql, list(scope_params) + day_params).fetchone()['c']
+
+    page = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 20, type=int), 200)
+    offset = (page - 1) * per_page
+    rows_sql = (f"SELECT * FROM ({inner_sql}) d WHERE {' AND '.join(day_where)} "
+                f"ORDER BY d.day DESC, d.user_id ASC LIMIT ? OFFSET ?")
+    rows = db.execute(rows_sql,
+                      list(scope_params) + day_params + [per_page, offset]).fetchall()
+    items = []
+    for row in rows:
+        it = dict(row)
+        it['answer_rate'] = round((it['answered'] / it['total_calls'] * 100)
+                                  if it['total_calls'] else 0, 1)
+        items.append(it)
+
     last7 = []
     for i in range(6, -1, -1):
         day = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
         c = db.execute(
             f"SELECT COUNT(*) AS c FROM webphone_records r WHERE {where_sql} "
-            "AND date(r.initiated_at)=?", sp + [day]).fetchone()['c']
+            "AND date(r.initiated_at)=?", scope_params + [day]).fetchone()['c']
         last7.append({'date': day, 'count': c})
 
     answer_rate = (answered / total * 100) if total else 0
@@ -10620,6 +10742,8 @@ def webphone_statistics():
         'avg_duration': round(avg_duration, 1),
         'answer_rate': round(answer_rate, 1),
         'last_7_days': last7,
+        'daily_rows': items, 'daily_total': day_total,
+        'page': page, 'per_page': per_page,
     }
 
 
