@@ -4682,6 +4682,8 @@ async function loadWebphoneDaily(page) {
                 '<td><span class="badge badge-red">' + r.failed + '</span></td>' +
                 '<td>' + r.terminated + '</td>' +
                 '<td style="color:#2563EB;font-weight:600;">' + formatDuration(r.total_duration) + '</td>' +
+                '<td class="text-secondary text-sm">' + (r.unit_price ? formatCost(r.unit_price) : '—') + '</td>' +
+                '<td style="color:#0F766E;font-weight:600;">' + formatCost(r.cost) + '</td>' +
                 '<td><span class="badge ' + rateColor + '">' + r.answer_rate + '%</span></td>' +
                 '<td class="text-secondary text-sm">' + (r.last_active_at ? timeAgo(r.last_active_at) : '—') + '</td>' +
             '</tr>';
@@ -4695,7 +4697,7 @@ async function loadWebphoneDaily(page) {
                     (page < pages ? '<button class="btn btn-secondary btn-sm" onclick="loadWebphoneDaily(' + (page + 1) + ')">Siguiente</button>' : '') +
                 '</div></div>'
             : '';
-        box.innerHTML = '<div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th>Llamadas</th><th>Conectadas</th><th>Fallidas</th><th>Terminadas</th><th>Tiempo</th><th>Exito</th><th>Ultima actividad</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + pager;
+        box.innerHTML = '<div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th>Llamadas</th><th>Conectadas</th><th>Fallidas</th><th>Terminadas</th><th>Tiempo</th><th title="Precio por minuto contestado (por pais)">Precio</th><th>Costo</th><th>Exito</th><th>Ultima actividad</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + pager;
     } catch (err) {
         box.innerHTML = '<div class="text-center text-secondary" style="padding:24px;">' + escapeHtml(err.message) + '</div>';
     }
@@ -6150,18 +6152,22 @@ var SMS_PRICING_COUNTRIES = [
 async function renderEmailPricing(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     var smsPricingLoadError = '';
+    var wpLoadError = '';
     try {
-        var [pData, smsPricingData] = await Promise.all([
+        var [pData, smsPricingData, wpPricingData] = await Promise.all([
             api('/api/config/email/pricing'),
             api('/api/config/sms/pricing').catch(function(e) {
-                // Surface the real HTTP error instead of silently swallowing it,
-                // so admins can see whether it's 404 (route missing) or 500 (DB error).
                 smsPricingLoadError = e && e.message ? e.message : 'Error cargando precios SMS';
                 return { configs: [], error: smsPricingLoadError };
+            }),
+            api('/api/config/webphone/pricing').catch(function(e) {
+                wpLoadError = e && e.message ? e.message : 'Error cargando precios Telefono Web';
+                return { configs: [], error: wpLoadError };
             })
         ]);
         var emailUnit = (pData.unit_price != null ? pData.unit_price : 0);
         var smsConfigs = smsPricingData.configs || [];
+        var wpConfigs = wpPricingData.configs || [];
         var existingCountries = {};
         smsConfigs.forEach(function(c) { existingCountries[(c.country || '').toUpperCase()] = true; });
         // Dropdown options: only countries not already added
@@ -6178,6 +6184,22 @@ async function renderEmailPricing(container) {
                   '<button class="btn btn-danger btn-sm" onclick="deleteSmsPricing(' + c.id + ')">Eliminar</button>' +
                 '</td></tr>';
         }).join('') : '<tr><td colspan="3" class="text-center text-secondary" style="padding:18px;">Agregue un pais para fijar su precio por SMS.</td></tr>';
+        // Telefono Web pricing card
+        var wpExisting = {};
+        wpConfigs.forEach(function(c) { wpExisting[(c.country || '').toUpperCase()] = true; });
+        var wpOpts = SMS_PRICING_COUNTRIES.filter(function(c) { return !wpExisting[c.code]; });
+        var wpDdOptions = wpOpts.length
+            ? wpOpts.map(function(c) { return '<option value="' + c.code + '">' + escapeHtml(c.name) + '</option>'; }).join('')
+            : '<option value="">No hay paises disponibles</option>';
+        var wpRows = wpConfigs.length ? wpConfigs.map(function(c) {
+            return '<tr>' +
+                '<td><strong>' + escapeHtml(c.country_name || c.country) + ' (' + escapeHtml(c.country) + ')</strong></td>' +
+                '<td style="white-space:nowrap;"><input type="number" step="any" min="0" id="wp-price-' + c.id + '" value="' + (c.unit_price != null ? c.unit_price : 0) + '" style="max-width:160px;"></td>' +
+                '<td class="text-right" style="white-space:nowrap;">' +
+                  '<button class="btn btn-primary btn-sm" onclick="saveWebphonePricing(' + c.id + ')">Guardar</button> ' +
+                  '<button class="btn btn-danger btn-sm" onclick="deleteWebphonePricing(' + c.id + ')">Eliminar</button>' +
+                '</td></tr>';
+        }).join('') : '<tr><td colspan="3" class="text-center text-secondary" style="padding:18px;">Agregue un pais para fijar su precio por minuto.</td></tr>';
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Facturacion (SMS y Correo)</h1>' +
             '<div class="card mb-4"><div class="card-header"><h2 style="margin:0;">Correo (facturacion global)</h2></div><div class="card-body">' +
@@ -6200,6 +6222,19 @@ async function renderEmailPricing(container) {
                 '</tr></thead><tbody>' + smsRows + '</tbody></table></div>' +
                 '<div id="sp-msg" style="margin-top:10px;"></div>' +
                 (smsPricingLoadError ? '<div class="alert alert-error" style="margin-top:10px;">Error al cargar precios SMS: ' + escapeHtml(smsPricingLoadError) + '</div>' : '') +
+            '</div></div>' +
+            '<div class="card mb-4"><div class="card-header"><h2 style="margin:0;">Telefono Web (facturacion por pais)</h2></div><div class="card-body">' +
+                '<p class="text-secondary" style="margin-bottom:14px;">Cada llamada web <strong>contestada</strong> se factura por <strong>minuto</strong> (fraccion redondeada hacia arriba; sin llamada contestada no se cobra). Costo = minutos contestados x precio por minuto del pais de la cuenta.</p>' +
+                '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;align-items:end;margin-bottom:16px;">' +
+                  '<div class="form-group"><label>Pais</label><select id="wp-country" style="max-width:220px;">' + wpDdOptions + '</select></div>' +
+                  '<div class="form-group"><label>Precio por minuto</label><input id="wp-new-price" type="number" step="any" min="0" value="0" style="max-width:220px;"></div>' +
+                  '<div><button class="btn btn-success" onclick="addWebphonePricing()">Agregar</button></div>' +
+                '</div>' +
+                '<div style="overflow-x:auto;margin-bottom:16px;"><table class="data-table"><thead><tr>' +
+                  '<th>Pais</th><th>Precio por minuto</th><th class="text-right">Accion</th>' +
+                '</tr></thead><tbody>' + wpRows + '</tbody></table></div>' +
+                '<div id="wp-msg" style="margin-top:10px;"></div>' +
+                (wpLoadError ? '<div class="alert alert-error" style="margin-top:10px;">Error al cargar precios Telefono Web: ' + escapeHtml(wpLoadError) + '</div>' : '') +
             '</div></div>';
     } catch (e) {
         container.innerHTML = '<div class="empty-state"><p>' + escapeHtml(e.message) + '</p></div>';
@@ -6257,6 +6292,48 @@ async function deleteSmsPricing(configId) {
     try {
         await api('/api/config/sms/pricing/' + configId, { method: 'DELETE' });
         if (msg) msg.innerHTML = '<div class="alert alert-success">Precio por SMS eliminado.</div>';
+        renderEmailPricing(document.getElementById('page-content'));
+    } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
+}
+
+async function addWebphonePricing() {
+    var msg = document.getElementById('wp-msg');
+    if (msg) msg.innerHTML = '';
+    var country = document.getElementById('wp-country');
+    var countryName = '';
+    var code = (country && country.value) || '';
+    if (!code) { if (msg) msg.innerHTML = '<div class="alert alert-error">Seleccione un pais.</div>'; return; }
+    var match = SMS_PRICING_COUNTRIES.filter(function(c) { return c.code === code; });
+    if (match.length) { countryName = match[0].name; }
+    var priceInput = document.getElementById('wp-new-price');
+    try {
+        await api('/api/config/webphone/pricing', {
+            method: 'POST',
+            body: { country: code, country_name: countryName, unit_price: priceInput.value }
+        });
+        if (msg) msg.innerHTML = '<div class="alert alert-success">Precio Telefono Web agregado.</div>';
+        renderEmailPricing(document.getElementById('page-content'));
+    } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
+}
+
+async function saveWebphonePricing(configId) {
+    var msg = document.getElementById('wp-msg');
+    if (msg) msg.innerHTML = '';
+    var input = document.getElementById('wp-price-' + configId);
+    try {
+        await api('/api/config/webphone/pricing/' + configId, { method: 'PUT', body: { unit_price: input.value } });
+        if (msg) msg.innerHTML = '<div class="alert alert-success">Precio actualizado.</div>';
+        renderEmailPricing(document.getElementById('page-content'));
+    } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
+}
+
+async function deleteWebphonePricing(configId) {
+    var msg = document.getElementById('wp-msg');
+    if (msg) msg.innerHTML = '';
+    if (!confirm('Seguro que desea eliminar el precio por minuto de este pais?')) return;
+    try {
+        await api('/api/config/webphone/pricing/' + configId, { method: 'DELETE' });
+        if (msg) msg.innerHTML = '<div class="alert alert-success">Precio eliminado.</div>';
         renderEmailPricing(document.getElementById('page-content'));
     } catch (e) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(e.message) + '</div>'; }
 }

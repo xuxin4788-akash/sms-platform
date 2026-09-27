@@ -629,6 +629,15 @@ def init_db():
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
+            CREATE TABLE IF NOT EXISTS webphone_billing_prices (
+                id SERIAL PRIMARY KEY,
+                country VARCHAR(20) NOT NULL UNIQUE,
+                country_name VARCHAR(40) DEFAULT '',
+                unit_price NUMERIC(14,4) NOT NULL DEFAULT 0,
+                is_active BOOLEAN DEFAULT TRUE,
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+
             CREATE TABLE IF NOT EXISTS email_records (
                 id SERIAL PRIMARY KEY,
                 recipient_email VARCHAR(255) NOT NULL,
@@ -868,6 +877,8 @@ def init_db():
                     CHECK(outcome IN ('answered','terminated','failed','rejected',
                                      'no-answer','busy','canceled','unknown')),
                 duration INTEGER NOT NULL DEFAULT 0,
+                price NUMERIC(14,6) NOT NULL DEFAULT 0,
+                cost NUMERIC(14,6) NOT NULL DEFAULT 0,
                 reason VARCHAR(255) NOT NULL DEFAULT '',
                 initiated_at TIMESTAMP,
                 finished_at TIMESTAMP,
@@ -887,6 +898,8 @@ def init_db():
                 terminated INTEGER NOT NULL DEFAULT 0,
                 failed INTEGER NOT NULL DEFAULT 0,
                 total_duration INTEGER NOT NULL DEFAULT 0,
+                answered_duration INTEGER NOT NULL DEFAULT 0,
+                cost NUMERIC(14,6) NOT NULL DEFAULT 0,
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 UNIQUE(user_id, stat_date)
             );
@@ -918,6 +931,28 @@ def init_db():
             """)
         if not pg_column_exists('users', 'category_id'):
             cur.execute("ALTER TABLE users ADD COLUMN category_id INTEGER REFERENCES user_categories(id) ON DELETE SET NULL")
+
+        # webphone billing price columns + migration on existing databases
+        if pg_table_exists('webphone_records'):
+            for col in ('price', 'cost'):
+                if not pg_column_exists('webphone_records', col):
+                    cur.execute("ALTER TABLE webphone_records ADD COLUMN %s NUMERIC(14,6) NOT NULL DEFAULT 0" % col)
+        if pg_table_exists('webphone_daily_stats'):
+            for col_sql in ('answered_duration INTEGER NOT NULL DEFAULT 0', 'cost NUMERIC(14,6) NOT NULL DEFAULT 0'):
+                col = col_sql.split(' ')[0]
+                if not pg_column_exists('webphone_daily_stats', col):
+                    cur.execute("ALTER TABLE webphone_daily_stats ADD COLUMN %s" % col_sql)
+        if not pg_table_exists('webphone_billing_prices'):
+            cur.execute("""
+                CREATE TABLE webphone_billing_prices (
+                    id SERIAL PRIMARY KEY,
+                    country VARCHAR(20) NOT NULL UNIQUE,
+                    country_name VARCHAR(40) DEFAULT '',
+                    unit_price NUMERIC(14,4) NOT NULL DEFAULT 0,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
 
         # email queue: job linkage + attempt counter; queue/jobs/suppression tables
         if not pg_column_exists('email_records', 'job_id'):
@@ -1663,6 +1698,8 @@ def init_db():
                     CHECK(outcome IN ('answered','terminated','failed','rejected',
                                      'no-answer','busy','canceled','unknown')),
                 duration INTEGER NOT NULL DEFAULT 0,
+                price REAL NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0,
                 reason TEXT NOT NULL DEFAULT '',
                 initiated_at TEXT,
                 finished_at TEXT,
@@ -1684,11 +1721,23 @@ def init_db():
                 terminated INTEGER NOT NULL DEFAULT 0,
                 failed INTEGER NOT NULL DEFAULT 0,
                 total_duration INTEGER NOT NULL DEFAULT 0,
+                answered_duration INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(user_id, stat_date),
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_webphone_daily_user ON webphone_daily_stats(user_id, stat_date);
+
+            -- Web phone billing prices per country
+            CREATE TABLE IF NOT EXISTS webphone_billing_prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country TEXT NOT NULL UNIQUE,
+                country_name TEXT NOT NULL DEFAULT '',
+                unit_price REAL NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
 
         ''')
         # Create default admin if not exists
@@ -1844,6 +1893,33 @@ def init_db():
         try:
             db.execute("ALTER TABLE voice_records ADD COLUMN extnumber TEXT DEFAULT ''")
             db.commit()
+        except Exception:
+            pass
+        # Web phone billing columns
+        for _tbl, _cols in (
+            ('webphone_records', (("price", "REAL NOT NULL DEFAULT 0"), ("cost", "REAL NOT NULL DEFAULT 0"))),
+            ('webphone_daily_stats', (("answered_duration", "INTEGER NOT NULL DEFAULT 0"), ("cost", "REAL NOT NULL DEFAULT 0"))),
+        ):
+            try:
+                existing = {r['name'] for r in db.execute(f"PRAGMA table_info({_tbl})").fetchall()}
+            except Exception:
+                continue
+            for _col, _type in _cols:
+                if _col not in existing:
+                    try:
+                        db.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_type}")
+                        db.commit()
+                    except Exception:
+                        pass
+        # Seed default webphone pricing rows (mx/co/pe/ar) if present
+        try:
+            n = db.execute("SELECT COUNT(*) c FROM webphone_billing_prices").fetchone()['c']
+            if n == 0:
+                for _iso, _name in (('mx', 'Mexico'), ('co', 'Colombia'), ('pe', 'Peru'), ('ar', 'Argentina')):
+                    db.execute(
+                        "INSERT INTO webphone_billing_prices (country, country_name, unit_price, is_active) VALUES (?,?,?,1)",
+                        (_iso, _name, 0))
+                db.commit()
         except Exception:
             pass
         try:
@@ -2635,6 +2711,53 @@ def get_sms_unit_price_for(user_id, db=None):
     if price > 0:
         return price
     return get_sms_unit_price(db=db)
+
+_WEBPHONE_COUNTRIES = (('mx', 'Mexico'), ('co', 'Colombia'), ('pe', 'Peru'), ('ar', 'Argentina'))
+
+def get_webphone_unit_price(country, db=None):
+    """Precio por minuto de llamada web de un pais (webphone_billing_prices).
+    0 si el pais no esta configurado."""
+    if not country:
+        return 0.0
+    own = db is None
+    if own:
+        db = get_db()
+    row = db.execute(
+        "SELECT unit_price FROM webphone_billing_prices WHERE UPPER(country)=UPPER(?) "
+        "AND is_active=1 ORDER BY id LIMIT 1", (str(country),)
+    ).fetchone()
+    if row and row['unit_price'] is not None:
+        try:
+            return round(float(row['unit_price']), 6)
+        except (ValueError, TypeError):
+            return 0.0
+    return 0.0
+
+def get_webphone_unit_price_for(user_id, db=None):
+    """Precio/minuto de llamada web para una cuenta (por pais del agente)."""
+    own = db is None
+    if own:
+        db = get_db()
+    return get_webphone_unit_price(get_effective_sms_country(user_id, db=db), db=db)
+
+def webphone_answered_minutes(duration_seconds):
+    """Minutos facturables de una llamada contestada (redondeo hacia arriba).
+    Solo cuenta si duration > 0; 0 si no hubo conversacion."""
+    try:
+        d = max(0, int(duration_seconds or 0))
+    except (TypeError, ValueError):
+        d = 0
+    if d <= 0:
+        return 0
+    return max(1, -(-d // 60))  # ceil(d/60)
+
+def webphone_call_cost(unit_price, duration_seconds):
+    """Coste de una llamada: price/minuto x minutos (redondeo hacia arriba)."""
+    mins = webphone_answered_minutes(duration_seconds)
+    try:
+        return round(float(unit_price or 0) * mins, 6)
+    except (TypeError, ValueError):
+        return 0.0
 
 def sms_segments_for_scope(where, params, db=None, group=False):
     """Total billable SMS segments for a scope. Reads the stored
@@ -10499,6 +10622,22 @@ def _sync_webphone_daily(user_id, stat_date):
         "COALESCE(SUM(CASE WHEN outcome='answered' THEN duration ELSE 0 END),0) AS dur "
         "FROM webphone_records WHERE created_by=? AND date(initiated_at)=?",
         (user_id, stat_date)).fetchone()
+    # Billing: only answered calls are charged, per caller country price/minute,
+    # each answered call rounded up to its own minute so short calls still bill 1min.
+    ans_dur = 0
+    day_cost = 0.0
+    uprice = get_webphone_unit_price_for(user_id, db=db)
+    try:
+        rows = db.execute(
+            "SELECT outcome, duration FROM webphone_records "
+            "WHERE created_by=? AND date(initiated_at)=?", (user_id, stat_date)).fetchall()
+        for r in rows:
+            if r['outcome'] == 'answered':
+                d = max(0, int(r['duration'] or 0))
+                ans_dur += d
+                day_cost += webphone_call_cost(uprice, d)
+    except Exception:
+        pass
     total = int(agg['total'] or 0)
     answered = int(agg['answered'] or 0)
     terminated = int(agg['terminated'] or 0)
@@ -10508,23 +10647,26 @@ def _sync_webphone_daily(user_id, stat_date):
     if pg:
         db.execute(
             "INSERT INTO webphone_daily_stats (user_id, stat_date, total_calls, answered, "
-            "terminated, failed, total_duration, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, NOW()) "
+            "terminated, failed, total_duration, answered_duration, cost, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW()) "
             "ON CONFLICT (user_id, stat_date) DO UPDATE SET "
             "total_calls=EXCLUDED.total_calls, answered=EXCLUDED.answered, "
             "terminated=EXCLUDED.terminated, failed=EXCLUDED.failed, "
-            "total_duration=EXCLUDED.total_duration, updated_at=NOW()",
-            (user_id, stat_date, total, answered, terminated, failed, dur))
+            "total_duration=EXCLUDED.total_duration, "
+            "answered_duration=EXCLUDED.answered_duration, cost=EXCLUDED.cost, updated_at=NOW()",
+            (user_id, stat_date, total, answered, terminated, failed, dur, ans_dur, day_cost))
     else:
-        db.execute(
-            "INSERT INTO webphone_daily_stats (user_id, stat_date, total_calls, answered, "
-            "terminated, failed, total_duration, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now')) "
-            "ON CONFLICT (user_id, stat_date) DO UPDATE SET "
-            "total_calls=excluded.total_calls, answered=excluded.answered, "
-            "terminated=excluded.terminated, failed=excluded.failed, "
-            "total_duration=excluded.total_duration, updated_at=datetime('now')",
-            (user_id, stat_date, total, answered, terminated, failed, dur))
+        db.execute("""
+            INSERT INTO webphone_daily_stats (user_id, stat_date, total_calls, answered,
+              terminated, failed, total_duration, answered_duration, cost, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT (user_id, stat_date) DO UPDATE SET
+              total_calls=excluded.total_calls, answered=excluded.answered,
+              terminated=excluded.terminated, failed=excluded.failed,
+              total_duration=excluded.total_duration,
+              answered_duration=excluded.answered_duration, cost=excluded.cost,
+              updated_at=datetime('now')""",
+            (user_id, stat_date, total, answered, terminated, failed, dur, ans_dur, day_cost))
     db.commit()
     return stat_date
 
@@ -10559,6 +10701,9 @@ def webphone_record_create():
 
     db = get_db()
     uid = g.user['id']
+    uprice = get_webphone_unit_price_for(uid, db=db)
+    call_price = uprice
+    call_cost = webphone_call_cost(uprice, duration) if outcome == 'answered' else 0.0
     existing = None
     if token:
         existing = db.execute(
@@ -10575,12 +10720,13 @@ def webphone_record_create():
         new_duration = max(int(old['duration'] or 0), duration)
         new_initiated = old['initiated_at'] or initiated_at
         new_finished = finished_at or old['finished_at']
+        new_cost = webphone_call_cost(uprice, new_duration) if new_outcome == 'answered' else (old['cost'] or 0.0)
         db.execute(
             "UPDATE webphone_records SET phone=?, extnumber=?, outcome=?, duration=?, "
-            "reason=?, contact_id=COALESCE(?, contact_id), contact_name=?, "
+            "price=?, cost=?, reason=?, contact_id=COALESCE(?, contact_id), contact_name=?, "
             "initiated_at=?, finished_at=? WHERE id=?",
             (phone or old['phone'], extnumber or old['extnumber'], new_outcome,
-             new_duration, reason or old['reason'], contact_id,
+             new_duration, uprice, new_cost, reason or old['reason'], contact_id,
              contact_name or old['contact_name'], new_initiated, new_finished,
              old['id']))
         db.commit()
@@ -10590,10 +10736,10 @@ def webphone_record_create():
             token = 'WP' + uuid.uuid4().hex[:16]
         cur = db.execute(
             "INSERT INTO webphone_records (call_token, phone, contact_id, contact_name, "
-            "extnumber, outcome, duration, reason, initiated_at, finished_at, created_by) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "extnumber, outcome, duration, price, cost, reason, initiated_at, finished_at, created_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (token, phone, contact_id, contact_name, extnumber, outcome, duration,
-             reason, initiated_at, finished_at, uid))
+             call_price, call_cost, reason, initiated_at, finished_at, uid))
         db.commit()
         row = db.execute("SELECT * FROM webphone_records WHERE id=?", (cur.lastrowid,)).fetchone()
     # Keep the per-account per-day aggregate in sync
@@ -10705,6 +10851,8 @@ def webphone_statistics():
                  f"COALESCE(SUM(CASE WHEN r.outcome IN ('failed','rejected','no-answer','busy','canceled') "
                  f"THEN 1 ELSE 0 END),0) AS failed, "
                  f"COALESCE(SUM(CASE WHEN r.outcome='answered' THEN r.duration ELSE 0 END),0) AS total_duration, "
+                 f"COALESCE(SUM(r.cost),0) AS cost, "
+                 f"MAX(CASE WHEN r.outcome='answered' THEN COALESCE(r.price,0) ELSE 0 END) AS unit_price, "
                  f"MAX(r.initiated_at) AS last_active_at "
                  f"FROM webphone_records r LEFT JOIN users u ON u.id=r.created_by "
                  f"LEFT JOIN role_permissions rp ON rp.role=u.role "
@@ -10723,11 +10871,23 @@ def webphone_statistics():
                 f"ORDER BY d.total_calls DESC, d.user_id ASC LIMIT ? OFFSET ?")
     rows = db.execute(rows_sql,
                       list(scope_params) + day_params + [per_page, offset]).fetchall()
+    total_cost = db.execute(
+        f"SELECT COALESCE(SUM(cost),0) AS s FROM webphone_records r WHERE {where_sql}",
+        scope_params).fetchone()['s'] or 0
+
     items = []
     for row in rows:
         it = dict(row)
         it['answer_rate'] = round((it['answered'] / it['total_calls'] * 100)
                                   if it['total_calls'] else 0, 1)
+        try:
+            it['cost'] = round(float(it['cost'] or 0), 6)
+        except (TypeError, ValueError):
+            it['cost'] = 0
+        try:
+            it['unit_price'] = round(float(it['unit_price'] or 0), 6)
+        except (TypeError, ValueError):
+            it['unit_price'] = 0
         items.append(it)
 
     last7 = []
@@ -10747,6 +10907,7 @@ def webphone_statistics():
         'total_duration': int(total_duration),
         'avg_duration': round(avg_duration, 1),
         'answer_rate': round(answer_rate, 1),
+        'total_cost': round(float(total_cost), 6),
         'last_7_days': last7,
         'account_rows': items, 'account_total': account_total,
         'page': page, 'per_page': per_page,
@@ -12195,6 +12356,58 @@ def _ensure_sms_pricing_table():
         return False
 
 
+def _ensure_webphone_pricing_table():
+    """Self-healing guard: (re)create webphone_billing_prices if missing so the
+    Telefono Web pricing UI works even if the container predates the feature."""
+    db = get_db()
+    try:
+        db.execute("SELECT 1 FROM webphone_billing_prices LIMIT 1").fetchone()
+        return True
+    except Exception as e:
+        msg = str(e).lower()
+        if 'does not exist' not in msg and 'no such table' not in msg and 'undefinedtable' not in msg:
+            return False
+    if get_db_type() == 'postgres':
+        try:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS webphone_billing_prices (
+                    id SERIAL PRIMARY KEY,
+                    country VARCHAR(20) NOT NULL UNIQUE,
+                    country_name VARCHAR(40) DEFAULT '',
+                    unit_price NUMERIC(14,4) NOT NULL DEFAULT 0,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            db.commit()
+            return True
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return False
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS webphone_billing_prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country TEXT NOT NULL UNIQUE,
+                country_name TEXT DEFAULT '',
+                unit_price REAL NOT NULL DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        db.commit()
+        return True
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
+
+
 @app.route('/api/config/sms/pricing', methods=['GET'])
 @admin_required
 def list_sms_pricing():
@@ -12323,6 +12536,131 @@ def delete_sms_pricing(pid):
     if not row:
         return jsonify({'error': 'No encontrado'}), 404
     db.execute("DELETE FROM sms_billing_prices WHERE id=?", (pid,))
+    db.commit()
+    return jsonify({'message': 'Precio eliminado'})
+
+
+@app.route('/api/config/webphone/pricing', methods=['GET'])
+@admin_required
+def list_webphone_pricing():
+    try:
+        _ensure_webphone_pricing_table()
+        db = get_db()
+        rows = db.execute(
+            "SELECT id, country, country_name, unit_price, is_active, updated_at "
+            "FROM webphone_billing_prices ORDER BY country"
+        ).fetchall()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Error de base de datos: ' + str(e)}), 500
+    configs = []
+    for r in rows:
+        up = r['updated_at']
+        upd = up.strftime('%Y-%m-%d %H:%M:%S') if hasattr(up, 'strftime') else str(up or '')
+        configs.append({
+            'id': r['id'], 'country': r['country'], 'country_name': r['country_name'] or '',
+            'unit_price': float(r['unit_price'] or 0), 'is_active': bool(r['is_active']),
+            'updated_at': upd
+        })
+    return jsonify({'configs': configs})
+
+
+@app.route('/api/config/webphone/pricing', methods=['POST'])
+@admin_required
+def add_webphone_pricing():
+    data = request.get_json(silent=True) or {}
+    country = str(data.get('country') or '').strip().upper()
+    country_name = str(data.get('country_name') or '').strip()
+    if not country:
+        return jsonify({'error': 'Debe seleccionar un pais'}), 400
+    try:
+        unit_price = round(float(data.get('unit_price') or 0), 6)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'El precio debe ser un numero valido'}), 400
+    if unit_price < 0:
+        return jsonify({'error': 'El precio no puede ser negativo'}), 400
+    try:
+        _ensure_webphone_pricing_table()
+        db = get_db()
+        dup = db.execute(
+            "SELECT id FROM webphone_billing_prices WHERE UPPER(country)=UPPER(?)", (country,)).fetchone()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Error de base de datos: ' + str(e)}), 500
+    if dup:
+        return jsonify({'error': 'Ya existe un precio para ese pais'}), 409
+    try:
+        db.execute(
+            "INSERT INTO webphone_billing_prices (country, country_name, unit_price, is_active, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)", (country, country_name, unit_price, True, datetime.now()))
+        db.commit()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Error de base de datos: ' + str(e)}), 500
+    return jsonify({'message': 'Precio creado'})
+
+
+@app.route('/api/config/webphone/pricing/<int:pid>', methods=['PUT'])
+@admin_required
+def update_webphone_pricing(pid):
+    data = request.get_json(silent=True) or {}
+    try:
+        _ensure_webphone_pricing_table()
+        db = get_db()
+        row = db.execute("SELECT id FROM webphone_billing_prices WHERE id=?", (pid,)).fetchone()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Error de base de datos: ' + str(e)}), 500
+    if not row:
+        return jsonify({'error': 'No encontrado'}), 404
+    if 'is_active' in data:
+        db.execute("UPDATE webphone_billing_prices SET is_active=?, updated_at=? WHERE id=?",
+                   (1 if data.get('is_active') else 0, datetime.now(), pid))
+        db.commit()
+        return jsonify({'message': 'Estado actualizado'})
+    try:
+        unit_price = round(float(data.get('unit_price') if data.get('unit_price') not in (None, '') else 0), 6)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'El precio debe ser un numero valido'}), 400
+    if unit_price < 0:
+        return jsonify({'error': 'El precio no puede ser negativo'}), 400
+    country = str(data.get('country') or '').strip().upper()
+    country_name = str(data.get('country_name') or '').strip()
+    db.execute(
+        "UPDATE webphone_billing_prices SET unit_price=?, country_name=?, updated_at=? WHERE id=?",
+        (unit_price, country_name, datetime.now(), pid))
+    db.commit()
+    return jsonify({'message': 'Precio actualizado'})
+
+
+@app.route('/api/config/webphone/pricing/<int:pid>', methods=['DELETE'])
+@admin_required
+def delete_webphone_pricing(pid):
+    try:
+        _ensure_webphone_pricing_table()
+        db = get_db()
+        row = db.execute("SELECT id FROM webphone_billing_prices WHERE id=?", (pid,)).fetchone()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': 'Error de base de datos: ' + str(e)}), 500
+    if not row:
+        return jsonify({'error': 'No encontrado'}), 404
+    db.execute("DELETE FROM webphone_billing_prices WHERE id=?", (pid,))
     db.commit()
     return jsonify({'message': 'Precio eliminado'})
 
