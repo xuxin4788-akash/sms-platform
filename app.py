@@ -5763,36 +5763,19 @@ def _group_visible_where(alias: str, uid: int, role) -> tuple[str, list]:
 def _contact_scope_for_group(alias: str, uid: int, role, group_id) -> tuple[str, list]:
     """Contact-visibility WHERE for a selected group.
 
-    When a team-shared group is chosen (created by the current user's team
-    admin / a teammate), widen the scope to the whole team so every team member
-    can send to that group's contacts (this is the "team uses the admin's
-    group" case). Non-shared / personal groups keep the normal per-role rule.
+    Contacts are ALWAYS account-isolated and never shared via a group, no
+    matter which (even team-shared) group is selected. A group is only a
+    container/filter for the rows the current account is already allowed to
+    see; putting a contact into a group must NEVER widen its visibility to the
+    rest of the team. So this returns the normal per-role scope:
+
+      admin        -> 1=1 (all)
+      team_admin   -> own + their team members (their managed scope)
+      member/custom-> own only
+
+    The selected group_id is intentionally ignored for scoping purposes (it is
+    still applied as a plain `group_id = ?` filter by the caller).
     """
-    if group_id:
-        db = get_db()
-        try:
-            gid = int(group_id)
-        except (TypeError, ValueError):
-            gid = 0
-        if gid:
-            g = db.execute("SELECT created_by FROM contact_groups WHERE id=?",
-                           (gid,)).fetchone()
-            if g:
-                if role == 'admin':
-                    return "1=1", []
-                owner = _group_shared_owner(uid, role)
-                if owner is not None:
-                    # The group's creator must belong to the current user's team.
-                    team_ids = set()
-                    team_ids.add(owner)
-                    for m in db.execute(
-                            "SELECT id FROM users WHERE team_creator_id=?",
-                            (owner,)).fetchall():
-                        team_ids.add(m['id'])
-                    if g['created_by'] in team_ids:
-                        return (f"({alias}.created_by = ? OR {alias}.created_by IN "
-                                f"(SELECT id FROM users WHERE team_creator_id = ?))",
-                                [owner, owner])
     return _scope_where(alias, uid, role)
 
 
