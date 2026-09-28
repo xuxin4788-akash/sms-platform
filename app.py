@@ -880,6 +880,7 @@ def init_db():
                 price NUMERIC(14,6) NOT NULL DEFAULT 0,
                 cost NUMERIC(14,6) NOT NULL DEFAULT 0,
                 reason VARCHAR(255) NOT NULL DEFAULT '',
+                record_file VARCHAR(255) DEFAULT '',
                 initiated_at TIMESTAMP,
                 finished_at TIMESTAMP,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -937,6 +938,8 @@ def init_db():
             for col in ('price', 'cost'):
                 if not pg_column_exists('webphone_records', col):
                     cur.execute("ALTER TABLE webphone_records ADD COLUMN %s NUMERIC(14,6) NOT NULL DEFAULT 0" % col)
+            if not pg_column_exists('webphone_records', 'record_file'):
+                cur.execute("ALTER TABLE webphone_records ADD COLUMN record_file VARCHAR(255) DEFAULT ''")
         if pg_table_exists('webphone_daily_stats'):
             for col_sql in ('answered_duration INTEGER NOT NULL DEFAULT 0', 'cost NUMERIC(14,6) NOT NULL DEFAULT 0'):
                 col = col_sql.split(' ')[0]
@@ -1701,6 +1704,7 @@ def init_db():
                 price REAL NOT NULL DEFAULT 0,
                 cost REAL NOT NULL DEFAULT 0,
                 reason TEXT NOT NULL DEFAULT '',
+                record_file TEXT DEFAULT '',
                 initiated_at TEXT,
                 finished_at TEXT,
                 created_by INTEGER,
@@ -1897,7 +1901,7 @@ def init_db():
             pass
         # Web phone billing columns
         for _tbl, _cols in (
-            ('webphone_records', (("price", "REAL NOT NULL DEFAULT 0"), ("cost", "REAL NOT NULL DEFAULT 0"))),
+            ('webphone_records', (("price", "REAL NOT NULL DEFAULT 0"), ("cost", "REAL NOT NULL DEFAULT 0"), ("record_file", "TEXT DEFAULT ''"))),
             ('webphone_daily_stats', (("answered_duration", "INTEGER NOT NULL DEFAULT 0"), ("cost", "REAL NOT NULL DEFAULT 0"))),
         ):
             try:
@@ -2758,6 +2762,71 @@ def webphone_call_cost(unit_price, duration_seconds):
         return round(float(unit_price or 0) * mins, 6)
     except (TypeError, ValueError):
         return 0.0
+
+def _webphone_record_dir():
+    """Directory where Asterisk MixMonitor writes phone-<ext>-<ts>.wav files.
+    In the container it is /recordings (shared volume); overridable for tests."""
+    return os.environ.get('WEBPHONE_RECORD_DIR') or '/recordings'
+
+def webphone_resolve_record_file(extnumber, initiated_at=None):
+    """Match a phone-<EXT>-<YYMMDDHHMMSS>.wav recording on disk for a webphone
+    call, using the agent extension and (optionally) the call start time.
+
+    Returns the file path if a matching recording exists, else None.
+    """
+    if not extnumber:
+        return None
+    ext = str(extnumber).strip()
+    rec_dir = _webphone_record_dir()
+    try:
+        if not os.path.isdir(rec_dir):
+            return None
+        ts_hint = ''
+        if initiated_at:
+            hint = str(initiated_at).strip()
+            # accept 'YYYY-MM-DD HH:MM:SS' and 'YYYY-MM-DDTHH:MM:SS'
+            hint = hint.replace('T', ' ')
+            if ' ' in hint:
+                hint = hint[:19]
+            digits = ''.join(ch for ch in hint if ch.isdigit())
+            if len(digits) >= 14:
+                ts_hint = digits[:14]  # YYYYMMDDHHMMSS
+            elif len(digits) >= 8:
+                ts_hint = digits[:14].ljust(14, '0')
+        # candidate files: phone-<ext>-<ts>.wav ; try exact-time match first
+        prefix = 'phone-' + ext + '-'
+        candidates = []
+        try:
+            with os.scandir(rec_dir) as it:
+                for e in it:
+                    if not e.is_file(): continue
+                    name = e.name
+                    if not name.startswith(prefix): continue
+                    if not name.endswith('.wav'): continue
+                    candidates.append((name, e.path))
+        except OSError:
+            return None
+        if not candidates:
+            return None
+        candidates.sort()
+        # closest-timestamp heuristic (fall back to newest for that extension)
+        if ts_hint:
+            best, best_dist = None, None
+            for _name, path in candidates:
+                ts = ''.join(ch for ch in _name[len(prefix):len(prefix)+14] if ch.isdigit())
+                if len(ts) == 14:
+                    try:
+                        dist = abs(int(ts) - int(ts_hint))
+                    except ValueError:
+                        dist = None
+                    if dist is not None and (best_dist is None or dist < best_dist):
+                        best, best_dist = path, dist
+            if best:
+                return best
+        # fallback: newest file for that extension within the same-ish window
+        return candidates[-1][1] if candidates else None
+    except Exception:
+        return None
 
 def sms_segments_for_scope(where, params, db=None, group=False):
     """Total billable SMS segments for a scope. Reads the stored
@@ -10742,6 +10811,23 @@ def webphone_record_create():
              call_price, call_cost, reason, initiated_at, finished_at, uid))
         db.commit()
         row = db.execute("SELECT * FROM webphone_records WHERE id=?", (cur.lastrowid,)).fetchone()
+    # Correlate any Asterisk server-side recording (phone-<ext>-<ts>.wav) for
+    # this call and store just the file name (a small basename) on the row so
+    # the records list can later hand out an authenticated stream URL.
+    try:
+        disk = webphone_resolve_record_file(row['extnumber'], row['initiated_at'])
+        if disk:
+            fname = os.path.basename(disk)
+            cur2 = db.execute("UPDATE webphone_records SET record_file=? WHERE id=?",
+                              (fname, row['id']))
+            db.commit()
+            row = db.execute("SELECT * FROM webphone_records WHERE id=?", (row['id'],)).fetchone()
+        elif row['record_file']:
+            cur2 = db.execute("UPDATE webphone_records SET record_file='' WHERE id=?", (row['id'],))
+            db.commit()
+            row = db.execute("SELECT * FROM webphone_records WHERE id=?", (row['id'],)).fetchone()
+    except Exception:
+        pass
     # Keep the per-account per-day aggregate in sync
     day = (row['initiated_at'] or now_ts)[:10]
     try:
@@ -10796,6 +10882,34 @@ def webphone_records_list():
     items = [_row_with_dates(dict(r), ('initiated_at', 'finished_at', 'created_at'))
              for r in rows]
     return jsonify({'records': items, 'total': total, 'page': page, 'per_page': per_page})
+
+
+@app.route('/api/webphone/recording', methods=['GET'])
+@login_required
+def webphone_recording():
+    """Stream a web-phone call recording (Asterisk MixMonitor, shared volume).
+    The row is resolved by record id and the caller must be allowed to see it
+    via the same role scope as the records list."""
+    rid = request.args.get('id', type=int)
+    if not rid:
+        return jsonify({'error': 'Falta el id del registro'}), 400
+    db = get_db()
+    sw, sp = _scope_where('r', g.user['id'], g.user['role'], 'auto')
+    row = db.execute(
+        f"SELECT r.* FROM webphone_records r WHERE r.id=? AND {sw}", [rid] + list(sp)
+    ).fetchone()
+    if not row:
+        return jsonify({'error': 'Registro no encontrado'}), 404
+    fname = (row['record_file'] if 'record_file' in row.keys() else '') or ''
+    if not fname:
+        return jsonify({'error': 'Sin grabacion para esta llamada'}), 404
+    if os.path.basename(fname) != fname:
+        return jsonify({'error': 'Nombre de grabacion invalido'}), 400
+    path = os.path.join(_webphone_record_dir(), fname)
+    if not os.path.isfile(path):
+        return jsonify({'error': 'No existe el archivo de grabacion'}), 404
+    return send_file(path, mimetype='audio/wav', as_attachment=False,
+                     download_name=fname, conditional=True)
 
 
 @app.route('/api/webphone/statistics', methods=['GET'])

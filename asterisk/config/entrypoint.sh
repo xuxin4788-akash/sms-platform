@@ -18,6 +18,8 @@ CONF=/etc/asterisk
 : "${PEER_SECRET:=}"
 : "${PEER_START:=1001}"
 : "${PEER_END:=1020}"
+# Where MixMonitor writes call recordings (shared volume, see compose).
+: "${RECORD_DIR:=/recordings}"
 
 if [ -z "$PEER_SECRET" ]; then
     echo "[entrypoint] ERROR: PEER_SECRET must be set in the environment (.env)." >&2
@@ -40,6 +42,7 @@ render() {
         -e "s|__TRUNK_HOST__|${TRUNK_HOST}|g" \
         -e "s|__TRUNK_PORT__|${TRUNK_PORT}|g" \
         -e "s|__OUTBOUND_PREFIX__|${OUTBOUND_PREFIX}|g" \
+        -e "s|__RECORD_DIR__|${RECORD_DIR}|g" \
         "$1" > "$2"
 }
 
@@ -57,5 +60,9 @@ for n in $(seq "$PEER_START" "$PEER_END"); do
 done
 echo "[entrypoint] Generated peers ${PEER_START}-${PEER_END}, trunk=${TRUNK_HOST}:${TRUNK_PORT}, prefix='${OUTBOUND_PREFIX}'"
 
-echo "[entrypoint] Starting Asterisk (http ${HTTP_PORT}, rtp ${RTP_START}-${RTP_END})"
+# Ensure the recording volume exists and is writable by Asterisk.
+mkdir -p "$RECORD_DIR"
+chmod 0777 "$RECORD_DIR"
+
+echo "[entrypoint] Starting Asterisk (http ${HTTP_PORT}, rtp ${RTP_START}-${RTP_END}, recordings=${RECORD_DIR})"
 exec asterisk -f -U root -vvvg

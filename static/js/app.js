@@ -3318,7 +3318,8 @@ async function renderMyTeam(container) {
                     '<button class="' + phTabBtn + '" onclick="setMyTeamTab(2)">Telefono Web</button>' +
                 '</div></div>' +
                 (state.myTeam.tab === 'phone'
-                    ? '<div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Llamadas</th><th style="text-align:right;">Conectadas</th><th style="text-align:right;">Tiempo</th><th style="text-align:right;">Exito</th><th style="text-align:right;">Extension</th><th style="text-align:right;">Conect/Llam</th></tr></thead><tbody>' + phoneRows + '</tbody></table></div>'
+                    ? '<div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Llamadas</th><th style="text-align:right;">Conectadas</th><th style="text-align:right;">Tiempo</th><th style="text-align:right;">Exito</th><th style="text-align:right;">Extension</th><th style="text-align:right;">Conect/Llam</th></tr></thead><tbody>' + phoneRows + '</tbody></table></div>' +
+                      '<div id="myteam-wp-calls" class="mt-3"></div>'
                     : '<div class="table-container"><table><thead><tr><th>Cuenta</th><th>Rol</th><th style="text-align:right;">Total SMS</th><th style="text-align:right;" title="SMS facturados por segmento">SMS Fact.</th><th style="text-align:right;">Enviados</th><th style="text-align:right;">Fallidos</th><th style="text-align:right;" title="Precio por SMS facturado (por pais)">Precio</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Exito</th><th>Ultima Actividad</th></tr></thead><tbody>' + memberRows + '</tbody></table></div>') +
                 '</div>';
         } else {
@@ -3349,6 +3350,85 @@ function resetMyTeamFilters() {
 function setMyTeamTab(tab) {
     state.myTeam.tab = tab === 2 ? 'phone' : 'sms';
     renderMyTeam(document.getElementById('page-content'));
+    if (tab === 2) {
+        loadMyTeamWebphoneCalls(1);
+    }
+}
+
+async function loadMyTeamWebphoneCalls(page) {
+    page = page || 1;
+    var box = document.getElementById('myteam-wp-calls');
+    if (!box) return;
+    box.innerHTML = '<div class="text-center text-secondary" style="padding:16px;">Cargando llamadas...</div>';
+    try {
+        var qs = 'page=' + page + '&per_page=15&scope=team';
+        var data = await api('/api/webphone/records?' + qs);
+        var recs = data.records || [];
+        if (!recs.length) {
+            box.innerHTML = '<div class="card"><div class="card-body"><div class="empty-state"><h3>Sin llamadas</h3><p>No hay llamadas de telefono web en este equipo.</p></div></div></div>';
+            return;
+        }
+        function outcomeBadge(o) {
+            var map = { answered: 'badge-green', terminated: 'badge-blue', failed: 'badge-red', rejected: 'badge-red', 'no-answer': '', busy: '', canceled: '' };
+            return '<span class="badge ' + (map[o] || '') + '">' + (o || '') + '</span>';
+        }
+        function dur(v) {
+            var s = Number(v || 0);
+            if (s < 60) return s + 's';
+            var m = Math.floor(s / 60), r = s % 60;
+            return m + 'm ' + r + 's';
+        }
+        var rows = recs.map(function (r) {
+            var name = r.sender_full_name || r.sender_username || ('Cuenta ' + r.created_by);
+            var recBtn = '';
+            if (r.record_file) {
+                recBtn = '<button class="btn btn-xs btn-outline" onclick="playWebphoneRecording(' + r.id + ')" title="Reproducir grabacion" style="padding:2px 8px;font-size:12px;">▶ Grabacion</button>';
+            } else {
+                recBtn = '<span class="text-secondary text-sm">sin grabacion</span>';
+            }
+            return '<tr>' +
+                '<td><strong>' + escapeHtml(name) + '</strong></td>' +
+                '<td>' + escapeHtml(r.phone || '—') + '</td>' +
+                '<td><span class="badge">' + escapeHtml(r.extnumber || '—') + '</span></td>' +
+                '<td style="color:#2563EB;font-weight:600;">' + dur(r.duration) + '</td>' +
+                '<td>' + outcomeBadge(r.outcome) + '</td>' +
+                '<td>' + recBtn + '</td>' +
+                '</tr>';
+        }).join('');
+        var pages = Math.max(1, Math.ceil(data.total / 15));
+        var pager = page > 1 || pages > 1
+            ? '<div class="pagination" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">' +
+                '<span class="text-secondary text-sm">' + data.total + ' llamadas · pagina ' + page + ' de ' + pages + '</span>' +
+                '<div style="display:flex;gap:8px;">' +
+                    (page > 1 ? '<button class="btn btn-secondary btn-sm" onclick="loadMyTeamWebphoneCalls(' + (page - 1) + ')">Anterior</button>' : '') +
+                    (page < pages ? '<button class="btn btn-secondary btn-sm" onclick="loadMyTeamWebphoneCalls(' + (page + 1) + ')">Siguiente</button>' : '') +
+                '</div></div>'
+            : '';
+        box.innerHTML =
+            '<div class="card"><div class="card-header card-header-wrap"><h3 style="margin:0;font-size:15px;">Llamadas de Telefono Web (detalle)</h3><span class="badge badge-blue header-badge">' + data.total + '</span></div>' +
+            '<div class="table-container"><table><thead><tr><th>Cuenta</th><th>Numero</th><th>Extension</th><th style="text-align:right;">Duracion</th><th>Resultado</th><th>Grabacion</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + pager +
+            '</div>';
+    } catch (err) {
+        box.innerHTML = '<div class="text-center text-secondary" style="padding:16px;">' + escapeHtml(err.message) + '</div>';
+    }
+}
+
+async function playWebphoneRecording(id) {
+    try {
+        var r = await api('/api/webphone/recording?id=' + encodeURIComponent(id));
+        if (r && r.record_file) {
+            // stream is returned as audio/wav directly; open it
+            var a = document.createElement('a');
+            a.href = '/api/webphone/recording?id=' + encodeURIComponent(id);
+            a.target = '_blank';
+            a.rel = 'noopener';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        } else {
+            showToast('No se pudo obtener la grabacion', 'error');
+        }
+    } catch (e) { showToast(e.message, 'error'); }
 }
 
 async function renderAllTeams(container) {
