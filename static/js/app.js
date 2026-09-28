@@ -936,6 +936,7 @@ async function renderContacts(container) {
                         '<span class="ca-item" title="SMS enviados"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>' + Number(c.sms_count || 0) + '</span>' +
                         '<span class="ca-item" title="Llamadas realizadas" style="color:#059669;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>' + Number(c.call_count || 0) + '</span>' +
                         '<span class="ca-item" title="Tiempo total de conversacion" style="color:#7C3AED;">' + formatDuration(Number(c.talk_time || 0)) + '</span>' +
+                        '<span class="ca-item" title="Correos enviados" style="color:#2563EB;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>' + Number(c.email_count || 0) + '</span>' +
                     '</div>';
                 var nameCell = '<strong>' + escapeHtml(c.name) + '</strong>' +
                     (c.app_name ? '<div style="font-size:12px;color:#64748B;margin-top:2px;">' + escapeHtml(c.app_name) + '</div>' : '');
@@ -6171,6 +6172,7 @@ function renderInlineContactPanel(c, replyId) {
           '<div class="rc-field"><span class="rc-label">SMS</span><span>' + Number(c.sms_count || 0) + '</span></div>' +
           '<div class="rc-field"><span class="rc-label">Llamadas</span><span>' + Number(c.call_count || 0) + '</span></div>' +
           '<div class="rc-field"><span class="rc-label">Tiempo</span><span>' + formatDuration(Number(c.talk_time || 0)) + '</span></div>' +
+          '<div class="rc-field"><span class="rc-label">Correos</span><span>' + Number(c.email_count || 0) + '</span></div>' +
           '<div class="rc-field"><span class="rc-label">Observaciones</span><span>' + escapeHtml(c.notes || '-') + '</span></div>' +
         '</div>' +
         '<div class="reply-contact-actions">' +

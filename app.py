@@ -6031,6 +6031,14 @@ def _contact_stats_map(contacts):
         return out
     keylist = sorted(keys)
 
+    # Build a lowercase-email -> set(phone keys) map for email-count matching.
+    email_map = {}
+    for c in contacts:
+        k = _phone_digits_tail(c['phone'])
+        eml = (c.get('email') or '').strip().lower()
+        if k and eml:
+            email_map.setdefault(eml, set()).add(k)
+
     # Scope clause on records (mirrors sms/voice visibility).
     scope, sparams = _scope_where_unnamed(uid, role)
     if role != 'admin':
@@ -6054,7 +6062,7 @@ def _contact_stats_map(contacts):
         for r in rows:
             k = _phone_digits_tail(r['phone'])
             if k in keys:
-                out.setdefault(k, {'sms': 0, 'calls': 0, 'talk_time': 0})['sms'] += 1
+                out.setdefault(k, {'sms': 0, 'calls': 0, 'talk_time': 0, 'emails': 0})['sms'] += 1
     except Exception:
         pass
 
@@ -6066,7 +6074,7 @@ def _contact_stats_map(contacts):
         for r in rows:
             k = _phone_digits_tail(r['phone'])
             if k in keys:
-                d = out.setdefault(k, {'sms': 0, 'calls': 0, 'talk_time': 0})
+                d = out.setdefault(k, {'sms': 0, 'calls': 0, 'talk_time': 0, 'emails': 0})
                 d['calls'] += 1
                 if str(r['status'] or '').lower() in ('completed', 'answered', 'conectada'):
                     try:
@@ -6075,6 +6083,22 @@ def _contact_stats_map(contacts):
                         pass
     except Exception:
         pass
+
+    # Email counts (matched by the contact's email against recipient_email).
+    if email_map:
+        eml_keylist = sorted({k for k in email_map if k})
+        if eml_keylist:
+            try:
+                eml_ph = ','.join(['?'] * len(eml_keylist))
+                rows = get_db().execute(
+                    "SELECT LOWER(recipient_email) AS em FROM email_records "
+                    "WHERE LOWER(recipient_email) IN (" + eml_ph + ")" + scope,
+                    eml_keylist + sparams).fetchall()
+                for r in rows:
+                    for k in email_map.get(r['em'], ()):
+                        out.setdefault(k, {'sms': 0, 'calls': 0, 'talk_time': 0, 'emails': 0})['emails'] += 1
+            except Exception:
+                pass
 
     # Re-key result for convenience callers (they look up by contact phone).
     return out
@@ -6109,44 +6133,54 @@ def list_contacts():
     # Record-visibility scope (same rule as SMS/voice list).
     rec_scope_sms = ""
     rec_scope_voc = ""
+    rec_scope_eml = ""
     rec_params: list = []
     if session.get('role') != 'admin':
         rec_scope_sms = " WHERE sr.created_by = ? OR sr.created_by IN (SELECT id FROM users WHERE team_creator_id = ?)"
         rec_scope_voc = " WHERE vr.created_by = ? OR vr.created_by IN (SELECT id FROM users WHERE team_creator_id = ?)"
+        rec_scope_eml = " WHERE er.created_by = ? OR er.created_by IN (SELECT id FROM users WHERE team_creator_id = ?)"
         rec_params = [session.get('user_id'), session.get('user_id')]
 
     if get_db().db_type == 'postgres':
         _win_sms = "sr.created_at >= CURRENT_TIMESTAMP - INTERVAL '180 days'"
         _win_voc = "vr.created_at >= CURRENT_TIMESTAMP - INTERVAL '180 days'"
+        _win_eml = "er.created_at >= CURRENT_TIMESTAMP - INTERVAL '180 days'"
     else:
         _win_sms = "sr.created_at >= datetime('now','-180 days')"
         _win_voc = "vr.created_at >= datetime('now','-180 days')"
+        _win_eml = "er.created_at >= datetime('now','-180 days')"
     # Bounded aggregation: the 180-day window keeps the GROUP BY on the
     # large history tables indexed/bounded instead of a full-table scan.
-    _sms_cond, _voc_cond = _win_sms, _win_voc
+    _sms_cond, _voc_cond, _eml_cond = _win_sms, _win_voc, _win_eml
     if rec_scope_sms.strip():
         _sms_cond = "(" + rec_scope_sms.strip().replace("WHERE", "", 1).strip() + ") AND (" + _win_sms + ")"
     if rec_scope_voc.strip():
         _voc_cond = "(" + rec_scope_voc.strip().replace("WHERE", "", 1).strip() + ") AND (" + _win_voc + ")"
+    if rec_scope_eml.strip():
+        _eml_cond = "(" + rec_scope_eml.strip().replace("WHERE", "", 1).strip() + ") AND (" + _win_eml + ")"
 
     stats_join = (
         f" LEFT JOIN (SELECT {sms_key} AS k, COUNT(*) AS n FROM sms_records sr WHERE {_sms_cond} GROUP BY k) sms_s "
         f"ON sms_s.k = {c_key}"
         f" LEFT JOIN (SELECT {voc_key} AS k, COUNT(*) AS n, COALESCE(SUM(CASE WHEN vr.status='completed' THEN vr.duration ELSE 0 END),0) AS t FROM voice_records vr WHERE {_voc_cond} GROUP BY k) voc_s "
         f"ON voc_s.k = {c_key}"
+        f" LEFT JOIN (SELECT LOWER(TRIM(er.recipient_email)) AS ek, COUNT(*) AS n FROM email_records er WHERE {_eml_cond} GROUP BY ek) eml_s "
+        f"ON eml_s.ek = LOWER(TRIM(COALESCE(c.email,'')))"
     )
 
     where, scope_params = _contact_scope_for_group(
         "c", session.get('user_id'), session.get('role'), group_id)
     query = ("SELECT c.*, cg.name as group_name, "
-             "COALESCE(sms_s.n,0) AS sms_count, COALESCE(voc_s.n,0) AS call_count, COALESCE(voc_s.t,0) AS talk_time "
+             "COALESCE(sms_s.n,0) AS sms_count, COALESCE(voc_s.n,0) AS call_count, COALESCE(voc_s.t,0) AS talk_time, "
+             "COALESCE(eml_s.n,0) AS email_count "
              "FROM contacts c "
              "LEFT JOIN contact_groups cg ON c.group_id = cg.id " + stats_join + " WHERE " + where)
     count_query = ("SELECT COUNT(*) as total FROM contacts c " + stats_join + " WHERE " + where)
     # Param order follows SQL placeholder order: the rec-scope ?s live inside
-    # the SMS/voice aggregation subqueries (which appear BEFORE the outer WHERE),
-    # so rec_params must be bound first, then the contact scope params + group_id.
-    params = list(rec_params) + list(rec_params) + list(scope_params)
+    # the SMS/voice/email aggregation subqueries (which appear BEFORE the outer WHERE),
+    # so rec_params must be bound first (once per subquery), then the contact-scope
+    # params + group_id.
+    params = list(rec_params) + list(rec_params) + list(rec_params) + list(scope_params)
     if search:
         query += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.notes LIKE ?)"
         count_query += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.notes LIKE ?)"
@@ -6192,8 +6226,9 @@ def list_contacts():
             d['sms_count'] = int(d.get('sms_count') or 0)
             d['call_count'] = int(d.get('call_count') or 0)
             d['talk_time'] = int(d.get('talk_time') or 0)
+            d['email_count'] = int(d.get('email_count') or 0)
         except (TypeError, ValueError):
-            d['sms_count'] = d['call_count'] = d['talk_time'] = 0
+            d['sms_count'] = d['call_count'] = d['talk_time'] = d['email_count'] = 0
         contact_list.append(d)
 
     return jsonify({
@@ -13828,6 +13863,7 @@ def contact_card(cid):
     cd['sms_count'] = int(s.get('sms') or 0)
     cd['call_count'] = int(s.get('calls') or 0)
     cd['talk_time'] = int(s.get('talk_time') or 0)
+    cd['email_count'] = int(s.get('emails') or 0)
     return jsonify({'contact': _row_with_dates(cd, ('created_at',))})
 
 
@@ -13878,6 +13914,7 @@ def email_reply_contact_panel(reply_id):
     cd['sms_count'] = int(s.get('sms') or 0)
     cd['call_count'] = int(s.get('calls') or 0)
     cd['talk_time'] = int(s.get('talk_time') or 0)
+    cd['email_count'] = int(s.get('emails') or 0)
     cd['resolved_by_email'] = bool(resolved_by_email)
     return jsonify({'contact': _row_with_dates(cd, ('created_at',))})
 
