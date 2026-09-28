@@ -5726,6 +5726,76 @@ def _contact_visible_where(alias: str = "c") -> tuple[str, list]:
     return _scope_where(alias, session.get('user_id'), session.get('role'))
 
 
+def _group_shared_owner(uid: int, role) -> int | None:
+    """Resolve the team-admin id that a group should be shared under, for
+    team-shared group visibility.
+
+    - team_admin     -> uid (their whole team shares the group)
+    - member/custom  -> their own team_admin (via team_creator_id), so a normal
+                        "agent" can see and use groups created by their team
+                        admin / teammates; falls back to None (own-only) when
+                        the user belongs to no team.
+    """
+    if role == 'team_admin':
+        return uid
+    db = get_db()
+    row = db.execute("SELECT team_creator_id FROM users WHERE id=?", (uid,)).fetchone()
+    return (row['team_creator_id'] if row and row['team_creator_id'] is not None else None)
+
+
+def _group_visible_where(alias: str, uid: int, role) -> tuple[str, list]:
+    """Return (WHERE fragment, params) for contact_groups visible to the current
+    user. Groups are team-shared resources:
+      admin          -> all groups
+      team_admin     -> own + their members' groups
+      member/custom  -> the team of their team_admin (incl. the admin and the
+                        partner members); no team -> own only
+    """
+    if role == 'admin':
+        return "1=1", []
+    owner = _group_shared_owner(uid, role)
+    if owner is not None:
+        return (f"({alias}.created_by = ? OR {alias}.created_by IN "
+                f"(SELECT id FROM users WHERE team_creator_id = ?))", [owner, owner])
+    return f"{alias}.created_by = ?", [uid]
+
+
+def _contact_scope_for_group(alias: str, uid: int, role, group_id) -> tuple[str, list]:
+    """Contact-visibility WHERE for a selected group.
+
+    When a team-shared group is chosen (created by the current user's team
+    admin / a teammate), widen the scope to the whole team so every team member
+    can send to that group's contacts (this is the "team uses the admin's
+    group" case). Non-shared / personal groups keep the normal per-role rule.
+    """
+    if group_id:
+        db = get_db()
+        try:
+            gid = int(group_id)
+        except (TypeError, ValueError):
+            gid = 0
+        if gid:
+            g = db.execute("SELECT created_by FROM contact_groups WHERE id=?",
+                           (gid,)).fetchone()
+            if g:
+                if role == 'admin':
+                    return "1=1", []
+                owner = _group_shared_owner(uid, role)
+                if owner is not None:
+                    # The group's creator must belong to the current user's team.
+                    team_ids = set()
+                    team_ids.add(owner)
+                    for m in db.execute(
+                            "SELECT id FROM users WHERE team_creator_id=?",
+                            (owner,)).fetchall():
+                        team_ids.add(m['id'])
+                    if g['created_by'] in team_ids:
+                        return (f"({alias}.created_by = ? OR {alias}.created_by IN "
+                                f"(SELECT id FROM users WHERE team_creator_id = ?))",
+                                [owner, owner])
+    return _scope_where(alias, uid, role)
+
+
 def _can_manage_contact(contact: sqlite3.Row | None) -> bool:
     """Whether the current user is allowed to edit/delete the given contact."""
     if contact is None:
@@ -6066,13 +6136,17 @@ def list_contacts():
         f"ON voc_s.k = {c_key}"
     )
 
-    where, scope_params = _contact_visible_where("c")
+    where, scope_params = _contact_scope_for_group(
+        "c", session.get('user_id'), session.get('role'), group_id)
     query = ("SELECT c.*, cg.name as group_name, "
              "COALESCE(sms_s.n,0) AS sms_count, COALESCE(voc_s.n,0) AS call_count, COALESCE(voc_s.t,0) AS talk_time "
              "FROM contacts c "
              "LEFT JOIN contact_groups cg ON c.group_id = cg.id " + stats_join + " WHERE " + where)
     count_query = ("SELECT COUNT(*) as total FROM contacts c " + stats_join + " WHERE " + where)
-    params = list(scope_params) + rec_params + rec_params
+    # Param order follows SQL placeholder order: the rec-scope ?s live inside
+    # the SMS/voice aggregation subqueries (which appear BEFORE the outer WHERE),
+    # so rec_params must be bound first, then the contact scope params + group_id.
+    params = list(rec_params) + list(rec_params) + list(scope_params)
     if search:
         query += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.notes LIKE ?)"
         count_query += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.notes LIKE ?)"
@@ -6557,7 +6631,7 @@ def list_groups():
     # team_admin sees their own team, member/custom role sees only their own.
     # Note: the WHERE references cg.created_by (not created_by) because the
     # LEFT JOIN to contacts also exposes a `created_by` column -> ambiguity.
-    where, scope_params = _scope_where_unnamed_aliased('cg', session.get('user_id'), session.get('role'))
+    where, scope_params = _group_visible_where('cg', session.get('user_id'), session.get('role'))
     groups = db.execute(
         "SELECT cg.*, COUNT(c.id) as contact_count "
         "FROM contact_groups cg "
@@ -12798,7 +12872,7 @@ def send_email():
     user = g.user
     # Resolve target contacts (must have an email)
     if mode == 'group' and group_id:
-        where, params = _contact_visible_where('c')
+        where, params = _contact_scope_for_group('c', g.user['id'], g.user['role'], group_id)
         rows = db.execute(
             f"SELECT c.id, c.name, c.phone, c.email, c.app_name, c.amount, c.discount_amount, c.payment_link, c.notes, c.remark, c.created_by "
             f"FROM contacts c WHERE c.group_id=? AND COALESCE(c.email,'')<>'' AND {where}",
