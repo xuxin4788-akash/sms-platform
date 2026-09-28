@@ -13194,11 +13194,29 @@ def _process_email_queue_once():
             _release_lock()
             return 0
         pending = db.execute(
-            "SELECT id, recipient_email, subject, body, from_email, attempts FROM email_records "
-            "WHERE status='pending' ORDER BY id LIMIT 200"
+            "SELECT r.id, r.recipient_email, r.subject, r.body, r.from_email, r.attempts, "
+            "CASE WHEN s.email IS NOT NULL THEN 1 ELSE 0 END AS blocked "
+            "FROM email_records r "
+            "LEFT JOIN email_suppressions s ON LOWER(s.email) = LOWER(r.recipient_email) "
+            "WHERE r.status='pending' ORDER BY r.id LIMIT 200"
         ).fetchall()
         if not pending:
             return 0
+        # System-level hard block: never send to a blacklisted address, even if
+        # it was suppressed (bounce/complaint) AFTER this job was enqueued. Flip
+        # these rows to 'suppressed' up front so they are not handed to SMTP.
+        blocked_rows = [r for r in pending if r['blocked']]
+        if blocked_rows:
+            now_b = datetime.now()
+            for r in blocked_rows:
+                db.execute(
+                    "UPDATE email_records SET status='suppressed', "
+                    "error_msg='Direccion en lista negra (queja/rebote)', sent_at=? WHERE id=?",
+                    (now_b, r['id']))
+        to_send = [r for r in pending if not r['blocked']]
+        # Snapshot of blocked addresses for a final in-worker guard.
+        blocked_set = {r['recipient_email'].strip().lower() for r in blocked_rows}
+        sendable = to_send
         # From display name per sender mailbox (APP mapping may be edited after
         # enqueue; records only store the address).
         sender_names = {}
@@ -13230,6 +13248,9 @@ def _process_email_queue_once():
             attempts = rec['attempts'] or 0
             from_email = (rec['from_email'] or '').strip() or cfg['from_email'].strip()
             from_name = sender_names.get(from_email.lower())
+            # Final in-worker guard against the black list.
+            if (to_email or '').strip().lower() in blocked_set:
+                return rid, 'suppressed', 'Direccion en lista negra (queja/rebote)', attempts
             # Simple global rate limiter (token start-time spacing).
             with gate:
                 now = time.time()
@@ -13252,7 +13273,7 @@ def _process_email_queue_once():
         results = []
         try:
             with ThreadPoolExecutor(max_workers=EMAIL_WORKERS) as ex:
-                for r in ex.map(deliver, pending):
+                for r in ex.map(deliver, sendable):
                     results.append(r)
         finally:
             # Best-effort close of this thread's connection; pool threads die here.
@@ -13269,6 +13290,10 @@ def _process_email_queue_once():
                 db.execute("UPDATE email_records SET status='failed', error_msg=?, attempts=? WHERE id=?",
                            (err, att, rid))
                 failed += 1
+            elif status == 'suppressed':
+                # Caught by the final guard; ensure it is not sent.
+                db.execute("UPDATE email_records SET status='suppressed', error_msg=?, attempts=? WHERE id=?",
+                           (err, att, rid))
             else:  # retry later, exponential-ish backoff via attempts; remains pending
                 db.execute("UPDATE email_records SET error_msg=?, attempts=? WHERE id=?", (err, att, rid))
         # Roll up counters for every affected job (native ? placeholders are
@@ -13327,11 +13352,10 @@ def _add_suppression(email, reason, detail=''):
     try:
         db.execute(
             "INSERT INTO email_suppressions (email, reason, detail, created_at) VALUES (?,?,?,?) "
-            "ON CONFLICT(email) DO UPDATE SET reason=EXCLUDED.reason, detail=EXCLUDED.detail",
+            "ON CONFLICT(email) DO UPDATE SET reason=EXCLUDED.reason, "
+            "detail=EXCLUDED.detail, created_at=EXCLUDED.created_at",
             (email, reason, (detail or '')[:500], datetime.now())
-        ) if get_db_type() == 'postgres' else db.execute(
-            "INSERT OR IGNORE INTO email_suppressions (email, reason, detail, created_at) VALUES (?,?,?,?)",
-            (email, reason, (detail or '')[:500], datetime.now()))
+        )
         db.commit()
         return True
     except Exception:
