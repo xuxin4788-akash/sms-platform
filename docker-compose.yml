@@ -64,7 +64,7 @@ services:
     environment:
       - HTTP_PORT=8089
       - RTP_START=10000
-      - RTP_END=10100
+      - RTP_END=10200
       - STUN_SERVER=${STUN_SERVER:-stun.l.google.com:19302}
       - EXTERNAL_IP=${PHONE_EXTERNAL_IP:-47.87.38.52}
       - LOCAL_NET=${PHONE_LOCAL_NET:-172.16.0.0/12}
@@ -72,14 +72,17 @@ services:
       - TRUNK_PORT=${VOS3000_PORT:-5060}
       # Provider dial prefix: 52 / 0052 / empty (confirm with the line vendor)
       - OUTBOUND_PREFIX=${VOS3000_PREFIX:-}
-      # Shared initial secret for the 1001-1020 web peers (set in .env)
+      # WebRTC peer/extension range: 50 extensions for 50 agents (1001-1050).
+      - PEER_START=1001
+      - PEER_END=1050
+      # Shared initial secret for the web peers (set in .env)
       - PEER_SECRET=${PHONE_PEER_SECRET:-}
       - RECORD_DIR=/recordings
     volumes:
       - recordings:/recordings
     ports:
       # Browser <-> Asterisk media (published; opened in the cloud firewall)
-      - "10000-10100:10000-10100/udp"
+      - "10000-10200:10000-10200/udp"
       # SIP trunk signaling/media toward VOS3000 (outbound + inbound RTP)
       - "5060:5060/udp"
     deploy:
