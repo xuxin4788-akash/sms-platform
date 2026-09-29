@@ -8435,6 +8435,235 @@ def get_unified_stats():
         'unit_price': unit_price
     })
 
+@app.route('/api/admin/settlement', methods=['GET'])
+@admin_required
+def admin_settlement():
+    """Panel de liquidacion: consumo y facturacion por EQUIPO y por CUENTA,
+    cruzando los 4 canales (SMS segmentado, voz, telefono web, correo) junto a
+    estadisticas de acciones por cuenta. Solo administrador.
+
+    Coste SMS = segmentos facturables x precio del pais de la cuenta
+      (se mide sobre issued: status 'sent'/'delivered').
+    Coste voz  = SUM(voice_records.price) para llamadas 'completed'.
+    Coste web  = SUM(webphone_records.cost) de llamadas 'answered'.
+    Coste mail = correos 'sent' x precio global de correo.
+    """
+    db = get_db()
+    is_pg = getattr(db, 'db_type', 'sqlite') == 'postgres'
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+
+    def _norm_date(v):
+        v = (v or '').strip()
+        m = re.match(r'^(\d{4})-(\d{2})-(\d{2})', v)
+        return m.group(0) if m else ''
+
+    date_from, date_to = _norm_date(date_from), _norm_date(date_to)
+    if date_from and date_to and date_from > date_to:
+        date_from, date_to = date_to, date_from
+
+    # ---- all users (admin sees everyone) ----
+    users = db.execute(
+        "SELECT id, username, full_name, role, team_creator_id, country FROM users ORDER BY id"
+    ).fetchall()
+
+    def _date_cond(alias, col='created_at'):
+        """Return (sql, params) filtering expr on the tr's alias + column."""
+        cond, params = '', []
+        if date_from:
+            cond += f" AND {alias}.{col} >= ?"; params.append(date_from + ' 00:00:00')
+        if date_to:
+            cond += f" AND {alias}.{col} <= ?"; params.append(date_to + ' 23:59:59')
+        return cond, params
+
+    # team_map: user_id -> team_admin user_id (or themselves for admin/team_admin with no parent)
+    def _team_of(u):
+        return u['team_creator_id'] if (u['team_creator_id'] and u['role'] == 'team_member') else u['id']
+
+    # Build per-account actions: counts of each channel action in window
+    acc = {}          # uid -> account agg
+    for u in users:
+        acc[u['id']] = {
+            'user_id': u['id'], 'username': u['username'], 'full_name': u['full_name'],
+            'role': u['role'], 'country': (u['country'] or '') if 'country' in u.keys() else '',
+            'team_creator_id': u['team_creator_id'], 'team_id': _team_of(u),
+            'sms_total': 0, 'sms_sent': 0, 'sms_segments': 0, 'sms_segments_sent': 0, 'sms_cost': 0.0,
+            'voice_total': 0, 'voice_completed': 0, 'voice_duration': 0, 'voice_cost': 0.0,
+            'web_total': 0, 'web_answered': 0, 'web_minutes': 0, 'web_cost': 0.0,
+            'mail_total': 0, 'mail_sent': 0, 'mail_cost': 0.0, 'total_cost': 0.0,
+        }
+
+    # ---- SMS by account ----
+    sc, sp = _date_cond('sr')
+    sms_rows = db.execute(f"""
+        SELECT created_by,
+               COUNT(*) AS total,
+               COALESCE(SUM(CASE WHEN status IN ('sent','delivered') THEN 1 ELSE 0 END),0) AS sent,
+               COALESCE(SUM(billed_segments),0) AS segments,
+               COALESCE(SUM(CASE WHEN status IN ('sent','delivered') THEN billed_segments ELSE 0 END),0) AS segments_sent
+        FROM sms_records sr
+        WHERE 1=1 {sc} AND COALESCE(sr.api_msg,'') NOT LIKE '%simulado%'
+        GROUP BY created_by
+    """, sp).fetchall()
+    for r in sms_rows:
+        a = acc.get(r['created_by'])
+        if not a:
+            continue
+        a['sms_total'] = int(r['total'] or 0)
+        a['sms_sent'] = int(r['sent'] or 0)
+        a['sms_segments'] = int(r['segments'] or 0)
+        a['sms_segments_sent'] = int(r['segments_sent'] or 0)
+        a['sms_cost'] = round(a['sms_segments_sent'] * get_sms_unit_price_for(r['created_by'], db=db), 2)
+
+    # ---- Voice by account (sum price on completed) ----
+    vc, vp = _date_cond('vr')
+    voice_rows = db.execute(f"""
+        SELECT created_by,
+               COUNT(*) AS total,
+               COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),0) AS completed,
+               COALESCE(SUM(CASE WHEN status='completed' THEN duration ELSE 0 END),0) AS dur,
+               COALESCE(SUM(CASE WHEN status='completed' THEN price ELSE 0 END),0) AS price
+        FROM voice_records vr
+        WHERE 1=1 {vc}
+        GROUP BY created_by
+    """, vp).fetchall()
+    for r in voice_rows:
+        a = acc.get(r['created_by'])
+        if not a:
+            continue
+        a['voice_total'] = int(r['total'] or 0)
+        a['voice_completed'] = int(r['completed'] or 0)
+        a['voice_duration'] = int(r['dur'] or 0)
+        a['voice_cost'] = round(float(r['price'] or 0), 2)
+
+    # ---- Web phone by account (sum cost on answered, minutes billed) ----
+    wc, wp = _date_cond('wr')
+    web_rows = db.execute(f"""
+        SELECT created_by,
+               COUNT(*) AS total,
+               COALESCE(SUM(CASE WHEN outcome='answered' THEN 1 ELSE 0 END),0) AS answered,
+               COALESCE(SUM(CASE WHEN outcome='answered' THEN duration ELSE 0 END),0) AS dur,
+               COALESCE(SUM(CASE WHEN outcome='answered' THEN cost ELSE 0 END),0) AS cost
+        FROM webphone_records wr
+        WHERE 1=1 {wc}
+        GROUP BY created_by
+    """, wp).fetchall()
+    for r in web_rows:
+        a = acc.get(r['created_by'])
+        if not a:
+            continue
+        a['web_total'] = int(r['total'] or 0)
+        a['web_answered'] = int(r['answered'] or 0)
+        a['web_minutes'] = webphone_answered_minutes(int(r['dur'] or 0))
+        billed_cost = float(r['cost'] or 0)
+        # Floor on the authoritative local per-minute price when the provider cost
+        # column was never written (simulation / pre-billing states).
+        if billed_cost <= 0:
+            billed_cost = a['web_minutes'] * get_webphone_unit_price_for(r['created_by'], db=db)
+        a['web_cost'] = round(billed_cost, 2)
+
+    # ---- Email by account (sent only billed) ----
+    ec, ep = _date_cond('er')
+    mail_rows = db.execute(f"""
+        SELECT created_by,
+               COUNT(*) AS total,
+               COALESCE(SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END),0) AS sent
+        FROM email_records er
+        WHERE 1=1 {ec}
+        GROUP BY created_by
+    """, ep).fetchall()
+    mail_unit = get_email_unit_price()
+    for r in mail_rows:
+        a = acc.get(r['created_by'])
+        if not a:
+            continue
+        a['mail_total'] = int(r['total'] or 0)
+        a['mail_sent'] = int(r['sent'] or 0)
+        a['mail_cost'] = round(a['mail_sent'] * mail_unit, 2)
+
+    # ---- total per account ----
+    for a in acc.values():
+        a['total_cost'] = round(a['sms_cost'] + a['voice_cost'] + a['web_cost'] + a['mail_cost'], 2)
+
+    # ---- group accounts by team ----
+    team_admin_ids = [u['id'] for u in users if u['role'] == 'team_admin']
+    teams = []
+    for ta_id in team_admin_ids:
+        members = [a for a in acc.values() if a['team_id'] == ta_id]
+        ta_row = next((u for u in users if u['id'] == ta_id), None)
+        teams.append({
+            'team_id': ta_id,
+            'team_name': (ta_row['full_name'] or ta_row['username']) if ta_row else '',
+            'team_username': ta_row['username'] if ta_row else '',
+            'member_count': len(members),
+            'sms_total': sum(m['sms_total'] for m in members),
+            'sms_segments_sent': sum(m['sms_segments_sent'] for m in members),
+            'sms_cost': round(sum(m['sms_cost'] for m in members), 2),
+            'voice_completed': sum(m['voice_completed'] for m in members),
+            'voice_duration': sum(m['voice_duration'] for m in members),
+            'voice_cost': round(sum(m['voice_cost'] for m in members), 2),
+            'web_answered': sum(m['web_answered'] for m in members),
+            'web_minutes': sum(m['web_minutes'] for m in members),
+            'web_cost': round(sum(m['web_cost'] for m in members), 2),
+            'mail_sent': sum(m['mail_sent'] for m in members),
+            'mail_cost': round(sum(m['mail_cost'] for m in members), 2),
+            'total_cost': round(sum(m['total_cost'] for m in members), 2),
+        })
+    teams.sort(key=lambda t: t['total_cost'], reverse=True)
+
+    # ---- action stats per account (counts of performed actions) ----
+    # templates are shared platform-wide (no created_by, no owner), so template
+    # creation is intentionally NOT counted. "Send-side" actions (sms/voice/web/
+    # mail) come from those records; group creation is counted via contact_groups
+    # (which has created_by).
+    def _counts_by_owner(table, alias, cond, params):
+        q = f"SELECT {alias}.created_by AS u, COUNT(*) AS n FROM {table} {alias} WHERE 1=1 {cond} GROUP BY {alias}.created_by"
+        return {r['u']: int(r['n'] or 0) for r in db.execute(q, params).fetchall()}
+
+    gc, gp = _date_cond('gr')
+    group_counts = _counts_by_owner('contact_groups', 'gr', gc, gp) if users else {}
+
+    actions = []
+    for a in acc.values():
+        actions.append({
+            'user_id': a['user_id'], 'username': a['username'], 'full_name': a['full_name'],
+            'role': a['role'], 'team_id': a['team_id'],
+            'sms_sends': a['sms_total'],
+            'voice_calls': a['voice_total'],
+            'web_calls': a['web_total'],
+            'email_sends': a['mail_total'],
+            'groups_created': group_counts.get(a['user_id'], 0),
+            'total_cost': a['total_cost'],
+            'last_action': '',
+        })
+    actions.sort(key=lambda x: x['total_cost'], reverse=True)
+
+    # ---- summary ----
+    summary = {
+        'member_count': len(acc),
+        'sms_total': sum(a['sms_total'] for a in acc.values()),
+        'sms_segments_sent': sum(a['sms_segments_sent'] for a in acc.values()),
+        'sms_cost': round(sum(a['sms_cost'] for a in acc.values()), 2),
+        'voice_completed': sum(a['voice_completed'] for a in acc.values()),
+        'voice_duration': sum(a['voice_duration'] for a in acc.values()),
+        'voice_cost': round(sum(a['voice_cost'] for a in acc.values()), 2),
+        'web_answered': sum(a['web_answered'] for a in acc.values()),
+        'web_minutes': sum(a['web_minutes'] for a in acc.values()),
+        'web_cost': round(sum(a['web_cost'] for a in acc.values()), 2),
+        'mail_sent': sum(a['mail_sent'] for a in acc.values()),
+        'mail_cost': round(sum(a['mail_cost'] for a in acc.values()), 2),
+        'total_cost': round(sum(a['total_cost'] for a in acc.values()), 2),
+    }
+
+    return jsonify({
+        'teams': teams,
+        'accounts': sorted(acc.values(), key=lambda x: x['team_id']),
+        'actions': actions,
+        'summary': summary,
+        'date_from': date_from, 'date_to': date_to,
+    })
+
+
 @app.route('/api/admin/export-teams', methods=['GET'])
 @login_required
 def export_teams_stats():

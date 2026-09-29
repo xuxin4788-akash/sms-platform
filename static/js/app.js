@@ -619,6 +619,9 @@ function navigateTo(page) {
         case 'my-team': renderMyTeam(content); break;
         case 'all-teams': renderAllTeams(content); break;
         case 'team-stats': renderTeamStats(content); break;
+        case 'settlement':
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
+            renderSettlement(content); break;
         case 'team-api-select':
             if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderTeamApiConfig(content); break;
@@ -3484,6 +3487,101 @@ function clearAllTeamsFilters() {
     state.allTeams.dateFrom = '';
     state.allTeams.dateTo = '';
     renderAllTeams(document.getElementById('page-content'));
+}
+
+// ------------------------------------------------------------
+// Liquidacion (Settlement): cross-channel billing by team & account
+// ------------------------------------------------------------
+async function renderSettlement(container) {
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando liquidacion...</p></div>';
+    try {
+        var params = new URLSearchParams();
+        if (!state.settlement) state.settlement = { dateFrom: '', dateTo: '' };
+        if (state.settlement.dateFrom) params.set('date_from', state.settlement.dateFrom);
+        if (state.settlement.dateTo) params.set('date_to', state.settlement.dateTo);
+        var data = await api('/api/admin/settlement?' + params.toString());
+        var accounts = data.accounts || [];
+        var teams = data.teams || [];
+        var actions = data.actions || [];
+        var summary = data.summary || {};
+
+        function sCard(label, value, color) {
+            return '<div class="stat-card"><div class="stat-value" style="' + (color ? 'color:' + color : '') + '">' + value + '</div><div class="stat-label">' + label + '</div></div>';
+        }
+        function durFmt(sec) {
+            var s = Number(sec) || 0;
+            return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+        }
+
+        var filterHtml = '<div class="page-header page-filter mb-4"><h1 style="font-size:22px;font-weight:700;">Liquidacion por Cuenta y Equipo</h1>' +
+            '<div class="filter-row filter-row-multi"><input type="date" lang="es" class="form-control" value="' + (state.settlement.dateFrom || '') + '" onchange="state.settlement.dateFrom=this.value"><span class="text-secondary filter-sep">a</span>' +
+            '<input type="date" lang="es" class="form-control" value="' + (state.settlement.dateTo || '') + '" onchange="state.settlement.dateTo=this.value">' +
+            '<button class="btn btn-primary btn-sm" onclick="renderSettlement(document.getElementById(\'page-content\'))">Filtrar</button>' +
+            '<button class="btn btn-secondary btn-sm" onclick="state.settlement.dateFrom=todayLocalStr();state.settlement.dateTo=todayLocalStr();renderSettlement(document.getElementById(\'page-content\'))">Hoy</button>' +
+            '<button class="btn btn-ghost btn-sm" onclick="state.settlement.dateFrom=' + "''" + ';state.settlement.dateTo=' + "''" + ';renderSettlement(document.getElementById(\'page-content\'))">Limpiar</button></div></div>';
+
+        var html = filterHtml;
+        html += '<div class="stat-grid mb-4" style="display:flex;flex-wrap:wrap;gap:16px;">' +
+            sCard(summary.member_count + ' cuentas', summary.member_count, '#0EA5E9') +
+            sCard('Costo SMS', formatCost(summary.sms_cost), '#2563EB') +
+            sCard('Costo Voz', formatCost(summary.voice_cost), '#7C3AED') +
+            sCard('Costo Web', formatCost(summary.web_cost), '#0891B2') +
+            sCard('Costo Mail', formatCost(summary.mail_cost), '#D97706') +
+            sCard('Total', formatCost(summary.total_cost), '#0F766E') +
+            '</div>';
+
+        // ---- By team ----
+        var teamRows = teams.map(function(t) {
+            return '<tr><td><strong>' + escapeHtml(t.team_name || t.team_username) + '</strong><br><small class="text-secondary">' + escapeHtml(t.team_username || '-') + '</small></td>' +
+                '<td style="text-align:center;">' + t.member_count + '</td>' +
+                '<td style="text-align:right;">' + t.sms_total + '</td><td style="text-align:right;color:#2563EB;font-weight:600;" title="SMS facturados (segmentos) x precio del pais">' + formatCost(t.sms_cost) + '</td>' +
+                '<td style="text-align:right;">' + t.voice_completed + '</td><td style="text-align:right;color:#7C3AED;" title="Voz: duracion completada">' + durFmt(t.voice_duration) + '</td><td style="text-align:right;color:#7C3AED;">' + formatCost(t.voice_cost) + '</td>' +
+                '<td style="text-align:right;">' + t.web_answered + '</td><td style="text-align:right;color:#0891B2;" title="Minutos facturados (redondeo al minuto)">' + t.web_minutes + '</td><td style="text-align:right;color:#0891B2;">' + formatCost(t.web_cost) + '</td>' +
+                '<td style="text-align:right;">' + t.mail_sent + '</td><td style="text-align:right;color:#D97706;">' + formatCost(t.mail_cost) + '</td>' +
+                '<td style="text-align:right;color:#0F766E;font-weight:700;">' + formatCost(t.total_cost) + '</td></tr>';
+        }).join('');
+        html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Resumen por Equipo</h3><span class="badge header-badge" style="background:var(--primary);color:#fff;">' + teams.length + ' equipos</span></div><div class="card-body"><div class="table-container"><table><thead><tr>' +
+            '<th>Equipo</th><th style="text-align:center;">Cuentas</th>' +
+            '<th style="text-align:right;">SMS</th><th style="text-align:right;">Costo SMS</th>' +
+            '<th style="text-align:right;">Llamadas</th><th style="text-align:right;">Duracion</th><th style="text-align:right;">Costo Voz</th>' +
+            '<th style="text-align:right;">Web</th><th style="text-align:right;">Min</th><th style="text-align:right;">Costo Web</th>' +
+            '<th style="text-align:right;">Mails</th><th style="text-align:right;">Costo Mail</th>' +
+            '<th style="text-align:right;">Total</th></tr></thead><tbody>' + (teamRows || '<tr><td colspan="13" style="text-align:center;">Sin datos</td></tr>') + '</tbody></table></div></div></div>';
+
+        // ---- By account ----
+        var acctRows = accounts.map(function(a) {
+            return '<tr><td><strong>' + escapeHtml(a.full_name || a.username) + '</strong><br><small class="text-secondary">' + escapeHtml(a.username) + (a.role ? ' · ' + escapeHtml(a.role) : '') + '</small></td>' +
+                '<td style="text-align:center;">' + a.team_id + '</td>' +
+                '<td style="text-align:right;">' + a.sms_total + '</td><td style="text-align:right;color:#2563EB;font-weight:600;">' + formatCost(a.sms_cost) + '</td>' +
+                '<td style="text-align:right;">' + a.voice_total + '</td><td style="text-align:right;color:#7C3AED;">' + formatCost(a.voice_cost) + '</td>' +
+                '<td style="text-align:right;">' + a.web_total + '</td><td style="text-align:right;color:#0891B2;">' + formatCost(a.web_cost) + '</td>' +
+                '<td style="text-align:right;">' + a.mail_total + '</td><td style="text-align:right;color:#D97706;">' + formatCost(a.mail_cost) + '</td>' +
+                '<td style="text-align:right;color:#0F766E;font-weight:700;">' + formatCost(a.total_cost) + '</td></tr>';
+        }).join('');
+        html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Resumen por Cuenta</h3><span class="badge header-badge" style="background:var(--secondary);color:#fff;">' + accounts.length + ' cuentas</span></div><div class="card-body"><div class="table-container"><table><thead><tr>' +
+            '<th>Cuenta</th><th style="text-align:center;">Equipo</th>' +
+            '<th style="text-align:right;">SMS</th><th style="text-align:right;">Cost.</th>' +
+            '<th style="text-align:right;">Voz</th><th style="text-align:right;">Cost.</th>' +
+            '<th style="text-align:right;">Web</th><th style="text-align:right;">Cost.</th>' +
+            '<th style="text-align:right;">Mail</th><th style="text-align:right;">Cost.</th>' +
+            '<th style="text-align:right;">Total</th></tr></thead><tbody>' + (acctRows || '<tr><td colspan="11" style="text-align:center;">Sin datos</td></tr>') + '</tbody></table></div></div></div>';
+
+        // ---- Action stats by account ----
+        var actionRows = actions.map(function(x) {
+            return '<tr><td><strong>' + escapeHtml(x.full_name || x.username) + '</strong><br><small class="text-secondary">' + escapeHtml(x.username) + '</small></td>' +
+                '<td style="text-align:right;">' + x.sms_sends + '</td>' +
+                '<td style="text-align:right;">' + x.voice_calls + '</td>' +
+                '<td style="text-align:right;">' + x.web_calls + '</td>' +
+                '<td style="text-align:right;">' + x.email_sends + '</td>' +
+                '<td style="text-align:right;">' + x.groups_created + '</td>' +
+                '<td style="text-align:right;color:#0F766E;font-weight:600;">' + formatCost(x.total_cost) + '</td></tr>';
+        }).join('');
+        html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Acciones por Cuenta</h3></div><div class="card-body"><div class="table-container"><table><thead><tr>' +
+            '<th>Cuenta</th><th style="text-align:right;">SMS enviados</th><th style="text-align:right;">Llamadas</th><th style="text-align:right;">Web calls</th><th style="text-align:right;">Correos</th><th style="text-align:right;">Grupos</th><th style="text-align:right;">Costo</th></tr></thead><tbody>' +
+            (actionRows || '<tr><td colspan="7" style="text-align:center;">Sin datos</td></tr>') + '</tbody></table></div></div></div>';
+
+        container.innerHTML = html;
+    } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
 function drawDailyChart(labels, values) {
