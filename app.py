@@ -6038,6 +6038,11 @@ def _parse_dt(value):
         if m:
             try:
                 dt = datetime.strptime(m.group(0), fmt)
+                # Si solo se indico la fecha, se asume el fin del dia: la promesa
+                # es valida durante todo el dia (cualquier contacto ese dia cuenta
+                # como cumplido). Evita marcar como vencida al scotar solo fecha.
+                if not re.search(r':\d{2}(:\d{2})?', m.group(0)):
+                    dt = dt.replace(hour=23, minute=59, second=59)
                 return dt.strftime(out)
             except ValueError:
                 return None
