@@ -592,6 +592,8 @@ def init_db():
                 discount_amount NUMERIC(14,2) DEFAULT 0,
                 payment_link TEXT DEFAULT '',
                 email VARCHAR(255) DEFAULT '',
+                next_follow_up_at TIMESTAMP DEFAULT NULL,
+                follow_up_note TEXT DEFAULT '',
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
@@ -1146,6 +1148,10 @@ def init_db():
             cur.execute("ALTER TABLE contacts ADD COLUMN payment_link TEXT DEFAULT ''")
         if not pg_column_exists('contacts', 'email'):
             cur.execute("ALTER TABLE contacts ADD COLUMN email VARCHAR(255) DEFAULT ''")
+        if not pg_column_exists('contacts', 'next_follow_up_at'):
+            cur.execute("ALTER TABLE contacts ADD COLUMN next_follow_up_at TIMESTAMP DEFAULT NULL")
+        if not pg_column_exists('contacts', 'follow_up_note'):
+            cur.execute("ALTER TABLE contacts ADD COLUMN follow_up_note TEXT DEFAULT ''")
 
         # contact_groups migrations: created_by lets members validate ownership of a group.
         if not pg_column_exists('contact_groups', 'created_by'):
@@ -1451,6 +1457,8 @@ def init_db():
                 discount_amount REAL DEFAULT 0,
                 payment_link TEXT DEFAULT '',
                 email TEXT DEFAULT '',
+                next_follow_up_at TEXT DEFAULT NULL,
+                follow_up_note TEXT DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (group_id) REFERENCES contact_groups(id) ON DELETE SET NULL
             );
@@ -2173,6 +2181,18 @@ def init_db():
             if 'email' not in cols:
                 db.execute("ALTER TABLE contacts ADD COLUMN email TEXT DEFAULT ''")
                 db.commit()
+        except Exception:
+            pass
+
+        # Migration: add follow-up commitment fields to contacts
+        try:
+            cursor = db.execute("PRAGMA table_info(contacts)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if 'next_follow_up_at' not in cols:
+                db.execute("ALTER TABLE contacts ADD COLUMN next_follow_up_at TEXT DEFAULT NULL")
+            if 'follow_up_note' not in cols:
+                db.execute("ALTER TABLE contacts ADD COLUMN follow_up_note TEXT DEFAULT ''")
+            db.commit()
         except Exception:
             pass
 
@@ -5985,6 +6005,31 @@ def _parse_money(value):
         return 0.0
 
 
+def _parse_dt(value):
+    """Parse a datetime coming from JSON (ISO 8601 from datetime-local, e.g.
+    '2026-10-01T15:30') into a 'YYYY-MM-DD HH:MM:SS' string. Empty/None or
+    unparseable -> None (used to clear a promised follow-up)."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if s.endswith('Z'):
+        s = s[:-1]
+    s = s.replace('T', ' ')
+    # Trim optional fractional seconds / timezone offset
+    s = re.sub(r'([0-9]{2}:[0-9]{2}:[0-9]{2})\.[0-9]+.*$', r'\1', s)
+    s = re.sub(r'([0-9]{2}:[0-9]{2})([+-][0-9:]+)?$', r'\1:00', s)
+    try:
+        dt = datetime.strptime(s[:19], '%Y-%m-%d %H:%M:%S')
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        try:
+            return datetime.strptime(s[:10], '%Y-%m-%d').strftime('%Y-%m-%d 00:00:00')
+        except ValueError:
+            return None
+
+
 def _phone_digits_tail(phone, n=10):
     """Return the last n digits of a phone number for loose matching."""
     digits = re.sub(r'\D', '', str(phone or ''))
@@ -6212,6 +6257,11 @@ def list_contacts():
             d['email_count'] = int(d.get('email_count') or 0)
         except (TypeError, ValueError):
             d['sms_count'] = d['call_count'] = d['talk_time'] = d['email_count'] = 0
+        v = d.get('next_follow_up_at')
+        if isinstance(v, datetime):
+            d['next_follow_up_at'] = v.strftime('%Y-%m-%d %H:%M:%S')
+        elif isinstance(v, str) and '.' in v and len(v.split('.', 1)[0]) == 19:
+            d['next_follow_up_at'] = v.split('.', 1)[0]
         contact_list.append(d)
 
     return jsonify({
@@ -6235,6 +6285,8 @@ def create_contact():
     discount_amount = _parse_money(data.get('discount_amount'))
     payment_link = (data.get('payment_link') or '').strip()
     email = (data.get('email') or '').strip()[:255]
+    follow_up_note = (data.get('follow_up_note') or '').strip()[:500]
+    next_follow_up_at = _parse_dt(data.get('next_follow_up_at'))
     group_id = data.get('group_id', None)
     if not name or not phone:
         return jsonify({'error': 'Nombre y telefono son requeridos'}), 400
@@ -6253,10 +6305,10 @@ def create_contact():
             if not group:
                 group_id = None
         db.execute(
-            "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, next_follow_up_at, follow_up_note, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email,
-             session.get('user_id'))
+             next_follow_up_at, follow_up_note, session.get('user_id'))
         )
         db.commit()
         return jsonify({'message': 'Contacto creado', 'phone': phone}), 201
@@ -6344,9 +6396,17 @@ def update_contact(contact_id):
     discount_amount = _parse_money(data.get('discount_amount', contact['discount_amount']))
     payment_link = (str(data.get('payment_link', contact['payment_link'] or '') or '')).strip()
     email = (str(data.get('email', contact['email'] if 'email' in contact.keys() else '') or '')).strip()[:255]
+    ckeys = contact.keys()
+    follow_up_note = (str(data.get('follow_up_note', contact['follow_up_note'] if 'follow_up_note' in ckeys else '') or '')).strip()[:500]
+    if 'next_follow_up_at' in data:
+        next_follow_up_at = _parse_dt(data.get('next_follow_up_at'))
+    else:
+        raw_fu = contact['next_follow_up_at'] if 'next_follow_up_at' in ckeys else None
+        next_follow_up_at = raw_fu.strftime('%Y-%m-%d %H:%M:%S') if hasattr(raw_fu, 'strftime') else raw_fu
     db.execute(
-        "UPDATE contacts SET name=?, phone=?, notes=?, remark=?, group_id=?, app_name=?, amount=?, discount_amount=?, payment_link=?, email=? WHERE id=?",
-        (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, contact_id)
+        "UPDATE contacts SET name=?, phone=?, notes=?, remark=?, group_id=?, app_name=?, amount=?, discount_amount=?, payment_link=?, email=?, next_follow_up_at=?, follow_up_note=? WHERE id=?",
+        (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email,
+         next_follow_up_at, follow_up_note, contact_id)
     )
     db.commit()
     return jsonify({'message': 'Contacto actualizado'})
@@ -8661,6 +8721,281 @@ def admin_settlement():
         'actions': actions,
         'summary': summary,
         'date_from': date_from, 'date_to': date_to,
+    })
+
+
+@app.route('/api/admin/work-quality', methods=['GET'])
+@admin_required
+def admin_work_quality():
+    """Control de calidad del trabajo: detecta cuentas inactivas / seguimiento
+    insuficiente y promesas de seguimiento vencidas. Solo administrador.
+
+    Por cada contacto propio de la cuenta se calcula el ultimo contacto real
+    (MAX entre sms_records / voice_records / webphone_records por la COLA de 10
+    digitos del telefono, y email_records por correo) y se compara con la
+    promesa contacts.next_follow_up_at:
+      - promised_done   : promesa <= ahora y ult. contacto >= promesa
+      - overdue         : promesa < ahora y ult. contacto < promesa (o sin tocar)
+      - upcoming        : promesa futura (aun en plazo)
+      - no_promise      : sin promesa registrada
+
+    Riesgo por cuenta:
+      rojo    : sin actividad en STALE_DAYS o tasa de vencidos alta
+      amarillo: alguna promesa vencida o contactos estancados
+      verde   : promesas al dia y actividad reciente
+
+    Los valores de actividad solo miden la VENTANA [date_from, date_to]
+    (defecto: ultimos 60 dias); la clasificacion de promesas usa el tiempo real.
+    """
+    db = get_db()
+    is_pg = getattr(db, 'db_type', 'sqlite') == 'postgres'
+
+    def _norm_date(v):
+        m = re.match(r'^(\d{4})-(\d{2})-(\d{2})', (v or '').strip())
+        return m.group(0) if m else ''
+
+    date_from = _norm_date(request.args.get('date_from', ''))
+    date_to = _norm_date(request.args.get('date_to', ''))
+    if not date_to:
+        date_to = datetime.utcnow().strftime('%Y-%m-%d')
+    if not date_from:
+        date_from = (datetime.utcnow() - timedelta(days=60)).strftime('%Y-%m-%d')
+    if date_from > date_to:
+        date_from, date_to = date_to, date_from
+
+    stale_days = max(1, int(request.args.get('stale_days', 7) or 7))
+    team_filter = request.args.get('team', '').strip()
+    now = datetime.utcnow()
+    now_s = now.strftime('%Y-%m-%d %H:%M:%S')
+    stale_cut = (now - timedelta(days=stale_days)).strftime('%Y-%m-%d %H:%M:%S')
+
+    users = db.execute(
+        "SELECT id, username, full_name, role, team_creator_id FROM users ORDER BY id"
+    ).fetchall()
+
+    def _team_of(u):
+        return u['team_creator_id'] if (u['team_creator_id'] and u['role'] == 'team_member') else u['id']
+
+    # ---- owned contacts (all history; promise classification is time-based) ----
+    contacts = db.execute("""
+        SELECT id, name, phone, email, created_by, next_follow_up_at, follow_up_note
+        FROM contacts ORDER BY id
+    """).fetchall()
+    crows = []
+    for c in contacts:
+        cd = dict(c)
+        v = cd.get('next_follow_up_at')
+        if isinstance(v, datetime):
+            cd['next_follow_up_at'] = v.strftime('%Y-%m-%d %H:%M:%S')
+        elif isinstance(v, str) and '.' in v and len(v.split('.', 1)[0]) == 19:
+            cd['next_follow_up_at'] = v.split('.', 1)[0]
+        cd['_key'] = _phone_digits_tail(cd.get('phone'))
+        cd['_email'] = (cd.get('email') or '').strip().lower()
+        crows.append(cd)
+
+    owner_contacts = {}
+    for cd in crows:
+        owner_contacts.setdefault(cd['created_by'], []).append(cd)
+
+    def _win(table_alias):
+        return (f" AND {table_alias}.created_at >= ? AND {table_alias}.created_at <= ?",
+                [date_from + ' 00:00:00', date_to + ' 23:59:59'])
+
+    # ---- last real touch per phone-key (last 10 digits), bounded to 180 days ----
+    def _last_touch(table, alias):
+        if is_pg:
+            k = "RIGHT(REGEXP_REPLACE(COALESCE(%s.phone,''), '[^0-9]', '', 'g'), 10)" % alias
+        else:
+            k = ("substr(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE("
+                 "COALESCE(%s.phone,''),'+',''),' ',''),'-',''),'(',''),')',''),'.',''),'#',''),'*',''),'/',''),',',''), -10)") % alias
+        win = ("180 days" if is_pg else None)
+        if is_pg:
+            w = f"{alias}.created_at >= CURRENT_TIMESTAMP - INTERVAL '180 days'"
+        else:
+            w = f"{alias}.created_at >= datetime('now','-180 days')"
+        q = f"SELECT {k} AS k, MAX({alias}.created_at) AS t FROM {table} {alias} WHERE {w} GROUP BY k"
+        out = {}
+        for r in db.execute(q).fetchall():
+            tv = r['t']
+            out[r['k']] = tv.strftime('%Y-%m-%d %H:%M:%S') if hasattr(tv, 'strftime') else str(tv)[:19]
+        return out
+
+    last_sms = _last_touch('sms_records', 'sr')
+    last_voice = _last_touch('voice_records', 'vr')
+    last_web = _last_touch('webphone_records', 'wr')
+
+    # last email touch keyed by lowercased address (180-day window)
+    if is_pg:
+        ew = "er.created_at >= CURRENT_TIMESTAMP - INTERVAL '180 days'"
+    else:
+        ew = "er.created_at >= datetime('now','-180 days')"
+    last_email = {}
+    for r in db.execute(
+        f"SELECT LOWER(TRIM(COALESCE(er.recipient_email,''))) AS k, MAX(er.created_at) AS t "
+        f"FROM email_records er WHERE {ew} AND COALESCE(er.recipient_email,'')<>'' GROUP BY k"
+    ).fetchall():
+        tv = r['t']
+        last_email[r['k']] = tv.strftime('%Y-%m-%d %H:%M:%S') if hasattr(tv, 'strftime') else str(tv)[:19]
+
+    def _max_touch(cd):
+        cands = []
+        if cd['_key']:
+            cands += [last_sms.get(cd['_key']), last_voice.get(cd['_key']), last_web.get(cd['_key'])]
+        if cd['_email']:
+            cands.append(last_email.get(cd['_email']))
+        cands = [x for x in cands if x]
+        return max(cands) if cands else ''
+
+    # ---- window activity counts per account ----
+    def _window_counts(table, alias, extra=''):
+        wc, wp = _win(alias)
+        q = (f"SELECT {alias}.created_by AS u, COUNT(*) AS n FROM {table} {alias} "
+             f"WHERE 1=1 {wc} {extra} GROUP BY {alias}.created_by")
+        return {r['u']: int(r['n'] or 0) for r in db.execute(q, wp).fetchall()}
+
+    sms_act = _window_counts('sms_records', 'sr', "AND COALESCE(sr.api_msg,'') NOT LIKE '%simulado%'")
+    voice_act = _window_counts('voice_records', 'vr')
+    web_act = _window_counts('webphone_records', 'wr')
+    mail_act = _window_counts('email_records', 'er')
+
+    # ---- per-account aggregation ----
+    accounts = []
+    for u in users:
+        uid = u['id']
+        mcs = owner_contacts.get(uid, [])
+        promised_done = overdue = upcoming = no_promise = stale = touched_recent = 0
+        overdue_days_max = 0
+        overdue_list = []
+        last_touch_overall = ''
+        for cd in mcs:
+            lt = _max_touch(cd)
+            if lt and lt > last_touch_overall:
+                last_touch_overall = lt
+            promise = cd.get('next_follow_up_at') or ''
+            if not promise:
+                no_promise += 1
+                bucket = 'no_promise'
+            elif promise > now_s:
+                upcoming += 1
+                bucket = 'upcoming'
+            elif lt and lt >= promise:
+                promised_done += 1
+                bucket = 'done'
+            else:
+                overdue += 1
+                bucket = 'overdue'
+                try:
+                    d = (now - datetime.strptime(promise, '%Y-%m-%d %H:%M:%S')).days
+                    overdue_days_max = max(overdue_days_max, d)
+                except ValueError:
+                    d = 0
+                if len(overdue_list) < 50:
+                    overdue_list.append({
+                        'contact_id': cd['id'], 'name': cd['name'], 'phone': cd['phone'],
+                        'promised_at': promise, 'overdue_days': d,
+                        'note': cd.get('follow_up_note') or '',
+                    })
+            # stale: no touch in stale window
+            if not lt or lt < stale_cut:
+                stale += 1
+            else:
+                touched_recent += 1
+
+        total_contacts = len(mcs)
+        promised_total = promised_done + overdue + upcoming
+        overdue_rate = round(overdue / promised_total, 4) if promised_total else 0.0
+        stale_rate = round(stale / total_contacts, 4) if total_contacts else 0.0
+        n_sms = sms_act.get(uid, 0)
+        n_voice = voice_act.get(uid, 0)
+        n_web = web_act.get(uid, 0)
+        n_mail = mail_act.get(uid, 0)
+        actions_total = n_sms + n_voice + n_web + n_mail
+        inactive = actions_total == 0
+
+        # ---- risk grading ----
+        if inactive or overdue_rate >= 0.3 or (total_contacts > 0 and stale_rate >= 0.5):
+            risk = 'red'
+        elif overdue > 0 or stale > 0 or upcoming == 0 and total_contacts > 0:
+            risk = 'yellow'
+        else:
+            risk = 'green'
+
+        accounts.append({
+            'user_id': uid, 'username': u['username'], 'full_name': u['full_name'],
+            'role': u['role'], 'team_id': _team_of(u),
+            'total_contacts': total_contacts,
+            'promised': promised_total, 'promised_done': promised_done,
+            'overdue': overdue, 'upcoming': upcoming, 'no_promise': no_promise,
+            'overdue_rate': overdue_rate, 'overdue_days_max': overdue_days_max,
+            'stale_contacts': stale, 'touched_recent': touched_recent, 'stale_rate': stale_rate,
+            'sms_actions': n_sms, 'voice_actions': n_voice, 'web_actions': n_web,
+            'mail_actions': n_mail, 'actions_total': actions_total, 'inactive': inactive,
+            'last_touch': last_touch_overall,
+            'risk': risk, 'overdue_list': overdue_list,
+        })
+
+    if team_filter:
+        try:
+            tf_id = int(team_filter)
+        except ValueError:
+            tf_id = -1
+        accounts = [a for a in accounts if a['team_id'] == tf_id]
+
+    # ---- team rollup ----
+    team_ids = sorted({a['team_id'] for a in accounts})
+    id_to_user = {u['id']: u for u in users}
+    teams = []
+    for tid in team_ids:
+        members = [a for a in accounts if a['team_id'] == tid]
+        tu = id_to_user.get(tid)
+        total_prom = sum(a['promised'] for a in members)
+        total_overdue = sum(a['overdue'] for a in members)
+        total_c = sum(a['total_contacts'] for a in members)
+        total_stale = sum(a['stale_contacts'] for a in members)
+        if any(a['risk'] == 'red' for a in members):
+            trisk = 'red'
+        elif any(a['risk'] == 'yellow' for a in members):
+            trisk = 'yellow'
+        else:
+            trisk = 'green'
+        teams.append({
+            'team_id': tid,
+            'team_name': ((tu['full_name'] or tu['username']) if tu else ('Equipo %s' % tid)),
+            'accounts': len(members),
+            'total_contacts': total_c,
+            'promised': total_prom, 'overdue': total_overdue,
+            'overdue_rate': round(total_overdue / total_prom, 4) if total_prom else 0.0,
+            'stale_contacts': total_stale,
+            'stale_rate': round(total_stale / total_c, 4) if total_c else 0.0,
+            'actions_total': sum(a['actions_total'] for a in members),
+            'risk': trisk,
+        })
+    teams.sort(key=lambda t: (t['risk'] != 'red', -t['overdue']))
+
+    # ---- summary ----
+    tot_prom = sum(a['promised'] for a in accounts)
+    tot_overdue = sum(a['overdue'] for a in accounts)
+    tot_c = sum(a['total_contacts'] for a in accounts)
+    tot_stale = sum(a['stale_contacts'] for a in accounts)
+    summary = {
+        'accounts': len(accounts),
+        'red': sum(1 for a in accounts if a['risk'] == 'red'),
+        'yellow': sum(1 for a in accounts if a['risk'] == 'yellow'),
+        'green': sum(1 for a in accounts if a['risk'] == 'green'),
+        'inactive': sum(1 for a in accounts if a['inactive']),
+        'total_contacts': tot_c,
+        'promised': tot_prom, 'overdue': tot_overdue,
+        'overdue_rate': round(tot_overdue / tot_prom, 4) if tot_prom else 0.0,
+        'stale_contacts': tot_stale,
+        'stale_rate': round(tot_stale / tot_c, 4) if tot_c else 0.0,
+        'actions_total': sum(a['actions_total'] for a in accounts),
+    }
+
+    accounts.sort(key=lambda a: (a['risk'] != 'red', -a['overdue'], -a['stale_contacts']))
+
+    return jsonify({
+        'teams': teams, 'accounts': accounts, 'summary': summary,
+        'date_from': date_from, 'date_to': date_to, 'stale_days': stale_days,
     })
 
 
@@ -14100,7 +14435,7 @@ def contact_card(cid):
     cd['call_count'] = int(s.get('calls') or 0)
     cd['talk_time'] = int(s.get('talk_time') or 0)
     cd['email_count'] = int(s.get('emails') or 0)
-    return jsonify({'contact': _row_with_dates(cd, ('created_at',))})
+    return jsonify({'contact': _row_with_dates(cd, ('created_at', 'next_follow_up_at'))})
 
 
 @app.route('/api/email/replies/<int:reply_id>/panel-contact', methods=['GET'])
@@ -14152,7 +14487,7 @@ def email_reply_contact_panel(reply_id):
     cd['talk_time'] = int(s.get('talk_time') or 0)
     cd['email_count'] = int(s.get('emails') or 0)
     cd['resolved_by_email'] = bool(resolved_by_email)
-    return jsonify({'contact': _row_with_dates(cd, ('created_at',))})
+    return jsonify({'contact': _row_with_dates(cd, ('created_at', 'next_follow_up_at'))})
 
 
 @app.route('/api/email/records', methods=['GET'])

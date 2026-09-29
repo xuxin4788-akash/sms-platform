@@ -166,7 +166,38 @@
 
 ---
 
-## 8. 使用这份规范（给 AI 的约定）
+## 8. 工作质检 / 流程质检（`/api/admin/work-quality`，admin）
+
+用途：检查员工是否跟进到位、承诺的下次跟进是否按时兑现（非内容合规质检）。
+
+- **承诺字段（contacts 表）**：
+  - `next_follow_up_at`：员工承诺的下次跟进时间（datetime；空值 = 无承诺/清除承诺）。
+  - `follow_up_note`：承诺备注（≤500 字符）。
+  - 两字段由联系人 create/update 读写，card/list 返回；前端编辑弹窗有"Promesa de proximo seguimiento"入口。
+- **实际最近触达 `last_touch`（按联系人）**：
+  - 取以下四类记录的最大时间：`sms_records` / `voice_records` / `webphone_records`（均按电话**尾 10 位**匹配）+ `email_records`（按**小写邮箱**匹配）。
+  - 全部限制在 **180 天**窗口内（与第 6 节一致），无任何记录则视为未触达。
+- **承诺分桶**（只看承诺时间与 `last_touch`，与活动窗口无关）：
+  | 分桶 | 条件 |
+  |------|------|
+  | `promised_done` 已兑现 | 承诺时间 ≤ 现在 且 last_touch ≥ 承诺时间 |
+  | `overdue` 已逾期 | 承诺时间 < 现在 且 last_touch < 承诺时间（或无触达） |
+  | `upcoming` 待到期 | 承诺时间在未来 |
+  | `no_promise` 无承诺 | `next_follow_up_at` 为空 |
+  - `promised = promised_done + overdue + upcoming`；`overdue_rate = overdue / promised`。
+- **活动窗口（只影响动作计数与"是否 inactivo"）**：`date_from`/`date_to`，默认**最近 60 天**。窗口内四类动作之和为 0 → `inactive=true`。
+- **联系人停滞 `stale`**：在 `stale_days`（默认 7，可配）内无任何触达的联系人数；`stale_rate = stale / total_contacts`。
+- **风险定级（账户）**：
+  - 红：窗口内 `inactive`，或 `overdue_rate ≥ 0.30`，或 `stale_rate ≥ 0.50`。
+  - 黄：存在 overdue 或 stale，或有联系人但无任何 upcoming 承诺。
+  - 绿：其余（承诺按期 + 近期有触达）。
+  - 团队风险：成员中任一为红即红，任一为黄即黄，否则绿。
+- **返回**：`{teams, accounts, summary, date_from, date_to, stale_days}`；accounts 含至多 50 条 `overdue_list`（contact_id/name/phone/promised_at/overdue_days/note）；支持 `team=<team_admin_id>` 过滤。
+- 口径注意：承诺及时性是**时点判断**（用查询当下时间），活动量是**区间统计**，两者时间口径不同，汇报时需区分。
+
+---
+
+## 9. 使用这份规范（给 AI 的约定）
 
 1. 回答任何"发了多少/成本多少/送达率多少"前，**先明确角色作用域**（这是可见范围前提）。
 2. SMS 对账/送达率口径 = **送达/受理**（排除 in_flight 与 simulado）；不要混淆"发送总数"与"送达数"。

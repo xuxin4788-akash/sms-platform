@@ -622,6 +622,9 @@ function navigateTo(page) {
         case 'settlement':
             if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderSettlement(content); break;
+        case 'work-quality':
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
+            renderWorkQuality(content); break;
         case 'team-api-select':
             if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderTeamApiConfig(content); break;
@@ -941,7 +944,18 @@ async function renderContacts(container) {
                         '<span class="ca-item" title="Tiempo total de conversacion" style="color:#7C3AED;">' + formatDuration(Number(c.talk_time || 0)) + '</span>' +
                         '<span class="ca-item" title="Correos enviados" style="color:#2563EB;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>' + Number(c.email_count || 0) + '</span>' +
                     '</div>';
-                var nameCell = '<strong>' + escapeHtml(c.name) + '</strong>' +
+                var fuBadge = '';
+                if (c.next_follow_up_at) {
+                    var fuDate = new Date(String(c.next_follow_up_at).replace(' ', 'T'));
+                    if (!isNaN(fuDate.getTime())) {
+                        var overdueFu = fuDate.getTime() < Date.now();
+                        var label = formatShortDate(c.next_follow_up_at);
+                        fuBadge = overdueFu
+                            ? '<span class="badge badge-red" style="margin-top:4px;" title="Seguimiento vencido">&#9203; Vencida ' + label + '</span>'
+                            : '<span class="badge badge-yellow" style="margin-top:4px;" title="Seguimiento prometido">&#9203; ' + label + '</span>';
+                    }
+                }
+                var nameCell = '<strong>' + escapeHtml(c.name) + '</strong>' + fuBadge +
                     (c.app_name ? '<div style="font-size:12px;color:#64748B;margin-top:2px;">' + escapeHtml(c.app_name) + '</div>' : '');
                 var amountVal = Number(c.amount || 0);
                 var discountVal = Number(c.discount_amount || 0);
@@ -1055,7 +1069,15 @@ async function showEditContactModal(id, onDone) {
             return '<option value="' + escapeHtml(a) + '"' + sel + '>' + escapeHtml(a) + '</option>';
         }).join('');
         state.contactEditorDone = onDone || null;
-        showModal('Editar Contacto', '<form onsubmit="handleEditContact(event, ' + id + ')"><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(contact.name) + '" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" value="' + escapeHtml(contact.phone) + '" required></div></div><div class="form-group"><label>Correo electronico</label><input type="email" name="email" value="' + escapeHtml(contact.email || '') + '" placeholder="cliente@correo.com"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + groupOpts + '</select></div><div class="form-group"><label>Nota</label><select name="remark"><option value="">Sin nota</option>' + remarkOpts + '</select></div></div><div class="form-group"><label>APP</label><select name="app_name"><option value="">Sin APP</option>' + appOpts + '</select></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Monto</label><input type="number" name="amount" step="0.01" min="0" value="' + escapeHtml(contact.amount != null ? String(Number(contact.amount)) : '') + '"></div><div class="form-group"><label>Monto de descuento</label><input type="number" name="discount_amount" step="0.01" min="0" value="' + escapeHtml(contact.discount_amount != null ? String(Number(contact.discount_amount)) : '') + '"></div></div><div class="form-group"><label>Link de pago</label><input type="text" name="payment_link" value="' + escapeHtml(contact.payment_link || '') + '" placeholder="Ej: liga.com/pago"></div><div class="form-group"><label>Observaciones</label><textarea name="notes" rows="3">' + escapeHtml(contact.notes || '') + '</textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
+        var fuVal = contact.next_follow_up_at ? String(contact.next_follow_up_at).replace(' ', 'T').slice(0, 16) : '';
+        var fuPromiseBlock =
+            '<div class="form-group" style="margin-top:4px;padding:12px 14px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;">' +
+            '<label style="font-weight:600;color:#92400E;">Promesa de proximo seguimiento</label>' +
+            '<div class="form-row" style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:6px;">' +
+            '<input type="datetime-local" name="next_follow_up_at" value="' + escapeHtml(fuVal) + '">' +
+            '<input type="text" name="follow_up_note" value="' + escapeHtml(contact.follow_up_note || '') + '" placeholder="Nota de la promesa (opcional)" maxlength="500">' +
+            '</div></div>';
+        showModal('Editar Contacto', '<form onsubmit="handleEditContact(event, ' + id + ')"><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(contact.name) + '" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" value="' + escapeHtml(contact.phone) + '" required></div></div><div class="form-group"><label>Correo electronico</label><input type="email" name="email" value="' + escapeHtml(contact.email || '') + '" placeholder="cliente@correo.com"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + groupOpts + '</select></div><div class="form-group"><label>Nota</label><select name="remark"><option value="">Sin nota</option>' + remarkOpts + '</select></div></div><div class="form-group"><label>APP</label><select name="app_name"><option value="">Sin APP</option>' + appOpts + '</select></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Monto</label><input type="number" name="amount" step="0.01" min="0" value="' + escapeHtml(contact.amount != null ? String(Number(contact.amount)) : '') + '"></div><div class="form-group"><label>Monto de descuento</label><input type="number" name="discount_amount" step="0.01" min="0" value="' + escapeHtml(contact.discount_amount != null ? String(Number(contact.discount_amount)) : '') + '"></div></div><div class="form-group"><label>Link de pago</label><input type="text" name="payment_link" value="' + escapeHtml(contact.payment_link || '') + '" placeholder="Ej: liga.com/pago"></div>' + fuPromiseBlock + '<div class="form-group" style="margin-top:12px;"><label>Observaciones</label><textarea name="notes" rows="3">' + escapeHtml(contact.notes || '') + '</textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
     } catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -1063,7 +1085,7 @@ async function handleEditContact(event, id) {
     event.preventDefault();
     var form = event.target;
     try {
-        await api('/api/contacts/' + id, { method: 'PUT', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), email: form.email.value.trim(), group_id: form.group_id.value || null, remark: form.remark.value, app_name: form.app_name.value.trim(), amount: form.amount.value || 0, discount_amount: form.discount_amount.value || 0, payment_link: form.payment_link.value.trim(), notes: form.notes.value.trim() } });
+        await api('/api/contacts/' + id, { method: 'PUT', body: { name: form.name.value.trim(), phone: form.phone.value.trim(), email: form.email.value.trim(), group_id: form.group_id.value || null, remark: form.remark.value, app_name: form.app_name.value.trim(), amount: form.amount.value || 0, discount_amount: form.discount_amount.value || 0, payment_link: form.payment_link.value.trim(), next_follow_up_at: form.next_follow_up_at.value || '', follow_up_note: form.follow_up_note.value.trim(), notes: form.notes.value.trim() } });
         hideModal();
         var done = state.contactEditorDone; state.contactEditorDone = null;
         if (typeof done === 'function') { done(); return; }
@@ -3584,6 +3606,138 @@ async function renderSettlement(container) {
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
 }
 
+function pctFmt(v) {
+    return (Number(v || 0) * 100).toFixed(0) + '%';
+}
+
+function riskBadge(risk) {
+    if (risk === 'red') return '<span class="badge badge-red">Riesgo alto</span>';
+    if (risk === 'yellow') return '<span class="badge badge-yellow">Atencion</span>';
+    return '<span class="badge badge-green">OK</span>';
+}
+
+async function renderWorkQuality(container) {
+    if (state.user.role !== 'admin') {
+        container.innerHTML = '<div class="empty-state"><h3>Acceso denegado</h3></div>';
+        return;
+    }
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando control de calidad...</p></div>';
+    try {
+        if (!state.workQuality) state.workQuality = { dateFrom: '', dateTo: '', staleDays: 7, team: '' };
+        var params = new URLSearchParams();
+        if (state.workQuality.dateFrom) params.set('date_from', state.workQuality.dateFrom);
+        if (state.workQuality.dateTo) params.set('date_to', state.workQuality.dateTo);
+        params.set('stale_days', state.workQuality.staleDays || 7);
+        if (state.workQuality.team) params.set('team', state.workQuality.team);
+        var data = await api('/api/admin/work-quality?' + params.toString());
+        var accounts = data.accounts || [];
+        var teams = data.teams || [];
+        var summary = data.summary || {};
+
+        function sCard(label, value, color) {
+            return '<div class="stat-card"><div class="stat-value" style="' + (color ? 'color:' + color : '') + '">' + value + '</div><div class="stat-label">' + label + '</div></div>';
+        }
+
+        var teamOpts = '<option value="">Todos los equipos</option>' + teams.map(function(t) {
+            return '<option value="' + t.team_id + '"' + (String(state.workQuality.team) === String(t.team_id) ? ' selected' : '') + '>' + escapeHtml(t.team_name) + '</option>';
+        }).join('');
+
+        var filterHtml =
+            '<div class="page-header page-filter mb-4"><h1 style="font-size:22px;font-weight:700;">Control de Calidad del Trabajo</h1>' +
+            '<div class="filter-row filter-row-multi">' +
+            '<select onchange="state.workQuality.team=this.value;renderWorkQuality(document.getElementById(\'page-content\'))">' + teamOpts + '</select>' +
+            '<input type="date" lang="es" class="form-control" value="' + (state.workQuality.dateFrom || '') + '" onchange="state.workQuality.dateFrom=this.value">' +
+            '<span class="text-secondary filter-sep">a</span>' +
+            '<input type="date" lang="es" class="form-control" value="' + (state.workQuality.dateTo || '') + '" onchange="state.workQuality.dateTo=this.value">' +
+            '<button class="btn btn-primary btn-sm" onclick="renderWorkQuality(document.getElementById(\'page-content\'))">Filtrar</button>' +
+            '<label class="text-secondary text-sm" style="display:flex;align-items:center;gap:6px;">Sin contacto ' +
+            '<input type="number" min="1" max="60" style="width:60px;" value="' + (state.workQuality.staleDays || 7) + '" onchange="state.workQuality.staleDays=this.value;renderWorkQuality(document.getElementById(\'page-content\'))">' +
+            ' dias</label>' +
+            '<button class="btn btn-ghost btn-sm" onclick="state.workQuality.dateFrom=\'\';state.workQuality.dateTo=\'\';state.workQuality.team=\'\';state.workQuality.staleDays=7;renderWorkQuality(document.getElementById(\'page-content\'))">Limpiar</button>' +
+            '</div></div>';
+
+        var html = filterHtml;
+        html += '<div class="stat-grid mb-4" style="display:flex;flex-wrap:wrap;gap:16px;">' +
+            sCard(summary.red + ' en riesgo', summary.red, '#DC2626') +
+            sCard(summary.yellow + ' en atencion', summary.yellow, '#D97706') +
+            sCard(summary.green + ' al dia', summary.green, '#059669') +
+            sCard(summary.inactive + ' inactivas', summary.inactive, '#64748B') +
+            sCard('Promesas vencidas', summary.overdue, '#DC2626') +
+            sCard('Tasa vencidos', pctFmt(summary.overdue_rate), '#B91C1C') +
+            sCard('Contactos estancados', summary.stale_contacts, '#D97706') +
+            '</div>';
+
+        html += '<p class="text-secondary text-sm mb-4">Ventana de actividad: <strong>' + escapeHtml(data.date_from) + '</strong> a <strong>' + escapeHtml(data.date_to) + '</strong>. Se considera contacto estancado si no registra SMS, llamada, web call o correo en los ultimos <strong>' + (data.stale_days) + '</strong> dias. Verde = seguimiento al dia; amarillo = alguna promesa vencida o contactos estancados; rojo = cuenta inactiva, tasa alta de vencidos o mayoria de contactos estancados.</p>';
+
+        // ---- By team ----
+        var teamRows = teams.map(function(t) {
+            return '<tr><td><strong>' + escapeHtml(t.team_name) + '</strong></td>' +
+                '<td style="text-align:center;">' + t.accounts + '</td>' +
+                '<td style="text-align:right;">' + t.total_contacts + '</td>' +
+                '<td style="text-align:right;">' + t.promised + '</td>' +
+                '<td style="text-align:right;color:#DC2626;font-weight:600;">' + t.overdue + '</td>' +
+                '<td style="text-align:right;color:#B91C1C;">' + pctFmt(t.overdue_rate) + '</td>' +
+                '<td style="text-align:right;color:#D97706;">' + t.stale_contacts + ' (' + pctFmt(t.stale_rate) + ')</td>' +
+                '<td style="text-align:right;">' + t.actions_total + '</td>' +
+                '<td>' + riskBadge(t.risk) + '</td>' +
+                '<td><button class="btn btn-ghost btn-sm" onclick="state.workQuality.team=' + t.team_id + ';renderWorkQuality(document.getElementById(\'page-content\'))">Ver</button></td></tr>';
+        }).join('');
+        html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Resumen por Equipo</h3><span class="badge header-badge" style="background:var(--primary);color:#fff;">' + teams.length + ' equipos</span></div><div class="card-body"><div class="table-container"><table><thead><tr>' +
+            '<th>Equipo</th><th style="text-align:center;">Cuentas</th><th style="text-align:right;">Contactos</th>' +
+            '<th style="text-align:right;">Promesas</th><th style="text-align:right;">Vencidas</th><th style="text-align:right;">% venc.</th>' +
+            '<th style="text-align:right;">Estancados</th><th style="text-align:right;">Acciones</th><th>Riesgo</th><th></th></tr></thead><tbody>' +
+            (teamRows || '<tr><td colspan="10" style="text-align:center;">Sin datos</td></tr>') + '</tbody></table></div></div></div>';
+
+        // ---- By account ----
+        var acctRows = accounts.map(function(a) {
+            var idCell = '<strong>' + escapeHtml(a.full_name || a.username) + '</strong><br><small class="text-secondary">' +
+                escapeHtml(a.username) + ' · eq ' + a.team_id + '</small>';
+            return '<tr><td>' + idCell + '</td>' +
+                '<td style="text-align:right;">' + a.total_contacts + '</td>' +
+                '<td style="text-align:right;color:#DC2626;font-weight:600;">' + a.overdue + (a.overdue_days_max ? ' <small>(+' + a.overdue_days_max + 'd)</small>' : '') + '</td>' +
+                '<td style="text-align:right;color:#B91C1C;">' + pctFmt(a.overdue_rate) + '</td>' +
+                '<td style="text-align:right;">' + a.promised_done + '</td>' +
+                '<td style="text-align:right;">' + a.upcoming + '</td>' +
+                '<td style="text-align:right;color:#D97706;">' + a.stale_contacts + ' (' + pctFmt(a.stale_rate) + ')</td>' +
+                '<td style="text-align:right;">' + a.sms_actions + '</td><td style="text-align:right;">' + a.voice_actions + '</td>' +
+                '<td style="text-align:right;">' + a.web_actions + '</td><td style="text-align:right;">' + a.mail_actions + '</td>' +
+                '<td class="text-secondary text-sm">' + (a.last_touch ? formatFullDate(a.last_touch) : '-') + '</td>' +
+                '<td>' + riskBadge(a.risk) + '</td>' +
+                '<td><button class="btn btn-ghost btn-sm" onclick="showOverdueDetail(' + a.user_id + ')">Detalle</button></td></tr>';
+        }).join('');
+        html += '<div class="card mb-4"><div class="card-header card-header-wrap"><h3 style="margin:0;">Detalle por Cuenta</h3><span class="badge header-badge" style="background:var(--secondary);color:#fff;">' + accounts.length + ' cuentas</span></div><div class="card-body"><div class="table-container"><table><thead><tr>' +
+            '<th>Cuenta</th><th style="text-align:right;">Contactos</th>' +
+            '<th style="text-align:right;">Vencidas</th><th style="text-align:right;">% venc.</th>' +
+            '<th style="text-align:right;">Cumplidas</th><th style="text-align:right;">Proximas</th>' +
+            '<th style="text-align:right;">Estancados</th>' +
+            '<th style="text-align:right;">SMS</th><th style="text-align:right;">Voz</th><th style="text-align:right;">Web</th><th style="text-align:right;">Mail</th>' +
+            '<th>Ult. contacto</th><th>Riesgo</th><th></th></tr></thead><tbody>' +
+            (acctRows || '<tr><td colspan="14" style="text-align:center;">Sin datos</td></tr>') + '</tbody></table></div></div></div>';
+
+        state.workQualityData = data;
+        container.innerHTML = html;
+    } catch (err) {
+        container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
+    }
+}
+
+function showOverdueDetail(userId) {
+    var data = state.workQualityData;
+    if (!data) return;
+    var a = (data.accounts || []).find(function(x) { return x.user_id === userId; });
+    if (!a) return;
+    var title = 'Promesas vencidas - ' + (a.full_name || a.username);
+    var rows = (a.overdue_list || []).map(function(o) {
+        return '<tr><td><strong>' + escapeHtml(o.name) + '</strong><br><small class="text-secondary">' + escapeHtml(o.phone) + '</small></td>' +
+            '<td>' + formatFullDate(o.promised_at) + '</td>' +
+            '<td style="color:#DC2626;font-weight:600;">+' + o.overdue_days + ' dias</td>' +
+            '<td class="text-secondary text-sm">' + escapeHtml(o.note || '-') + '</td></tr>';
+    }).join('');
+    showModal(title, '<div class="table-container"><table><thead><tr><th>Contacto</th><th>Prometido para</th><th>Atraso</th><th>Nota</th></tr></thead><tbody>' +
+        (rows || '<tr><td colspan="4" style="text-align:center;">Sin promesas vencidas</td></tr>') + '</tbody></table></div>' +
+        '<div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cerrar</button></div>');
+}
+
 function drawDailyChart(labels, values) {
     var canvas = document.getElementById('dailyChart');
     if (!canvas) return;
@@ -4729,6 +4883,27 @@ function formatDuration(sec) {
     if (!sec) return '-';
     var m = Math.floor(sec / 60), s = sec % 60;
     return (m > 0 ? m + 'm ' : '') + s + 's';
+}
+
+function formatShortDate(v) {
+    if (!v) return '';
+    var d = new Date(String(v).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return String(v).slice(0, 10);
+    var dd = String(d.getDate()).padStart(2, '0');
+    var mm = String(d.getMonth() + 1).padStart(2, '0');
+    return dd + '/' + mm;
+}
+
+function formatFullDate(v) {
+    if (!v) return '-';
+    var d = new Date(String(v).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return String(v);
+    var dd = String(d.getDate()).padStart(2, '0');
+    var mm = String(d.getMonth() + 1).padStart(2, '0');
+    var yyyy = d.getFullYear();
+    var hh = String(d.getHours()).padStart(2, '0');
+    var mi = String(d.getMinutes()).padStart(2, '0');
+    return dd + '/' + mm + '/' + yyyy + ' ' + hh + ':' + mi;
 }
 
 async function renderCalls(container) {
