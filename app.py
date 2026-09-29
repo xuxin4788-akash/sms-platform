@@ -6006,9 +6006,10 @@ def _parse_money(value):
 
 
 def _parse_dt(value):
-    """Parse a datetime coming from JSON (ISO 8601 from datetime-local, e.g.
-    '2026-10-01T15:30') into a 'YYYY-MM-DD HH:MM:SS' string. Empty/None or
-    unparseable -> None (used to clear a promised follow-up)."""
+    """Parse a datetime coming from JSON into a 'YYYY-MM-DD HH:MM:SS' string.
+    Accepts both ISO ('YYYY-MM-DD[T ]HH:MM[:SS]', from datetime-local) and the
+    Spanish habit 'DD/MM/YYYY[ HH:MM[:SS]]'. Empty/None or unparseable -> None
+    (used to clear a promised follow-up)."""
     if value is None:
         return None
     s = str(value).strip()
@@ -6017,17 +6018,30 @@ def _parse_dt(value):
     if s.endswith('Z'):
         s = s[:-1]
     s = s.replace('T', ' ')
-    # Trim optional fractional seconds / timezone offset
-    s = re.sub(r'([0-9]{2}:[0-9]{2}:[0-9]{2})\.[0-9]+.*$', r'\1', s)
-    s = re.sub(r'([0-9]{2}:[0-9]{2})([+-][0-9:]+)?$', r'\1:00', s)
-    try:
-        dt = datetime.strptime(s[:19], '%Y-%m-%d %H:%M:%S')
-        return dt.strftime('%Y-%m-%d %H:%M:%S')
-    except ValueError:
-        try:
-            return datetime.strptime(s[:10], '%Y-%m-%d').strftime('%Y-%m-%d 00:00:00')
-        except ValueError:
-            return None
+    out = '%Y-%m-%d %H:%M:%S'
+    # ISO first, then Spanish habit (DD/MM/AAAA)
+    patterns = (
+        # ISO date+time
+        (r'(\d{4})-(\d{2})-(\d{2})[ ](\d{1,2}):(\d{2}):(\d{2})', '%Y-%m-%d %H:%M:%S'),
+        (r'(\d{4})-(\d{2})-(\d{2})[ ](\d{1,2}):(\d{2})', '%Y-%m-%d %H:%M'),
+        (r'(\d{4})-(\d{2})-(\d{2})', '%Y-%m-%d'),
+        # Spanish habit DD/MM/AAAA
+        (r'(\d{1,2})/(\d{1,2})/(\d{4})[ ](\d{1,2}):(\d{2}):(\d{2})', '%d/%m/%Y %H:%M:%S'),
+        (r'(\d{1,2})/(\d{1,2})/(\d{4})[ ](\d{1,2}):(\d{2})', '%d/%m/%Y %H:%M'),
+        (r'(\d{1,2})/(\d{1,2})/(\d{4})', '%d/%m/%Y'),
+        # Spanish with 4-digit year then time, and dots as separators
+        (r'(\d{1,2})\.(\d{1,2})\.(\d{4})[ ](\d{1,2}):(\d{2})', '%d.%m.%Y %H:%M'),
+        (r'(\d{1,2})\.(\d{1,2})\.(\d{4})', '%d.%m.%Y'),
+    )
+    for pat, fmt in patterns:
+        m = re.match(pat, s)
+        if m:
+            try:
+                dt = datetime.strptime(m.group(0), fmt)
+                return dt.strftime(out)
+            except ValueError:
+                return None
+    return None
 
 
 def _phone_digits_tail(phone, n=10):

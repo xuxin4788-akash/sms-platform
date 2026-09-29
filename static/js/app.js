@@ -1069,14 +1069,14 @@ async function showEditContactModal(id, onDone) {
             return '<option value="' + escapeHtml(a) + '"' + sel + '>' + escapeHtml(a) + '</option>';
         }).join('');
         state.contactEditorDone = onDone || null;
-        var fuVal = contact.next_follow_up_at ? String(contact.next_follow_up_at).replace(' ', 'T').slice(0, 16) : '';
+        var fuVal = toEsDateInput(contact.next_follow_up_at);
         var fuPromiseBlock =
             '<div class="form-group" style="margin-top:4px;padding:12px 14px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;">' +
             '<label style="font-weight:600;color:#92400E;">Promesa de proximo seguimiento</label>' +
             '<div class="form-row" style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:6px;">' +
-            '<input type="datetime-local" name="next_follow_up_at" value="' + escapeHtml(fuVal) + '">' +
+            '<input type="text" name="next_follow_up_at" value="' + escapeHtml(fuVal) + '" placeholder="DD/MM/AAAA HH:MM" title="Fecha en formato espanol: DD/MM/AAAA HH:MM (o solo DD/MM/AAAA). Dejar vacio para quitar la promesa.">' +
             '<input type="text" name="follow_up_note" value="' + escapeHtml(contact.follow_up_note || '') + '" placeholder="Nota de la promesa (opcional)" maxlength="500">' +
-            '</div></div>';
+            '</div><div style="font-size:12px;color:#B45309;margin-top:6px;">Formato de fecha: DD/MM/AAAA HH:MM (ej. 01/10/2026 15:30).</div></div>';
         showModal('Editar Contacto', '<form onsubmit="handleEditContact(event, ' + id + ')"><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Nombre *</label><input type="text" name="name" value="' + escapeHtml(contact.name) + '" required></div><div class="form-group"><label>Telefono *</label><input type="text" name="phone" value="' + escapeHtml(contact.phone) + '" required></div></div><div class="form-group"><label>Correo electronico</label><input type="email" name="email" value="' + escapeHtml(contact.email || '') + '" placeholder="cliente@correo.com"></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Grupo</label><select name="group_id"><option value="">Sin grupo</option>' + groupOpts + '</select></div><div class="form-group"><label>Nota</label><select name="remark"><option value="">Sin nota</option>' + remarkOpts + '</select></div></div><div class="form-group"><label>APP</label><select name="app_name"><option value="">Sin APP</option>' + appOpts + '</select></div><div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="form-group"><label>Monto</label><input type="number" name="amount" step="0.01" min="0" value="' + escapeHtml(contact.amount != null ? String(Number(contact.amount)) : '') + '"></div><div class="form-group"><label>Monto de descuento</label><input type="number" name="discount_amount" step="0.01" min="0" value="' + escapeHtml(contact.discount_amount != null ? String(Number(contact.discount_amount)) : '') + '"></div></div><div class="form-group"><label>Link de pago</label><input type="text" name="payment_link" value="' + escapeHtml(contact.payment_link || '') + '" placeholder="Ej: liga.com/pago"></div>' + fuPromiseBlock + '<div class="form-group" style="margin-top:12px;"><label>Observaciones</label><textarea name="notes" rows="3">' + escapeHtml(contact.notes || '') + '</textarea></div><div class="modal-footer" style="padding:16px 0 0;"><button type="button" class="btn btn-secondary" onclick="hideModal()">Cancelar</button><button type="submit" class="btn btn-primary">Actualizar</button></div></form>');
     } catch (err) { showToast(err.message, 'error'); }
 }
@@ -4904,6 +4904,18 @@ function formatFullDate(v) {
     var hh = String(d.getHours()).padStart(2, '0');
     var mi = String(d.getMinutes()).padStart(2, '0');
     return dd + '/' + mm + '/' + yyyy + ' ' + hh + ':' + mi;
+}
+
+function toEsDateInput(v) {
+    // Convierte 'YYYY-MM-DD HH:MM:SS' (almacenado) a formato espanol DD/MM/AAAA HH:MM.
+    if (!v) return '';
+    var d = new Date(String(v).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return '';
+    var dd = String(d.getDate()).padStart(2, '0');
+    var mm = String(d.getMonth() + 1).padStart(2, '0');
+    var hh = String(d.getHours()).padStart(2, '0');
+    var mi = String(d.getMinutes()).padStart(2, '0');
+    return dd + '/' + mm + '/' + d.getFullYear() + ' ' + hh + ':' + mi;
 }
 
 async function renderCalls(container) {
