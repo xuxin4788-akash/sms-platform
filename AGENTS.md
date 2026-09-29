@@ -3,6 +3,8 @@
 ## Project Overview
 A team-oriented SMS marketing management platform with Spanish (es) UI. Built with Python Flask + PostgreSQL/SQLite + vanilla HTML/CSS/JS SPA. Supports large team deployment (20+ users, >10,000 SMS/day).
 
+> **数据口径（重要）**：所有统计/计费/对账指标的定义、作用域、时间口径与计算公式，统一见 **`DATA_SPEC.md`**。AI 在进行核算、对账、审计或回答任何数据问题时，**必须先读取 `DATA_SPEC.md`** 并严格按其中口径执行；若与实际代码冲突，以代码为准并回写更新该文档。
+
 ## Tech Stack
 - **Backend**: Python 3.12, Flask 3.x
 - **Database**: PostgreSQL (production) / SQLite (development), auto-detected via DATABASE_URL
