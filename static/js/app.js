@@ -6049,7 +6049,7 @@ function deleteCategory(id) {
 // Email (Correo empresarial)
 // ============================================================
 state.emailSend = { mode: 'contacts', contactList: [], filtered: [], selected: new Set(), search: '' };
-state.emailRecords = { page: 1, search: '', status: '', dateFrom: todayLocalStr(), dateTo: todayLocalStr(), team: '', sender: '' };
+state.emailRecords = { page: 1, search: '', status: '', dateFrom: '', dateTo: '', team: '', sender: '' };
 state.emailReplies = { page: 1, search: '', unreadOnly: false, expanded: new Set() };
 
 async function renderEmailSend(container) {
