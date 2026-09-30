@@ -6218,10 +6218,12 @@ def list_contacts():
     where, scope_params = _contact_scope_for_group(
         "c", session.get('user_id'), session.get('role'), group_id)
     query = ("SELECT c.*, cg.name as group_name, "
+             "COALESCE(NULLIF(TRIM(u.full_name), ''), u.username) AS owner_name, "
              "COALESCE(sms_s.n,0) AS sms_count, COALESCE(voc_s.n,0) AS call_count, COALESCE(voc_s.t,0) AS talk_time, "
              "COALESCE(eml_s.n,0) AS email_count "
              "FROM contacts c "
-             "LEFT JOIN contact_groups cg ON c.group_id = cg.id " + stats_join + " WHERE " + where)
+             "LEFT JOIN contact_groups cg ON c.group_id = cg.id "
+             "LEFT JOIN users u ON c.created_by = u.id " + stats_join + " WHERE " + where)
     count_query = ("SELECT COUNT(*) as total FROM contacts c " + stats_join + " WHERE " + where)
     # Param order follows SQL placeholder order: the rec-scope ?s live inside
     # the SMS/voice/email aggregation subqueries (which appear BEFORE the outer WHERE),
