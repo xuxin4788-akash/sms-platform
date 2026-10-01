@@ -197,7 +197,28 @@
 
 ---
 
-## 9. 使用这份规范（给 AI 的约定）
+## 9. 发送限额强制（SMS / 邮件）
+
+- **三层日限额**，取最严格（最小正值），`0` = 无限制：
+  | 层级 | SMS | 邮件 |
+  |------|-----|------|
+  | 团队限额 | `team_config.daily_sms_limit` | `team_config.daily_email_limit` |
+  | 全局限额 | `team_config.global_daily_sms_limit` | `team_config.global_daily_email_limit` |
+  | 用户限额 | `users.daily_limit` | （同 users.daily_limit 语义，邮件仅取团队/全局） |
+- **适用角色**：
+  - SMS：`role == 'team_member'`（自定义角色目前不在 SMS 拦截内）。
+  - 邮件：`role not in ('admin','team_admin')`（team_member + 自定义角色）。
+  - 成员须有有效 `team_creator_id`，否则团队限额不匹配 = 实际无限制（属配置问题）。
+- **计数口径（当天已用）**：按**本地日**（SQLite `date(created_at)=date('now','localtime')`；PG `date(created_at)=CURRENT_DATE`）。
+  - SMS 计 `status IN ('sent','pending')`（含 simulated，因其也写 sent）；
+  - 邮件计 `status IN ('sent','simulated','pending')`，退订/投诉名单地址不占额度。
+- **判定**：`used + 本批数量 > limit` → HTTP **429**，整批拒绝（不会部分发送）。单批另有限制：SMS ≤ 500 号码/次。
+- **并发安全（防 TOCTOU）**：多 Gunicorn worker 下，先 `SELECT id FROM users WHERE id=? FOR UPDATE` 取该账户行锁（提交时释放），再读计数，使同一账户的并发发送串行，避免两个请求同时看到"未满额"而合计超限。SQLite 无需锁（单 writer）。
+- 另有单批上限：SMS 500 号码/请求；超限直接拒绝。
+
+---
+
+## 10. 使用这份规范（给 AI 的约定）
 
 1. 回答任何"发了多少/成本多少/送达率多少"前，**先明确角色作用域**（这是可见范围前提）。
 2. SMS 对账/送达率口径 = **送达/受理**（排除 in_flight 与 simulado）；不要混淆"发送总数"与"送达数"。

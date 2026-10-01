@@ -6941,7 +6941,22 @@ def count_today_sms(db, user_id):
     return int(row['cnt']) if row and row['cnt'] else 0
 
 
+def lock_user_row(db, user_id):
+    """Serializa, para un MISMO usuario, la secuencia 'leer contador diario +
+    insertar lotes'. En produccion (PostgreSQL, multiples workers de Gunicorn)
+    el chequeo de limite era un SELECT sin bloqueo: dos peticiones concurrentes
+    podian leer 'quedan cupos' y ambas insertar, superando el tope al confirmar
+    (TOCTOU). FOR UPDATE toma un lock de fila sobre users que se libera al
+    hacer COMMIT, poniendo en cola el resto de envios de esa misma cuenta.
+    En SQLite no aplica la clausula; la escritura ya es serial (un unico writer)
+    y el modo dev no tiene concurrencia relevante.
+    """
+    if db.db_type == 'postgres':
+        db.execute("SELECT id FROM users WHERE id=? FOR UPDATE", (user_id,)).fetchone()
+
+
 # ---- Limites diarios de CORREO (espejo de los de SMS) ----
+
 
 def _team_email_limit_value(db, team_admin_id):
     """daily_email_limit for a team_admin id (0 = sin limite)."""
@@ -7038,6 +7053,10 @@ def send_sms():
     if len(phones) > SMS_BATCH_CAP:
         return jsonify({'error': 'Maximo %s numeros por envio' % SMS_BATCH_CAP}), 400
     db = get_db()
+    # Tomar lock de fila sobre la cuenta ANTES de leer el contador: asi dos
+    # envios concurrentes de la misma cuenta se serializan y no pueden ambos
+    # pasar el chequeo del tope diario (evita el rebase del limite por TOCTOU).
+    lock_user_row(db, g.user['id'])
     # Limite diario: solo aplica a miembros de equipo. Se toma el valor mas
     # estricto (el menor positivo) entre el limite del equipo y el global.
     if g.user['role'] == 'team_member':
@@ -9345,6 +9364,10 @@ def get_daily_limit():
     ?type=email devuelve solo el limite de correo; por defecto SMS."""
     db = get_db()
     user = g.user
+    # Lock de fila sobre la cuenta antes de leer el contador: serializa los
+    # encolados concurrentes de una misma cuenta para no rebasar el tope
+    # diario por TOCTOU (igual que en el envio de SMS).
+    lock_user_row(db, user['id'])
     is_email = request.args.get('type', 'sms') == 'email'
     g_limit = get_global_daily_email_limit(db) if is_email else get_global_daily_sms_limit(db)
     if user['role'] == 'admin':
