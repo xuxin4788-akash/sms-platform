@@ -4176,6 +4176,40 @@ def get_me():
         }
     })
 
+
+@app.route('/api/my/send-quota', methods=['GET'])
+@login_required
+def my_send_quota():
+    """Current user's today-used counts and effective daily limits (SMS + email).
+    Used by the compose pages for an optimistic pre-check; the authoritative
+    check still runs server-side under a row lock at send time."""
+    db = get_db()
+    uid = g.user['id']
+    role = g.user['role']
+
+    sms_enforced = (role == 'team_member')
+    mail_enforced = role not in ('admin', 'team_admin')
+
+    sms_limit = effective_daily_sms_limit(db, g.user) if sms_enforced else 0
+    mail_limit = effective_daily_email_limit(db, g.user) if mail_enforced else 0
+    sms_used = count_today_sms(db, uid)
+    mail_used = count_today_emails(db, uid)
+
+    def _block(used, limit, enforced):
+        return {
+            'used': used,
+            'limit': limit,
+            'remaining': (limit - used) if enforced and limit > 0 else None,
+            'enforced': enforced,
+        }
+
+    return jsonify({
+        'role': role,
+        'sms': _block(sms_used, sms_limit, sms_enforced),
+        'email': _block(mail_used, mail_limit, mail_enforced),
+    })
+
+
 # ============================================================
 # User Categories (clasificacion de empleados + retencion de contactos)
 # ============================================================

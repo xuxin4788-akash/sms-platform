@@ -1683,9 +1683,10 @@ async function renderSendSMS(container) {
     state.sendPhones = [];
     state.sendMode = 'manual';
     try {
-        var results = await Promise.all([api('/api/groups'), api('/api/templates')]);
+        var results = await Promise.all([api('/api/groups'), api('/api/templates'), refreshMyQuota()]);
         var groupsData = results[0];
         var templatesData = results[1];
+        window._sendTemplates = templatesData.templates;
         var groupOpts = groupsData.groups.map(function(g) { return '<option value="' + g.id + '">' + escapeHtml(g.name) + ' (' + g.contact_count + ' contactos)</option>'; }).join('');
         var templateOpts = templatesData.templates.map(function(t) { return '<option value="' + t.id + '">' + escapeHtml(t.name) + '</option>'; }).join('');
         window._sendTemplates = templatesData.templates;
@@ -1693,6 +1694,7 @@ async function renderSendSMS(container) {
         container.innerHTML =
             '<h1 class="mb-4" style="font-size:22px;font-weight:700;">Enviar SMS</h1>' +
             '<div class="card"><div class="card-body">' +
+                '<div id="sms-quota-banner"></div>' +
                 '<div class="send-options"><button class="tab active" onclick="switchSendMode(\'manual\', this)">Manual</button><button class="tab" onclick="switchSendMode(\'contacts\', this)">Seleccionar Contactos</button><button class="tab" onclick="switchSendMode(\'group\', this)">Por Grupo</button></div>' +
                 '<div id="send-manual" class="form-group"><label>Numeros de telefono</label>' +
                     '<form class="phone-add-row" onsubmit="commitPhoneInput(); return false;">' +
@@ -1710,7 +1712,12 @@ async function renderSendSMS(container) {
                 '<div class="flex gap-2 mt-4"><button class="btn btn-primary" id="btn-send-sms" onclick="handleSendSMS()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg> Enviar SMS</button><button class="btn btn-secondary" onclick="showSendPreviewModal()">Vista Previa</button></div>' +
             '</div></div>';
         loadContactsForSelection();
+        refreshSmsQuotaUI();
     } catch (err) { container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>'; }
+}
+
+function refreshSmsQuotaUI() {
+    applyQuotaUI('sms', 'sms-quota-banner', 'btn-send-sms', (state.sendPhones || []).length);
 }
 
 function switchSendMode(mode, btn) {
@@ -1757,6 +1764,7 @@ function commitPhoneInput() {
     });
     input.value = '';
     renderPhoneTags();
+    refreshSmsQuotaUI();
 }
 function addPhoneFromInput() {
     commitPhoneInput();
@@ -1777,6 +1785,7 @@ function renderPhoneTags() {
 function removePhone(index) {
     state.sendPhones.splice(index, 1);
     renderPhoneTags();
+    refreshSmsQuotaUI();
 }
 
 async function loadContactsForSelection() {
@@ -1794,16 +1803,18 @@ async function loadContactsForSelection() {
 function updateSelectedContacts() {
     var checkboxes = document.querySelectorAll('#contacts-select-list input[type="checkbox"]:checked');
     state.sendPhones = Array.from(checkboxes).map(function(cb) { return cb.value; });
+    refreshSmsQuotaUI();
 }
 
 async function loadGroupContacts(groupId) {
     var preview = document.getElementById('group-contacts-preview');
-    if (!groupId) { preview.innerHTML = ''; state.sendPhones = []; return; }
+    if (!groupId) { preview.innerHTML = ''; state.sendPhones = []; refreshSmsQuotaUI(); return; }
     try {
         var data = await api('/api/contacts?group_id=' + groupId + '&per_page=1000&sort=newest');
         state.sendPhones = data.contacts.map(function(c) { return c.phone; });
         preview.innerHTML = '<span class="badge badge-blue">' + data.contacts.length + ' contactos seleccionados</span>';
-    } catch (err) { preview.innerHTML = '<span class="text-secondary">' + err.message + '</span>'; }
+        refreshSmsQuotaUI();
+    } catch (err) { preview.innerHTML = '<span class="text-secondary">' + escapeHtml(err.message) + '</span>'; }
 }
 
 function loadTemplateContent(templateId) {
@@ -2069,6 +2080,7 @@ async function handleSendSMS() {
     if (!content) return showToast('Escriba un mensaje', 'error');
     if (content.length > SMS_MAX_LEN) return showToast('El mensaje no puede superar los ' + SMS_MAX_LEN + ' caracteres', 'error');
     if (phones.length === 0) return showToast('Seleccione al menos un destinatario', 'error');
+    if (quotaExceeded('sms', phones.length)) return showToast('Superas el limite diario de SMS (' + state.myQuota.sms.used + '/' + state.myQuota.sms.limit + ' ya enviados). Quita destinatarios.', 'error');
     var contactNames = {};
     document.querySelectorAll('#contacts-select-list input[type="checkbox"]:checked').forEach(function(cb) { contactNames[cb.value] = cb.dataset.name || ''; });
     var sendBtn = document.getElementById('btn-send-sms');
@@ -2089,13 +2101,16 @@ async function handleSendSMS() {
         document.getElementById('send-content').value = '';
         document.getElementById('send-template').value = '';
         document.getElementById('send-preview').style.display = 'none';
-        var charsetInfo = document.getElementById('charset-info');
+        charsetInfo = document.getElementById('charset-info');
         if (charsetInfo) charsetInfo.remove();
         renderPhoneTags();
+        await refreshMyQuota();
+        refreshSmsQuotaUI();
     } catch (err) { showToast(err.message, 'error'); }
     finally {
         smsSending = false;
-        if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = ''; sendBtn.style.cursor = ''; }
+        if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = ''; sendBtn.style.cursor = ''; sendBtn.dataset.busy = ''; }
+        refreshSmsQuotaUI();
     }
 }
 
@@ -6051,13 +6066,65 @@ function deleteCategory(id) {
 state.emailSend = { mode: 'contacts', contactList: [], filtered: [], selected: new Set(), search: '' };
 state.emailRecords = { page: 1, search: '', status: '', dateFrom: '', dateTo: '', team: '', sender: '' };
 state.emailReplies = { page: 1, search: '', unreadOnly: false, expanded: new Set() };
+state.myQuota = null; // {role, sms:{used,limit,remaining,enforced}, email:{...}}
+
+async function refreshMyQuota() {
+    try { state.myQuota = await api('/api/my/send-quota'); }
+    catch (e) { state.myQuota = null; }
+    return state.myQuota;
+}
+
+// Compose a quota banner for one channel (sms | email). Returns '' when the
+// channel is not enforced for this role.
+function quotaBannerHTML(channel, selectedCount) {
+    var q = state.myQuota;
+    if (!q) return '';
+    var info = q[channel];
+    if (!info || !info.enforced) return '';
+    var n = selectedCount || 0;
+    var remaining = info.limit > 0 ? (info.limit - info.used) : null;
+    var after = (remaining === null) ? null : (remaining - n);
+    var label = channel === 'sms' ? 'SMS' : 'Correos';
+    if (remaining === null) {
+        return '<div class="alert" style="margin:0 0 16px;background:#F0FDF4;color:#15803D;border:1px solid #BBF7D0;">Hoy: <strong>' + info.used + '</strong> ' + label.toLowerCase() + ' enviados (sin limite diario).</div>';
+    }
+    if (after < 0) {
+        return '<div class="alert alert-error" style="margin:0 0 16px;">Limite diario de ' + label + ': <strong>' + info.limit + '</strong>. Hoy ya enviaste <strong>' + info.used + '</strong>; con los <strong>' + n + '</strong> seleccionados superas el limite por <strong>' + Math.abs(after) + '</strong>. Quita destinatarios.</div>';
+    }
+    if (after === 0) {
+        return '<div class="alert" style="margin:0 0 16px;background:#FFFBEB;color:#B45309;border:1px solid #FDE68A;">Hoy: <strong>' + info.used + '/' + info.limit + '</strong> ' + label.toLowerCase() + '. Los <strong>' + n + '</strong> seleccionados ocupan justo el resto del dia.</div>';
+    }
+    return '<div class="alert" style="margin:0 0 16px;background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE;">Hoy: <strong>' + info.used + '/' + info.limit + '</strong> ' + label.toLowerCase() + '. Restan <strong>' + remaining + '</strong>; despues de esta seleccion quedarian <strong>' + after + '</strong>.</div>';
+}
+
+// Whether a send button should be disabled for the given channel + selection.
+function quotaExceeded(channel, selectedCount) {
+    var q = state.myQuota;
+    if (!q) return false;
+    var info = q[channel];
+    if (!info || !info.enforced || info.limit <= 0) return false;
+    return (info.used + (selectedCount || 0)) > info.limit;
+}
+
+function applyQuotaUI(channel, bannerElId, btnId, selectedCount) {
+    var banner = document.getElementById(bannerElId);
+    if (banner) banner.innerHTML = quotaBannerHTML(channel, selectedCount);
+    var btn = document.getElementById(btnId);
+    if (btn && !btn.dataset.busy) {
+        var ex = quotaExceeded(channel, selectedCount);
+        btn.disabled = ex;
+        btn.style.opacity = ex ? '0.6' : '';
+        btn.style.cursor = ex ? 'not-allowed' : '';
+    }
+}
 
 async function renderEmailSend(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
     try {
         var [stats, groupsData] = await Promise.all([
             api('/api/email/statistics'),
-            api('/api/groups')
+            api('/api/groups'),
+            refreshMyQuota()
         ]);
         window._emailGroups = groupsData.groups || [];
         var groupOpts = window._emailGroups.map(function(g) {
@@ -6080,6 +6147,7 @@ async function renderEmailSend(container) {
                 '<div class="stat-card"><div class="stat-label">Tasa de exito</div><div class="stat-value" style="font-size:22px;">' + stats.success_rate + '%</div></div>' +
             '</div>' +
             '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><h2>Nuevo Correo Masivo</h2><a href="#/email-records" class="btn btn-secondary btn-sm">Ver registros</a></div><div class="card-body">' +
+                '<div id="email-quota-banner"></div>' +
                 '<div class="send-options"><button class="tab active" onclick="switchEmailMode(\'contacts\', this)">Contactos</button><button class="tab" onclick="switchEmailMode(\'group\', this)">Por Grupo</button></div>' +
                 '<div id="email-contacts" class="form-group"><label>Destinatarios (solo contactos con correo)</label>' +
                     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
@@ -6089,7 +6157,7 @@ async function renderEmailSend(container) {
                     '<div id="email-contacts-list" class="contact-select-list"></div>' +
                     '<div id="email-contacts-count" class="text-secondary text-sm" style="margin-top:8px;"></div>' +
                 '</div>' +
-                '<div id="email-group" class="form-group" style="display:none;"><label>Grupo</label><select id="email-group-select"><option value="">-- Seleccione --</option>' + groupOpts + '</select><small class="text-secondary">Se enviara a todos los contactos del grupo que tengan correo registrado.</small></div>' +
+                '<div id="email-group" class="form-group" style="display:none;"><label>Grupo</label><select id="email-group-select" onchange="refreshEmailQuotaUI()"><option value="">-- Seleccione --</option>' + groupOpts + '</select><small class="text-secondary">Se enviara a todos los contactos del grupo que tengan correo registrado.</small></div>' +
                 '<div class="form-group mt-3"><label>Asunto *</label><input type="text" id="email-subject" maxlength="500" placeholder="Ej: Tu estado de cuenta / Recordatorio de pago"></div>' +
                 '<div class="form-group"><label>Mensaje *</label><textarea id="email-body" rows="8" placeholder="Estimado {nombre}, le recordamos que..."></textarea><div class="var-chips">' + variableChips('email-body') + '</div><small class="text-secondary">Variables por contacto: {nombre}, {telefono}, {app_name}, {amount}, {discount}, {payment_link}. Los saltos de linea se conservan.</small></div>' +
                 '<div id="email-error" class="alert alert-error" style="display:none;"></div>' +
@@ -6100,6 +6168,19 @@ async function renderEmailSend(container) {
     } catch (err) {
         container.innerHTML = '<div class="empty-state"><h3>Error</h3><p>' + escapeHtml(err.message) + '</p></div>';
     }
+}
+
+function refreshEmailQuotaUI() {
+    var n = 0;
+    if (state.emailSend.mode === 'contacts') {
+        n = state.emailSend.selected.size;
+    } else {
+        var sel = document.getElementById('email-group-select');
+        var gid = sel ? sel.value : '';
+        var g = (window._emailGroups || []).find(function(x) { return String(x.id) === String(gid); });
+        if (g) n = g.contact_count || 0;
+    }
+    applyQuotaUI('email', 'email-quota-banner', 'email-send-btn', n);
 }
 
 function switchEmailMode(mode, btn) {
@@ -6174,6 +6255,7 @@ function updateEmailCount() {
     var n = state.emailSend.mode === 'group' ? null : state.emailSend.selected.size;
     if (el) el.textContent = state.emailSend.mode === 'contacts' ? (n + ' contacto(s) seleccionado(s)') : '';
     if (hint) hint.textContent = state.emailSend.mode === 'contacts' ? (n + ' destinatario(s)') : '';
+    refreshEmailQuotaUI();
 }
 
 async function handleSendEmail() {
@@ -6197,6 +6279,14 @@ async function handleSendEmail() {
         payload.mode = 'contacts'; payload.contact_ids = ids;
     }
     var btn = document.getElementById('email-send-btn');
+    var sendCount = payload.mode === 'group'
+        ? ((window._emailGroups || []).find(function(x) { return String(x.id) === String(payload.group_id); }) || {}).contact_count || 0
+        : payload.contact_ids.length;
+    if (quotaExceeded('email', sendCount)) {
+        errEl.textContent = 'Superas el limite diario de correos (' + state.myQuota.email.used + '/' + state.myQuota.email.limit + ' ya enviados). Quita destinatarios.';
+        errEl.style.display = 'block';
+        return;
+    }
     var n = payload.mode === 'group' ? 'del grupo' : (payload.contact_ids.length + ' contacto(s)');
     if (!confirm('Enviar correo a ' + n + '?')) return;
     btn.disabled = true; var originalHTML = btn.innerHTML; btn.innerHTML = 'Encolando...';
@@ -6206,6 +6296,8 @@ async function handleSendEmail() {
         document.getElementById('email-subject').value = '';
         document.getElementById('email-body').value = '';
         renderEmailContactList();
+        await refreshMyQuota();
+        refreshEmailQuotaUI();
         if (res.job_id && !res.simulated) {
             showToast((res.message || 'Correos encolados') + ' El envio continua en segundo plano.', 'success');
             pollEmailJob(res.job_id);
@@ -6217,6 +6309,7 @@ async function handleSendEmail() {
         errEl.style.display = 'block';
     } finally {
         btn.disabled = false; btn.innerHTML = originalHTML;
+        refreshEmailQuotaUI();
     }
 }
 
