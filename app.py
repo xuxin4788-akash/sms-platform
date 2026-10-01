@@ -7581,7 +7581,7 @@ def sms_statistics():
                   COUNT(*) AS total
                 FROM sms_records r
                 WHERE coalesce(r.api_msg,'') NOT LIKE '%simulado%'
-                  AND {tz_date_expr('r.sent_at', rtz_offset)} = ?
+                  AND {tz_date_expr('coalesce(r.sent_at, r.created_at)', rtz_offset)} = ?
                   {_recon_scope_sql(g.user)}{(' AND r.created_by = ?' if account_filter else '')}""",
             [tday] + _recon_scope_params(g.user) + list(account_params)
         ).fetchone()
@@ -7678,13 +7678,16 @@ def _sms_reconciliation_block(db, user, date_from, date_to, account_filter, acco
     degrades only this card and never the whole dashboard response."""
     recon_scope = ''
     recon_acct = ''
+    # Some historical rows have sent_at NULL but a valid created_at; fall back
+    # so they still bucket onto a real day instead of becoming "None".
+    dtcol = "coalesce(r.sent_at, r.created_at)"
     rwhere = ["coalesce(r.api_msg,'') NOT LIKE '%simulado%'"]
     rparams = []
     if date_from:
-        rwhere.append(f"{tz_date_expr('r.sent_at', rtz_offset)} >= ?")
+        rwhere.append(f"{tz_date_expr(dtcol, rtz_offset)} >= ?")
         rparams.append(date_from)
     if date_to:
-        rwhere.append(f"{tz_date_expr('r.sent_at', rtz_offset)} <= ?")
+        rwhere.append(f"{tz_date_expr(dtcol, rtz_offset)} <= ?")
         rparams.append(date_to)
     scope_r_params = []
     if user['role'] == 'team_admin':
@@ -7734,7 +7737,7 @@ def _sms_reconciliation_block(db, user, date_from, date_to, account_filter, acco
 
     recon_series = db.execute(
         f"""
-        SELECT {tz_date_expr('r.sent_at', rtz_offset)} AS dia,
+        SELECT {tz_date_expr(dtcol, rtz_offset)} AS dia,
           count(*) AS total,
           coalesce(sum(CASE WHEN r.api_code=0 THEN 1 ELSE 0 END),0) AS submitted,
           coalesce(sum(CASE WHEN r.status='delivered' THEN 1 ELSE 0 END),0) AS delivered,
@@ -7748,7 +7751,7 @@ def _sms_reconciliation_block(db, user, date_from, date_to, account_filter, acco
         rparams + scope_r_params + acct_r_params
     ).fetchall()
     recon['by_day'] = [
-        {'date': str(x['dia']), 'total': x['total'], 'submitted': x['submitted'],
+        {'date': (None if x['dia'] is None else str(x['dia'])), 'total': x['total'], 'submitted': x['submitted'],
          'delivered': x['delivered'], 'in_flight': x['in_flight'],
          'rejected': x['rejected'], 'billing_parts': int(x['billing_parts'] or 0)}
         for x in recon_series
