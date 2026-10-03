@@ -7439,7 +7439,7 @@ def export_sms_records():
         writer = _csv.writer(buf)
         writer.writerow([
             'Fecha', 'Usuario', 'Nombre completo', 'Telefono', 'Contacto',
-            'Contenido', 'Estado', 'Segmentos facturados', 'Simulado',
+            'Contenido', 'Estado', 'Caracteres', 'Segmentos facturados', 'Simulado',
             'ID Mensaje', 'Codigo API', 'Respuesta API'
         ])
         yield buf.getvalue()
@@ -7472,6 +7472,7 @@ def export_sms_records():
                         r['contact_name'] or '',
                         r['content'] or '',
                         r['status'] or '',
+                        len(r['content'] or ''),
                         r['billed_segments'] if r['billed_segments'] is not None else 1,
                         'SI' if simulated else 'NO',
                         r['msgid'] or '',
