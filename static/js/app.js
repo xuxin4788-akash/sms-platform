@@ -27,6 +27,7 @@ const state = {
     contacts: { page: 1, perPage: 20, total: 0, totalPages: 0, search: '', groupId: '', remark: '',
       smsMin: '', smsMax: '', callsMin: '', callsMax: '', sort: 'calls_asc' },
     records: { page: 1, perPage: 20, total: 0, totalPages: 0, status: '', dateFrom: DEFAULT_LIST_DATE, dateTo: DEFAULT_LIST_DATE, search: '' },
+    activity: { page: 1, perPage: 25, total: 0, kind: '', dateFrom: '', dateTo: '', team: '', account: '', search: '' },
     sendPhones: [],
     sendMode: 'manual',
 };
@@ -622,6 +623,9 @@ function navigateTo(page) {
         case 'settlement':
             if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderSettlement(content); break;
+        case 'activity':
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
+            renderActivityFeed(content); break;
         case 'work-quality':
             if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderWorkQuality(content); break;
@@ -3524,6 +3528,116 @@ function clearAllTeamsFilters() {
     state.allTeams.dateFrom = '';
     state.allTeams.dateTo = '';
     renderAllTeams(document.getElementById('page-content'));
+}
+
+// ------------------------------------------------------------
+// Actividad (Consolidado): unified per-action detail feed
+// (one row per voice call, SMS and email, with team column)
+// ------------------------------------------------------------
+async function renderActivityFeed(container) {
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando actividad...</p></div>';
+    const st = state.activity;
+    try {
+        let filters = { teams: [], accounts: [] };
+        try { filters = await api('/api/records/filters'); } catch (e) { /* optional */ }
+        const params = new URLSearchParams();
+        if (st.kind) params.set('kind', st.kind);
+        if (st.dateFrom) params.set('date_from', st.dateFrom);
+        if (st.dateTo) params.set('date_to', st.dateTo);
+        if (st.team) params.set('team', st.team);
+        if (st.account) params.set('account', st.account);
+        if (st.search) params.set('search', st.search);
+        params.set('page', String(st.page || 1));
+        params.set('per_page', String(st.perPage || 25));
+        const data = await api('/api/activity?' + params.toString());
+        const rows = data.rows || [];
+        const kindLabel = { phone: 'Telefono', sms: 'SMS', email: 'Email' };
+
+        const teamOpts = (filters.teams || []).map(t =>
+            '<option value="' + escapeHtml(String(t.id)) + '"' + (String(st.team) === String(t.id) ? ' selected' : '') + '>' +
+            escapeHtml(t.label || ('#' + t.id)) + '</option>').join('');
+        const accOpts = (filters.accounts || []).map(a =>
+            '<option value="' + escapeHtml(String(a.id)) + '"' + (String(st.account) === String(a.id) ? ' selected' : '') + '>' +
+            escapeHtml(a.label || ('#' + a.id)) + '</option>').join('');
+
+        const kindBadge = function (k) {
+            const c = { phone: 'badge-voice', sms: 'badge-sms', email: 'badge-email' }[k] || 'badge-default';
+            return '<span class="badge ' + c + '">' + (kindLabel[k] || k) + '</span>';
+        };
+
+        let body = rows.map(function (r) {
+            let extra = '';
+            if (r.kind === 'phone') {
+                const dur = Math.round((r.duration_sec || 0) / 60 * 10) / 10;
+                extra = '<div class="cell-sub muted">' + (r.answered ? 'Contestada' : 'Sin respuesta') +
+                    (dur ? ' · ' + dur + ' min' : '') + (r.country ? ' · ' + escapeHtml(r.country) : '') + '</div>';
+            } else if (r.kind === 'sms') {
+                extra = r.content ? '<div class="cell-sub muted">' + escapeHtml(r.content) + '</div>' : '';
+            } else if (r.kind === 'email') {
+                const rep = (r.reply_count == null) ? '' :
+                    (r.reply_count > 0 ? 'Con respuesta' : 'Sin respuesta');
+                extra = '<div class="cell-sub muted">' + escapeHtml(r.content || '') +
+                    (rep ? ' · <span class="' + (r.reply_count > 0 ? 'text-success' : '') + '">' + rep + '</span>' : '') + '</div>';
+            }
+            return '<tr>' +
+                '<td>' + kindBadge(r.kind) + ' <span class="cell-sub">#' + r.id + '</span></td>' +
+                '<td><div class="cell-main">' + escapeHtml(r.account || '-') + '</div><div class="cell-sub muted">' + escapeHtml(r.team_name || '-') + '</div></td>' +
+                '<td><div class="cell-main">' + escapeHtml(r.target || '-') + '</div>' + (r.contact ? '<div class="cell-sub muted">' + escapeHtml(r.contact) + '</div>' : '') + '</td>' +
+                '<td>' + (r.at ? formatFullDate(String(r.at).replace(' ', 'T')) : '-') + '</td>' +
+                '<td><span class="badge badge-status">' + escapeHtml(r.status || '-') + '</span>' + extra + '</td>' +
+                '</tr>';
+        }).join('');
+
+        const empty = '<tr><td colspan="5" class="text-center muted">Sin registros para este filtro</td></tr>';
+        const totalPages = Math.max(1, Math.ceil((data.total || 0) / (st.perPage || 25)));
+
+        const exportUrl = '/api/activity?export=1&' + params.toString().replace(/(page|per_page)=[^&]*&?/g, '');
+        container.innerHTML =
+            '<div class="page-head"><h2>Actividad (Consolidado)</h2>' +
+            '<p class="muted">Un registro por llamada, SMS o correo enviado, con su cuenta y equipo.</p></div>' +
+            '<div class="card">' +
+            '  <div class="filter-row filter-row-multi">' +
+            '    <select class="form-control" onchange="state.activity.kind=this.value;state.activity.page=1;renderActivityFeed(document.getElementById(\'page-content\'))">' +
+            '      <option value="">Todos</option><option value="phone"' + (st.kind === 'phone' ? ' selected' : '') + '>Telefono</option>' +
+            '      <option value="sms"' + (st.kind === 'sms' ? ' selected' : '') + '>SMS</option>' +
+            '      <option value="email"' + (st.kind === 'email' ? ' selected' : '') + '>Correo</option></select>' +
+            '    <input type="date" lang="es" class="form-control" value="' + (st.dateFrom || '') + '" onchange="state.activity.dateFrom=this.value;state.activity.page=1;renderActivityFeed(document.getElementById(\'page-content\'))">' +
+            '    <span class="text-secondary filter-sep">a</span>' +
+            '    <input type="date" lang="es" class="form-control" value="' + (st.dateTo || '') + '" onchange="state.activity.dateTo=this.value;state.activity.page=1;renderActivityFeed(document.getElementById(\'page-content\'))">' +
+            '    <select class="form-control" onchange="state.activity.team=this.value;state.activity.page=1;renderActivityFeed(document.getElementById(\'page-content\'))">' +
+            '      <option value="">Todos los equipos</option>' + teamOpts + '</select>' +
+            '    <select class="form-control" onchange="state.activity.account=this.value;state.activity.page=1;renderActivityFeed(document.getElementById(\'page-content\'))">' +
+            '      <option value="">Todas las cuentas</option>' + accOpts + '</select>' +
+            '    <input type="text" class="form-control" placeholder="Buscar destino / contacto..." value="' + escapeHtml(st.search || '') +
+            '" onkeydown="if(event.key===\'Enter\'){state.activity.search=this.value;state.activity.page=1;renderActivityFeed(document.getElementById(\'page-content\'))}">' +
+            '    <button class="btn btn-secondary btn-sm" onclick="state.activity.dateFrom=todayLocalStr();state.activity.dateTo=todayLocalStr();state.activity.page=1;renderActivityFeed(document.getElementById(\'page-content\'))">Hoy</button>' +
+            '    <button class="btn btn-ghost btn-sm" onclick="stResetActivity();renderActivityFeed(document.getElementById(\'page-content\'))">Limpiar</button>' +
+            '    <a class="btn btn-primary btn-sm" href="' + exportUrl + '">Exportar CSV</a>' +
+            '  </div>' +
+            '  <div class="table-wrap"><table class="table"><thead><tr>' +
+            '    <th>Tipo</th><th>Cuenta / Equipo</th><th>Destino</th><th>Fecha y hora</th><th>Resultado</th>' +
+            '  </tr></thead><tbody>' + (rows.length ? body : empty) + '</tbody></table></div>' +
+            '  <div class="pagination">' +
+            '    <button class="btn btn-ghost btn-sm" ' + (st.page <= 1 ? 'disabled' : '') + ' onclick="state.activity.page=' + (st.page - 1) + ';renderActivityFeed(document.getElementById(\'page-content\'))">Anterior</button>' +
+            '    <span class="muted">Pag ' + st.page + ' / ' + totalPages + ' (' + data.total + ' registros)</span>' +
+            '    <button class="btn btn-ghost btn-sm" ' + (st.page >= totalPages ? 'disabled' : '') + ' onclick="state.activity.page=' + (st.page + 1) + ';renderActivityFeed(document.getElementById(\'page-content\'))">Siguiente</button>' +
+            '  </div>' +
+            '</div>';
+
+        // Badge utility colors
+        if (!document.getElementById('activity-badge-css')) {
+            const s = document.createElement('style');
+            s.id = 'activity-badge-css';
+            s.textContent = '.badge-sms{background:#eef4ff;color:#1a56db}.badge-phone,.badge-voice{background:#ecfdf5;color:#047857}.badge-email{background:#fef3c7;color:#b45309}.badge-status{background:#f1f5f9;color:#475569}.text-success{color:#15803d}';
+            document.head.appendChild(s);
+        }
+    } catch (e) {
+        container.innerHTML = '<div class="alert alert-error">Error cargando actividad: ' + escapeHtml(e.message || e) + '</div>';
+    }
+}
+
+function stResetActivity() {
+    state.activity = { page: 1, perPage: 25, total: 0, kind: '', dateFrom: '', dateTo: '', team: '', account: '', search: '' };
 }
 
 // ------------------------------------------------------------

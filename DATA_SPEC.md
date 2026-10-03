@@ -276,6 +276,46 @@
 | 结果 | status + duration | status | status + 有回复？ |
 | 成本 | price(completed) | billed_segments×单价 | 1 封×单价(sent) |
 
+### 10.5 统一活动流水（可用的现成实现）
+
+平台已提供 `GET /api/activity` 与前端 `#/activity`（Actividad Consolidado），把电话/短信/邮件**混排成明细流**，每行即 10.1–10.3 的一条行为，并额外注入：
+
+- `kind`：`phone` | `sms` | `email`
+- `at`：统一时点（各自 `initiated_at`/`sent_at`，空则 `created_at`）
+- `account` + `team_name`：发起账户姓名 + 所属团队（`users.team_creator_id` → 团队负责人名；无团队显示 "Sin equipo"）
+- 电话：`answered`（1=completed/answered 即拨通）+ `duration_sec` + `country`
+- 邮件：`reply_count`（该邮件收到的回复条数，0=无回复，`null`=该类无此维度字段）
+
+筛选支持：`kind`、`date_from/date_to`、`team`（按团队单元=负责人+成员）、`account`（单个账户）、`search`（目标/联系人/内容/状态）、分页；`?export=1` 输出 UTF-8-BOM CSV（Tipo, Fecha y hora, Cuenta, Equipo, Destino, Contacto, Resultado, Duracion(s), Con respuesta），导出上限 `ACTIVITY_EXPORT_MAX_ROWS`。
+
+**作用域**：与 SMS/邮件一致（admin 全量 / team_admin 自己+成员 / member 仅自己）。前端页面当前仅 admin 可见菜单；接口本身按登录角色收敛，后续如需开放给团队管理员可放开菜单即可。
+
+| 列 | 来源 | 说明 |
+|----|------|------|
+| Tipo | `kind` | phone/sms/email |
+| Fecha y hora | `at` | 三渠道统一时点 |
+| Cuenta | `users.full_name`(=username) | from `created_by` |
+| Equipo | `team_name` | 团队负责人名（`team_creator_id`） |
+| Destino | `phone` / `recipient_email` | 拨打对象/收件邮箱 |
+| Contacto | `contact_name` | 名称快照 |
+| Resultado | `status` + `answered`/`reply_count` | 是否拨通、邮件是否有回复 |
+| Duracion(s) | `duration` | 电话通话秒数 |
+
+### 10.6 基于明细数据的员工工作监控（建议方向）
+
+明细流水是员工监控的**数据底座**（可逐条追查"谁、何时、对谁做了什么"）。围绕 10.1–10.5，建议的监控口径：
+
+1. **工作量**：按账户对 `kind` 计数（电话/短信/邮件各自多少条）——直接复用 `/api/activity` 的 `count(kind)`，配合 `at` 做时间窗口/按时段。
+2. **质量**：
+   - 电话拨通率 = `answered=1` / 电话总数；
+   - 电话平均通话时长 = `AVG(duration_sec)`（空话/秒挂 = 低质量信号）；
+   - 邮件回复率 = `reply_count>0` / 已发送邮件数；
+   - 短信送达率 = `status=delivered`（需已接运营商回执）。
+3. **时效/承诺**：与已实现的 `/api/admin/work-quality`（Calidad del Trabajo）配套——它聚合各联系人"最近触达"并与承诺跟进时间对比，判断员工是否按承诺及时跟进、是否有停滞/逾期。明细流为它提供"最近触达"的逐条证据来源。
+4. **空转/低效**：单一账户在窗口内有大量 `initiated_at`/`sent_at` 但 `status` 多为 failed/未拨通 时，提示进运营商或号码质量问题而非员工效率问题——建议先排除客观失败再定性；这是判定"偷懒"前的**排除口径**。
+
+**约束**：① 判定"偷懒/怠工"需以客观动作（明细行）+ 承诺对比（work-quality）双证据，避免单一指标误伤；② 数据可信度依赖回调/回执链路接通（电话 CDR、短信回执、SES 收发）——监控上线前应先确认这三条链路在目标部署已接通（见 10.3 回复口径提示）。
+
 ---
 
 ## 11. 使用这份规范（给 AI 的约定）

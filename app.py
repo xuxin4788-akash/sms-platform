@@ -7493,6 +7493,226 @@ def export_sms_records():
     return Response(generate(), mimetype='text/csv; charset=utf-8', headers=headers)
 
 
+@app.route('/api/activity', methods=['GET'])
+@login_required
+def activity_feed():
+    """Unified per-action detail feed: one row per voice call, per SMS and per
+    email (+ reply flag). 'kind'=phone|sms|email. Team column resolves each
+    account's team leader. Supports report_tz, date range, team, account, kind,
+    search, pagination and CSV export (?export=1). Powers the 'Actividad'
+    (Consolidado) page and the employee-work-monitoring layer."""
+    from datetime import datetime as _dt
+    kind = request.args.get('kind', '').strip().lower()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    team = request.args.get('team', '').strip()
+    account = request.args.get('account', '').strip()
+    search = request.args.get('search', '').strip()
+    page = max(1, int(request.args.get('page', '1') or 1))
+    per_page = min(200, max(1, int(request.args.get('per_page', '25') or 25)))
+    export = request.args.get('export', '').strip() == '1'
+    tz = request.args.get('report_tz', 'carrier').strip()
+    tz = tz if tz in ('carrier', 'local') else 'carrier'
+
+    db = get_db()
+    uid, role = g.user['id'], g.user['role']
+
+    # visible account ids (admin=None => all)
+    vis = _scope_user_ids(uid, role)
+    scope_ids = None if (vis == []) else vis
+    if team:
+        tids = [int(x) for x in _team_user_ids(team)]
+        tids = tids if scope_ids is None else [x for x in tids if x in scope_ids]
+        scope_ids = tids
+    if account:
+        try:
+            aid = int(account)
+        except ValueError:
+            aid = 0
+        scope_ids = [aid] if (scope_ids is None or aid in scope_ids) else []
+
+    kind_ok = lambda k: (not kind) or kind == k
+    rows = []
+    # ---- voice calls ----
+    if kind_ok('phone'):
+        sql = ("SELECT v.id, v.created_by, v.phone, v.contact_name, v.status, "
+               "v.duration, v.initiated_at, v.created_at, v.country "
+               "FROM voice_records v WHERE 1=1")
+        prm = []
+        if scope_ids is not None:
+            sql += " AND v.created_by IN (%s)" % ','.join(['?'] * len(scope_ids))
+            prm.extend(scope_ids)
+        if date_from:
+            sql += " AND COALESCE(v.initiated_at, v.created_at) >= ?"; prm.append(date_from)
+        if date_to:
+            sql += " AND COALESCE(v.initiated_at, v.created_at) <= ?"; prm.append(date_to + ' 23:59:59')
+        if search:
+            sql += (" AND (v.phone LIKE ? OR v.contact_name LIKE ? OR v.status LIKE ?)")
+            prm.extend(['%' + search + '%'] * 3)
+        sql += " ORDER BY COALESCE(v.initiated_at, v.created_at) DESC"
+        for r in db.execute(sql, prm).fetchall():
+            rows.append(_activity_phone(r))
+    # ---- sms ----
+    if kind_ok('sms'):
+        sql = ("SELECT r.id, r.created_by, r.phone, r.contact_name, r.status, "
+               "r.content, r.sent_at, r.created_at, r.billed_segments "
+               "FROM sms_records r WHERE 1=1")
+        prm = []
+        if scope_ids is not None:
+            sql += " AND r.created_by IN (%s)" % ','.join(['?'] * len(scope_ids))
+            prm.extend(scope_ids)
+        if date_from:
+            sql += " AND COALESCE(r.sent_at, r.created_at) >= ?"; prm.append(date_from)
+        if date_to:
+            sql += " AND COALESCE(r.sent_at, r.created_at) <= ?"; prm.append(date_to + ' 23:59:59')
+        if search:
+            sql += (" AND (r.phone LIKE ? OR r.contact_name LIKE ? OR r.content LIKE ? OR r.status LIKE ?)")
+            prm.extend(['%' + search + '%'] * 4)
+        sql += " ORDER BY COALESCE(r.sent_at, r.created_at) DESC"
+        for r in db.execute(sql, prm).fetchall():
+            rows.append(_activity_sms(r))
+    # ---- email ----
+    if kind_ok('email'):
+        sql = ("SELECT e.id, e.created_by, e.recipient_email, e.contact_name, "
+               "e.status, e.subject, e.sent_at, e.created_at, e.from_email, e.app_name, "
+               "(SELECT COUNT(*) FROM email_replies rp "
+               " WHERE rp.original_record_id = e.id) AS reply_count "
+               "FROM email_records e WHERE 1=1")
+        prm = []
+        if scope_ids is not None:
+            sql += " AND e.created_by IN (%s)" % ','.join(['?'] * len(scope_ids))
+            prm.extend(scope_ids)
+        if date_from:
+            sql += " AND COALESCE(e.sent_at, e.created_at) >= ?"; prm.append(date_from)
+        if date_to:
+            sql += " AND COALESCE(e.sent_at, e.created_at) <= ?"; prm.append(date_to + ' 23:59:59')
+        if search:
+            sql += (" AND (e.recipient_email LIKE ? OR e.contact_name LIKE ? OR e.subject LIKE ? OR e.status LIKE ? OR e.app_name LIKE ?)")
+            prm.extend(['%' + search + '%'] * 5)
+        sql += " ORDER BY COALESCE(e.sent_at, e.created_at) DESC"
+        for r in db.execute(sql, prm).fetchall():
+            rows.append(_activity_email(r))
+
+    rows.sort(key=lambda x: (x['at'] or ''), reverse=True)
+    total = len(rows)
+
+    # account/team display maps
+    acc = {}
+    team_map = {}
+    acc_ids = list({r['account_id'] for r in rows})
+    if acc_ids:
+        marks = ','.join(['?'] * len(acc_ids))
+        for u in db.execute("SELECT id, username, full_name, team_creator_id FROM users WHERE id IN (%s)" % marks, acc_ids).fetchall():
+            acc[u['id']] = {'username': u['username'], 'full_name': u['full_name'], 'team_creator_id': u['team_creator_id']}
+        tids = list({u['team_creator_id'] for u in acc.values() if u['team_creator_id']})
+        if tids:
+            tmarks = ','.join(['?'] * len(tids))
+            for u in db.execute("SELECT id, username, full_name FROM users WHERE id IN (%s)" % tmarks, tids).fetchall():
+                team_map[u['id']] = u['full_name'] or u['username']
+    for x in rows:
+        a = acc.get(x['account_id'])
+        tc = a['team_creator_id'] if a else None
+        x['account'] = (a['full_name'] or a['username']) if a else ''
+        x['team_name'] = team_map.get(tc) or 'Sin equipo'
+
+    if export:
+        return _activity_csv(rows, total, kind, date_from, date_to)
+
+    start = (page - 1) * per_page
+    page_rows = rows[start:start + per_page]
+    return jsonify({'rows': page_rows, 'total': total, 'page': page,
+                    'per_page': per_page, 'date_from': date_from, 'date_to': date_to})
+
+
+def _activity_phone(r):
+    return {'kind': 'phone', 'id': r['id'],
+            'at': str(r['initiated_at'] or r['created_at'] or ''),
+            'account_id': r['created_by'],
+            'target': r['phone'] or '', 'contact': r['contact_name'] or '',
+            'status': r['status'] or '',
+            'answered': 1 if (r['status'] in ('completed', 'answered')) else 0,
+            'duration_sec': r['duration'] or 0,
+            'country': r['country'] or '',
+            'reply_count': None, 'content': ''}
+
+
+def _activity_sms(r):
+    return {'kind': 'sms', 'id': r['id'],
+            'at': str(r['sent_at'] or r['created_at'] or ''),
+            'account_id': r['created_by'],
+            'target': r['phone'] or '', 'contact': r['contact_name'] or '',
+            'status': r['status'] or '', 'duration_sec': 0,
+            'country': '', 'reply_count': None,
+            'content': (r['content'] or '')[:120]}
+
+
+def _activity_email(r):
+    return {'kind': 'email', 'id': r['id'],
+            'at': str(r['sent_at'] or r['created_at'] or ''),
+            'account_id': r['created_by'],
+            'target': r['recipient_email'] or '', 'contact': r['contact_name'] or '',
+            'status': r['status'] or '', 'duration_sec': 0,
+            'country': '',
+            'reply_count': r['reply_count'] or 0,
+            'content': (r['subject'] or '')[:120]}
+
+
+def _team_user_ids(team_id):
+    """Return ids of one team unit: leader (team_admin) + its members."""
+    db = get_db()
+    try:
+        leader = int(team_id)
+    except (TypeError, ValueError):
+        return []
+    n = db.execute("SELECT COUNT(*) AS n FROM users WHERE id=?", (leader,)).fetchone()['n']
+    if not n:
+        return []
+    ids = [leader] + [r['id'] for r in db.execute(
+        "SELECT id FROM users WHERE team_creator_id=?", (leader,)).fetchall()]
+    return ids
+
+
+def _activity_csv(rows, total, kind, date_from, date_to):
+    import io as _io, csv as _csv
+    from flask import Response
+    cap = _activity_cap()
+    truncated = total > cap
+    shown = rows[:cap]
+    filename = 'actividad' + ('_' + kind if kind else '') + '.csv'
+
+    def _label(item):
+        b = {'phone': 'Telefono', 'sms': 'SMS', 'email': 'Email'}
+        return b.get(item['kind'], item['kind'])
+
+    def generate():
+        sdb = None
+        buf = _io.StringIO()
+        buf.write('\ufeff')
+        w = _csv.writer(buf)
+        w.writerow(['Tipo', 'Fecha y hora', 'Cuenta', 'Equipo', 'Destino',
+                    'Contacto', 'Resultado', 'Duracion(s)', 'Con respuesta'])
+        for it in shown:
+            w.writerow([_label(it), it['at'], it['account'], it['team_name'],
+                        it['target'], it['contact'], it['status'], it['duration_sec'],
+                        'SI' if it['reply_count'] else ('NO' if it['reply_count'] is not None else '')])
+            if buf.tell() > 512 * 1024:
+                yield buf.getvalue()
+                buf = _io.StringIO()
+                w = _csv.writer(buf)
+        yield buf.getvalue()
+
+    headers = {
+        'Content-Disposition': "attachment; filename=" + filename,
+        'X-Total-Rows': str(total), 'X-Exported-Rows': str(len(shown)),
+        'X-Export-Truncated': '1' if truncated else '0',
+    }
+    return Response(generate(), mimetype='text/csv; charset=utf-8', headers=headers)
+
+
+def _activity_cap():
+    return 100000
+
+
 @app.route('/api/sms/statistics', methods=['GET'])
 @login_required
 @stats_cache_namespace('sms_stats')
