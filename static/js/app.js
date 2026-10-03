@@ -736,7 +736,7 @@ async function renderDashboard(container, opts) {
         var syncBtn = state.user && state.user.role === 'admin'
             ? '<button class="btn btn-secondary btn-sm" id="dr-sync-btn" onclick="runDrSync(false)" title="Consultar estados pendientes recientes (ultimas 72h)">Sincronizar estados</button>' +
               '<button class="btn btn-warning btn-sm" id="dr-backfill-btn" onclick="confirmDrBackfill()" title="Reconciliar historico: consulta TODOS los envios pendientes, no solo las ultimas 72h">Reconciliar historico</button>' +
-              '<button class="btn btn-ghost btn-sm" id="rebill-btn" onclick="confirmRebillHistory()" title="Recalcula los segmentos facturados de TODO el historico con la regla actual (espanol 70 solo si hay acentos/n; resto 160)">Recalcular facturacion</button>'
+              '<button class="btn btn-ghost btn-sm" id="rebill-btn" onclick="confirmRebillHistory()" title="Recalcula los segmentos facturados de TODO el historico con la regla actual (latin/ASCII 160, CJK/acentos efectivos 70)">Recalcular facturacion</button>'
             : '';
         var cacheNote = '<span style="font-size:12px;color:#64748B;display:inline-flex;align-items:center;gap:6px;" title="Los paneles se actualizan automaticamente cada 15 minutos. Contactos y gestion siempre en tiempo real.">' +
             '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>' +
@@ -854,7 +854,7 @@ async function confirmDrBackfill() {
 }
 
 async function confirmRebillHistory() {
-    if (!window.confirm('Recalcular la facturacion de TODO el historico?\n\nSe volveran a contar los segmentos de cada SMS con la regla actual: espanol 70 solo si el texto tiene acentos/n/signos invertidos; el resto (incluido el espanol en ASCII) se cuenta a 160. Esto reduce los SMS facturados de los mensajes que antes se clasificaban por palabras. El proceso recorre la tabla en lotes y puede tardar; los paneles se actualizan al terminar.')) return;
+    if (!window.confirm('Recalcular la facturacion de TODO el historico?\n\nSe volveran a contar los segmentos de cada SMS con la regla actual: el texto efectivamente enviado (ya normalizado) se clasifica a 160 caracteres si es ASCII/Latin, o 70 si conserva caracteres CJK. Los SMS que antes se habian facturado a 70 por acentos en el original (que se quitan al enviarse) se reduciran a 160. El proceso recorre la tabla en lotes y puede tardar; los paneles se actualizan al terminar.')) return;
     await runRebillHistory();
 }
 
