@@ -219,11 +219,71 @@
 
 ---
 
-## 10. 使用这份规范（给 AI 的约定）
+## 10. 明细级对账口径（每一通 / 每一条 / 每一封）
 
-1. 回答任何"发了多少/成本多少/送达率多少"前，**先明确角色作用域**（这是可见范围前提）。
-2. SMS 对账/送达率口径 = **送达/受理**（排除 in_flight 与 simulado）；不要混淆"发送总数"与"送达数"。
-3. 计费**只算实际成功**；SMS 分片、邮件逐封、电话按分钟向上取整。
-4. 需要"和运营商日报一致"时，务必用默认 `report_tz=carrier`（UTC+8）。
-5. 联系人维度统计一律 180 天窗口 + 尾10位/小写邮箱匹配。
-6. 数据出现矛盾时：以本文件定义核对代码，更新文档而非猜测数字。
+> 本节定义"可逐条对账的明细流水"——每一条都由一张业务表的一行承载，无法再细分。
+> 全部分组 / 汇总 / 结算都应以这些明细为唯一事实来源（`settlement`、`work-quality`、`statistics` 均由它们聚合而来）。
+> **时间口径统一用"实际发生时点"**：电话取 `initiated_at`、短信/邮件取 `sent_at`；两者为空时回退 `created_at`（入队/受理时点）。**账户名一律 `JOIN users` 取 `full_name`（空则 `username`）**。
+
+### 10.1 电话（每通一个 `voice_records` 行）
+
+| 你要的字段 | 来源列 | 说明 |
+|-----------|--------|------|
+| 发起账户 | `created_by → users.username` | 谁发起的外呼 |
+| 拨打对象 | `phone`（+ `contact_name` 快照） | 目标号码/对象 |
+| 拨打日期及时间 | `initiated_at` | 发起时刻（空则 `created_at`） |
+| 是否拨通 | `status` | `completed/answered` = 接通；`failed/no-answer/busy/canceled` = 未通 |
+| 通话时长 | `duration`（秒） | 仅接通后 > 0；按分钟向上取整用于计费 |
+
+**可补充（已存，非必需）**：`answer_at` 接通时刻、`finished_at` 结束时刻、`record_file` 是否留存录音（可作通话真实性的证据链）、`price`（供应商计费）、`extnumber` 用哪个分机呼出、`country` 归属国家。
+
+**注意**：`initiated_at`/`finished_at` 是"本平台发起"，个别供应商模式下 `status`（尤其 completed）以 `POST /api/voice/cdr` 回调为准回填 `duration`。
+
+### 10.2 短信（每一条一个 `sms_records` 行）
+
+| 你要的字段 | 来源列 | 说明 |
+|-----------|--------|------|
+| 发起账户 | `created_by → users.username` | 谁发送 |
+| 发送对象 | `phone`（+ `contact_name`） | 目标号码 |
+| 发送日期及时间 | `sent_at` | 实际发送时刻（空则 `created_at`） |
+| （可选）是否送达 | `status` | `delivered`=已送达；`sent`=已受理待回执；`failed`=失败 |
+| （可选）发送内容 | `content` | 正文 |
+
+**可补充（已存）**：`billed_segments`（计费分片数）、`dr_state`/`dr_checked_at`（回执轮询状态）、`msgid`（运营商回执 ID）、`delivered_at`。
+
+### 10.3 邮件（每封一个 `email_records` 行）
+
+| 你要的字段 | 来源列 | 说明 |
+|-----------|--------|------|
+| 发起账户 | `created_by → users.username` | 谁发送 |
+| 发送对象 | `recipient_email`（+ `contact_name`） | 收件邮箱 |
+| 发送日期及时间 | `sent_at` | 实际发送时刻（空则 `created_at`） |
+| 是否有回复 | `email_replies` 关联 | `LEFT JOIN(email_replies ON original_record_id=email_records.id)`；存在行即有回复，`is_read` 标记是否已读（见下） |
+
+**回复口径（重要）**：
+- "有回复"= 该封邮件的 `email_records.id` 能在 `email_replies.original_record_id` 找到对应行。
+- 回复的**关联规则**：按自动回信关联（SNS 回调经 From/To 匹配原始外发记录）或人工在回复详情页把回复挂到某封外发记录（`POST /api/email/replies/<id>/contact` 与 `original_record_id`）。未配置 SES 收发规则时，回复不会自动进入系统 → "是否有回复"为空是**接收链路未配置**而非无回复。
+- 一封信可对应多条回复；若要"是否至少一条"用 `EXISTS`。
+
+### 10.4 端到端对账单（建议的审计视角）
+
+| 维度 | 电话 | 短信 | 邮件 |
+|------|------|------|------|
+| 发起账户（员工） | ✅ | ✅ | ✅ |
+| 发起账户所属团队 | employees.team_creator_id（admin 全量） | 同左 | 同左 |
+| 对象 | phone | phone | recipient_email |
+| 时点 | initiated_at | sent_at | sent_at |
+| 结果 | status + duration | status | status + 有回复？ |
+| 成本 | price(completed) | billed_segments×单价 | 1 封×单价(sent) |
+
+---
+
+## 11. 使用这份规范（给 AI 的约定）
+
+1. **少用分组、多用明细**：任何"按账户/按团队发了多少"的结论，最终都要能反向落到 10.1–10.3 的具体行为上（可追查、可对账）。
+2. 回答任何"发了多少/成本多少/送达率多少"前，**先明确角色作用域**（这是可见范围前提）。
+3. SMS 对账/送达率口径 = **送达/受理**（排除 in_flight 与 simulado）；不要混淆"发送总数"与"送达数"。
+4. 计费**只算实际成功**；SMS 分片、邮件逐封、电话按分钟向上取整。
+5. 需要"和运营商日报一致"时，务必用默认 `report_tz=carrier`（UTC+8）。
+6. 联系人维度统计一律 180 天窗口 + 尾10位/小写邮箱匹配。
+7. 数据出现矛盾时：以本文件定义核对代码，更新文档而非猜测数字。
