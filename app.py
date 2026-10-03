@@ -178,19 +178,23 @@ def sms_billing_segments(content):
     return 1 if n <= 70 else -(-n // 67)
 
 
-def sms_billing_segments_short(sent_msg, raw_msg):
-    """Bill on the ACTUAL wire text (shortened payment links), not the raw link.
+def sms_billing_segments_short(sent_msg, raw_msg=None):
+    """Bill on the ACTUAL wire text (shortened payment links), and rate the
+    LANGUAGE CLASS on that same sent text too.
 
     The per-recipient delivered body is `sent_msg` (payment links already
-    shortened, GSM-normalized). Billing length therefore reflects what the
-    carrier actually charges for — a short link does not inflate the count.
-    The LANGUAGE CLASS is still taken from the ORIGINAL pre-normalization
-    message (`raw_msg`) so accented Spanish keeps the 70-char rate even though
-    the accents are stripped on the wire."""
+    shortened, GSM-normalized to ASCII). Since the carrier is actually charged
+    for this text, both the length and the language class come from it: if the
+    wire text is plain ASCII (accents transliterated away at send time), it is
+    billed at the 160-char Latin rate even when the operator typed an accent;
+    genuine non-ASCII that survives normalization (e.g. CJK, which cannot be
+    mapped and is only dropped when unrepresentable) keeps the 70-char rate.
+    `raw_msg` is accepted for call-site compatibility but no longer affects the
+    class. See DATA_SPEC 1.4/1.5."""
     if not sent_msg:
         return 0
     n = len(sent_msg)
-    if sms_billing_class(raw_msg) == 'latin':
+    if sms_billing_class(sent_msg) == 'latin':
         return 1 if n <= 160 else -(-n // 153)
     return 1 if n <= 70 else -(-n // 67)
 

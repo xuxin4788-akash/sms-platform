@@ -56,15 +56,18 @@
 - 语言分片规则 `sms_billing_class` + `sms_billing_segments`：
   - `latin`（英文/印尼/纯 ASCII 西语，无重音）：单条 ≤160，拼接 153。
   - `cjk`（含 CJK）/ `spanish`（含重音西语字符）：单条 ≤70，拼接 67。
-- **语言类取原始文本**（未归一化前，含重音算 spanish），**计费长度取实际下发文本**（短链已缩短、GSM 归一化后）——见 `sms_billing_segments_short`。
+- **语言类与长度均取"实际下发文本"**（`sms_billing_segments_short(sent_msg, ...)`）：计费按 GSM 归一化、支付短链缩短后真正下发的 `sent_msg` 来定档和算长度。
+  - 员工输入带重音（如 `María`）但归一化后变纯 ASCII（`Maria`）→ 实际下发为 latin → 走 **160/153** 档，**不因"原文有重音"而按 70 收费**。
+  - 仅当非 ASCII 字符在归一化后**仍然保留**（如真·CJK）时，才走 70/67 档。
+  - 历史记录可用 `/api/sms/recompute-billing` 按此规则重算（`sms_records.content` 本就是归一化文本）。
 
 ### 1.5 短信内容字符数口径（char_count）
 - **计数单位**：Python `len(text)`，即 **Unicode 码点数（1 个汉字 / 1 个西语字母都算 1 个字符）**，不是字节数，也不是 GSM 编码位数。
 - **区分两种字符数**（二者可能不同）：
   | 口径 | 取值 | 用途 |
-  |------|------|------|
-  | 原始字符数 | `len(原始内容)`（用户输入/模板，含重音） | 仅用于判定**语言类** `sms_billing_class`（含重音 → spanish 70 档；含 CJK → cjk 70 档） |
-  | 下发字符数 `char_count` | `len(normalize_sms_text(内容))`（GSM 归一化、支付短链缩短后的实际下发文本） | 用于计算**分片数/计费长度** |
+|------|------|------|
+| 原始字符数 | `len(原始内容)`（用户输入/模板，含重音） | 仅展示用；**不再**决定计费（见 §1.4，语言类改由下发文本定） |
+| 下发字符数 `char_count` | `len(normalize_sms_text(内容))`（GSM 归一化、支付短链缩短后的实际下发文本） | 同时用于**定语言类**与算**分片数/计费长度** |
 - **归一化影响**：`normalize_sms_text` 把重音西语字符转写为 ASCII（á→a、ñ→n、¿¡去除等），无法映射的非 ASCII 字符丢弃，因此**下发字符数可能小于原始字符数**（丢弃字符）或相等（纯 ASCII 时一致）；不会变大（当前映射均为单字符替换）。
 - **与分片关系**：`char_count` 对照语言类阈值（latin 160/拼接 153；spanish/cjk 70/拼接 67）算出 `billed_segments`，公式 `ceil(n / 阈值)`。
 - **数据来源**：`POST /api/sms/check-charset` 返回 `char_count`（=下发字符数）；历史记录 `sms_records.content` 存储的就是实际下发文本，字符数可对其 `len(content)` **实时计算，无需额外存储列**。
