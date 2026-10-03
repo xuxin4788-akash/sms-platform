@@ -58,7 +58,19 @@
   - `cjk`（含 CJK）/ `spanish`（含重音西语字符）：单条 ≤70，拼接 67。
 - **语言类取原始文本**（未归一化前，含重音算 spanish），**计费长度取实际下发文本**（短链已缩短、GSM 归一化后）——见 `sms_billing_segments_short`。
 
-### 1.5 状态流转
+### 1.5 短信内容字符数口径（char_count）
+- **计数单位**：Python `len(text)`，即 **Unicode 码点数（1 个汉字 / 1 个西语字母都算 1 个字符）**，不是字节数，也不是 GSM 编码位数。
+- **区分两种字符数**（二者可能不同）：
+  | 口径 | 取值 | 用途 |
+  |------|------|------|
+  | 原始字符数 | `len(原始内容)`（用户输入/模板，含重音） | 仅用于判定**语言类** `sms_billing_class`（含重音 → spanish 70 档；含 CJK → cjk 70 档） |
+  | 下发字符数 `char_count` | `len(normalize_sms_text(内容))`（GSM 归一化、支付短链缩短后的实际下发文本） | 用于计算**分片数/计费长度** |
+- **归一化影响**：`normalize_sms_text` 把重音西语字符转写为 ASCII（á→a、ñ→n、¿¡去除等），无法映射的非 ASCII 字符丢弃，因此**下发字符数可能小于原始字符数**（丢弃字符）或相等（纯 ASCII 时一致）；不会变大（当前映射均为单字符替换）。
+- **与分片关系**：`char_count` 对照语言类阈值（latin 160/拼接 153；spanish/cjk 70/拼接 67）算出 `billed_segments`，公式 `ceil(n / 阈值)`。
+- **数据来源**：`POST /api/sms/check-charset` 返回 `char_count`（=下发字符数）；历史记录 `sms_records.content` 存储的就是实际下发文本，字符数可对其 `len(content)` **实时计算，无需额外存储列**。
+- **注意**：`char_count` 统计的是码点，不等同运营商按 GSM 7bit/UCS-2 的**编码单元**计费（如 GSM 扩展字符 `^{}\[~]|€` 各占 2 个码元）；本平台当前归一化后下发内容基本落在 GSM 基本字符集，故以码点数近似编码长度，如后续允许扩展字符需按 GSM 码元另行折算。
+
+### 1.6 状态流转
 `sent`（受理）→ `delivered`（送达）｜ `rejected`｜ `failed`｜ `simulated`。`billed_segments` 在发送时就地计算并存储，后台 `/sms/state` 轮询回执更新状态。
 
 ---
@@ -247,7 +259,8 @@
 | 发送对象 | `phone`（+ `contact_name`） | 目标号码 |
 | 发送日期及时间 | `sent_at` | 实际发送时刻（空则 `created_at`） |
 | （可选）是否送达 | `status` | `delivered`=已送达；`sent`=已受理待回执；`failed`=失败 |
-| （可选）发送内容 | `content` | 正文 |
+| （可选）发送内容 | `content` | 正文（实际下发文本，归一化+短链缩短后） |
+| （可选）内容字符数 | `len(content)` | 下发字符数（Unicode 码点），口径见 §1.5；实时计算无需存储 |
 
 **可补充（已存）**：`billed_segments`（计费分片数）、`dr_state`/`dr_checked_at`（回执轮询状态）、`msgid`（运营商回执 ID）、`delivered_at`。
 
