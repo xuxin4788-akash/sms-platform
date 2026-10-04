@@ -536,10 +536,13 @@ function showMainApp() {
     });
     navigateTo(state.currentPage || 'dashboard');
     syncSystemBubble();
-    // Preload the softphone iframe right after login so it is loaded and
-    // registered by the time the user clicks a call button; otherwise the
-    // first click always happens while loaded=false and the number is queued.
-    setTimeout(webphoneFrame, 1500);
+    // The softphone iframe is static in index.html and loads BEFORE login, so
+    // its first credential fetch returns 401. After login, tell it to retry;
+    // also ensure the frame reference is initialized.
+    setTimeout(function () {
+        webphoneFrame();
+        webphonePost({ source: 'app', type: 'webphone-login' });
+    }, 600);
 }
 
 async function logout() {
@@ -1338,7 +1341,22 @@ async function dialZoiper(phone, name) {
 function webphoneFrame() {
     var f = document.getElementById('webphone-frame');
     if (f) {
-      if (!f.__wpLoadHooked) { f.__wpLoadHooked = true; f.addEventListener('load', webphoneOnFrameLoaded); }
+      if (!f.__wpLoadHooked) {
+        f.__wpLoadHooked = true;
+        f.addEventListener('load', webphoneOnFrameLoaded);
+        // The static iframe (index.html) begins loading with the page, so its
+        // 'load' may have fired before this listener is attached. Detect an
+        // already-finished document and run the handler immediately, otherwise
+        // _webphoneLoaded stays false forever (queued call, loaded=false).
+        try {
+          var cw = f.contentWindow;
+          var d = cw && cw.document;
+          if (d && d.readyState === 'complete') {
+            // Defer so this stays async like a real load event.
+            setTimeout(webphoneOnFrameLoaded, 0);
+          }
+        } catch (e) { /* cross-origin: rely on the load listener */ }
+      }
       return f;
     }
     // The iframe lives in index.html (inside the app image), but to avoid

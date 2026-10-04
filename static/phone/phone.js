@@ -648,25 +648,13 @@
     });
   }
 
-  // Auto-login: remembered credentials first, otherwise ask the platform
-  // backend to hand us this user's SIP extension + shared peer secret so the
-  // embedded iframe can register without a prior manual phone-page login.
-  (function autoLogin() {
-    var saved = null;
-    try {
-      var raw = localStorage.getItem(STORE_KEY);
-      if (raw) { saved = JSON.parse(raw); }
-    } catch (e) { saved = null; }
-
-    if (saved && saved.ext && saved.pwd) {
-      extInput.value = saved.ext;
-      pwdInput.value = saved.pwd;
-      connect(saved.ext, saved.pwd);
-      return;
-    }
-
-    // No stored credentials: fetch server-provided credential (same-origin,
-    // carries the platform session cookie).
+  // Fetch a server-provided credential (same-origin, carries the platform
+  // session cookie) and register. Can be called on load and again by the
+  // parent after login, because the off-screen iframe loads BEFORE the user
+  // authenticates — the first fetch may 401 and must be retried post-login.
+  var serverLoginTried = false;
+  function tryServerLogin() {
+    if (registered || ua) { return; }      // already connecting/connected
     fetch("/api/my/webphone-credential", {
       method: "GET",
       credentials: "same-origin",
@@ -683,12 +671,31 @@
         } catch (e) { /* storage blocked */ }
         connect(d.extension, d.secret);
       } else {
+        serverLoginTried = true;
         plog("credencial webphone no disponible: " + (d.reason || "error") + " (" + (d.message || "") + ")");
         notifyParent({ type: "webphone-credential-error", reason: String(d.reason || "error"), message: String(d.message || "") });
       }
     }).catch(function (err) {
       plog("fallo al pedir credencial webphone: " + (err && err.message ? err.message : err));
     });
+  }
+
+  // Auto-login: remembered credentials first, otherwise ask the platform
+  // backend to hand us this user's SIP extension + shared peer secret.
+  (function autoLogin() {
+    var saved = null;
+    try {
+      var raw = localStorage.getItem(STORE_KEY);
+      if (raw) { saved = JSON.parse(raw); }
+    } catch (e) { saved = null; }
+
+    if (saved && saved.ext && saved.pwd) {
+      extInput.value = saved.ext;
+      pwdInput.value = saved.pwd;
+      connect(saved.ext, saved.pwd);
+      return;
+    }
+    tryServerLogin();
   })();
 
   // ---- Parent-window control (contact page click-to-call) ----------------
@@ -721,6 +728,12 @@
         } catch (e) { /* noop */ }
         notifyParent({ type: "webphone-idle" });
       } else if (d.type === "webphone-status") {
+        notifyParent({ type: "webphone-status", registered: registered });
+      } else if (d.type === "webphone-login") {
+        // Parent tells us the platform user just authenticated; retry the
+        // credential fetch in case the pre-login attempt returned 401.
+        serverLoginTried = false;
+        tryServerLogin();
         notifyParent({ type: "webphone-status", registered: registered });
       } else if (d.type === "webphone-resume") {
         // Force the remote sink to play (autoplay may have been blocked);
