@@ -372,6 +372,9 @@
       return null;
     }
     attachSession(s);
+    // Ring immediately once INVITE is sent — some trunks never send 180/183,
+    // so "progress" may not fire and the caller would hear silence while ringing.
+    startRingback();
     return s;
   }
 
@@ -436,7 +439,10 @@
       // If the provider sends early media (183 with an SDP answer), its own
       // ringback/audio will flow on the remote stream — don't add a local tone.
       var hasEarlyMedia = response && (response.body || (response.data && response.data.toString()));
-      if (!hasEarlyMedia) { startRingback(); }
+      // Ringback was already started right after INVITE. If the provider now
+      // sends early media (183 with SDP), its own audio flows on the remote
+      // stream — stop the local tone to avoid both playing at once.
+      if (hasEarlyMedia) { stopRingback(); }
       forceRemotePlay();
       bindLocalMedia();
       monitorRemoteTrack();
