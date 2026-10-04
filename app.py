@@ -3583,17 +3583,20 @@ def allocate_webphone_peer(exclude_id=None):
     """Pick a free local Asterisk WebRTC peer and persist it on the user.
 
     Selects the lowest free peer in PHONE_PEER_START..PHONE_PEER_END that is
-    not already held by another (active or inactive) account, then writes it
-    to users.webphone_ext. Returns the 4-digit peer string, or '' when the
-    whole range is in use. The exclusion id is the caller's own row so its
-    current peer is reused rather than treated as taken.
+    not already held by another ACTIVE account, then writes it to
+    users.webphone_ext. Returns the 4-digit peer string, or '' when the whole
+    range is in use. The exclusion id is the caller's own row so its current
+    peer is reused rather than treated as taken. Inactive accounts do not
+    consume a peer; if such an account is later reactivated it is simply
+    allocated the next free number.
     """
     db = get_db()
     start, end = _webphone_peer_range()
     taken = set()
     rows = db.execute(
         "SELECT webphone_ext FROM users "
-        "WHERE webphone_ext IS NOT NULL AND TRIM(webphone_ext) <> ''"
+        "WHERE is_active = 1 "
+        "AND webphone_ext IS NOT NULL AND TRIM(webphone_ext) <> ''"
     ).fetchall()
     for row in rows:
         val = row['webphone_ext'] if not isinstance(row, tuple) else row[0]
@@ -3610,7 +3613,15 @@ def allocate_webphone_peer(exclude_id=None):
             taken.discard(int(ownp))
     for n in range(start, end + 1):
         if n not in taken:
-            return str(n).zfill(4)
+            peer = str(n).zfill(4)
+            # A disabled account may still show this peer as stale data; clear
+            # it so a peer is never stored on two rows at once.
+            db.execute(
+                "UPDATE users SET webphone_ext=NULL "
+                "WHERE is_active = 0 AND webphone_ext = ?",
+                (peer,)
+            )
+            return peer
     return ''
 
 
@@ -4904,6 +4915,23 @@ def update_user(user_id):
     params.append(user_id)
     db.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", params)
     db.commit()
+    # If the account was just reactivated and its (now stale) peer was reused
+    # by another active account while it was inactive, clear it and allocate a
+    # fresh free one so two peers never collide.
+    became_active = int(is_active) if is_active in (0, 1, True, False) else int(user['is_active'] or 0)
+    if became_active == 1 and not int(user['is_active'] or 0):
+        old_peer = _normalize_webphone_peer(user['webphone_ext'] if 'webphone_ext' in user.keys() else None)
+        conflict = False
+        if old_peer:
+            clash = db.execute(
+                "SELECT id FROM users WHERE id <> ? AND is_active = 1 AND webphone_ext = ?",
+                (user_id, old_peer)
+            ).fetchone()
+            conflict = bool(clash)
+        if old_peer and conflict:
+            db.execute("UPDATE users SET webphone_ext=NULL WHERE id=?", (user_id,))
+            db.commit()
+        ensure_webphone_peer(user_id)
     if released_ext:
         _extensions_release(released_ext)
     if new_ext:
@@ -8467,6 +8495,53 @@ def admin_webphone_backfill():
         'unassigned': failed,
         'unassigned_user_ids': failed_ids,
         'peer_range': {'start': start, 'end': end},
+    })
+
+
+@app.route('/api/admin/webphone-usage', methods=['GET'])
+@admin_required
+def admin_webphone_usage():
+    """Show local Asterisk peer utilization so an admin can tell whether the
+    PHONE_PEER_START..PHONE_PEER_END range must be enlarged.
+    """
+    db = get_db()
+    start, end = _webphone_peer_range()
+    capacity = end - start + 1
+    active_rows = db.execute(
+        "SELECT id, username, full_name, webphone_ext FROM users "
+        "WHERE is_active = 1 AND webphone_ext IS NOT NULL AND TRIM(webphone_ext) <> '' "
+        "ORDER BY CAST(webphone_ext AS INTEGER)"
+    ).fetchall()
+    inactive_rows = db.execute(
+        "SELECT id, username, full_name, webphone_ext FROM users "
+        "WHERE is_active = 0 AND webphone_ext IS NOT NULL AND TRIM(webphone_ext) <> '' "
+        "ORDER BY CAST(webphone_ext AS INTEGER)"
+    ).fetchall()
+
+    def _pack(rows):
+        out = []
+        for r in rows:
+            out.append({
+                'id': r['id'],
+                'username': r['username'],
+                'full_name': r['full_name'],
+                'peer': r['webphone_ext'],
+            })
+        return out
+
+    active = _pack(active_rows)
+    inactive = _pack(inactive_rows)
+    used_peers = {int(_normalize_webphone_peer(a['peer'])) for a in active}
+    used_peers = {n for n in used_peers if start <= n <= end}
+    free = capacity - len(used_peers)
+    return jsonify({
+        'peer_range': {'start': start, 'end': end},
+        'capacity': capacity,
+        'active_assigned': len(active),
+        'free': free,
+        'inactive_holding_peer': len(inactive),
+        'active_accounts': active,
+        'inactive_accounts': inactive,
     })
 
 
