@@ -17,7 +17,7 @@ CONF=/etc/asterisk
 : "${OUTBOUND_PREFIX:=}"
 : "${PEER_SECRET:=}"
 : "${PEER_START:=1001}"
-: "${PEER_END:=1050}"
+: "${PEER_END:=1150}"
 # Where MixMonitor writes call recordings (shared volume, see compose).
 : "${RECORD_DIR:=/recordings}"
 

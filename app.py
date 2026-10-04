@@ -3558,7 +3558,7 @@ def allocate_extension(exclude_id=None, country=None):
 def _webphone_peer_range():
     """Return (start, end) local Asterisk peer numbers from the environment.
 
-    Defaults mirror the asterisk container entrypoint (1001-1050).
+    Defaults mirror the asterisk container entrypoint (1001-1150).
     """
     def _int(name, default):
         try:
@@ -3567,7 +3567,7 @@ def _webphone_peer_range():
         except (TypeError, ValueError):
             return default
     start = _int('PHONE_PEER_START', 1001)
-    end = _int('PHONE_PEER_END', 1050)
+    end = _int('PHONE_PEER_END', 1150)
     if end < start:
         end = start
     return start, end
