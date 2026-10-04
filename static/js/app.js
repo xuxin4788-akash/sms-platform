@@ -536,6 +536,10 @@ function showMainApp() {
     });
     navigateTo(state.currentPage || 'dashboard');
     syncSystemBubble();
+    // Preload the softphone iframe right after login so it is loaded and
+    // registered by the time the user clicks a call button; otherwise the
+    // first click always happens while loaded=false and the number is queued.
+    setTimeout(webphoneFrame, 1500);
 }
 
 async function logout() {
