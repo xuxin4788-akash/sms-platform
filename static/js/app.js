@@ -1442,11 +1442,12 @@ function webphoneCall(btn, name) {
     if (!frame) { showToast('Telefono Web no disponible', 'error'); dbg('no se pudo crear iframe'); return; }
     if (btn !== null) _webphoneActiveBtn = btn;
     if (btn !== null) webphoneSetBtn(btn, true);
-    showToast('Llamando por Teléfono Web...', 'info');
     webphoneShowCard(rawPhone || phone);
     if (_webphoneReady) {
+        showToast('Llamando por Teléfono Web...', 'info');
         webphonePost({ source: 'app', type: 'webphone-dial', number: phone });
     } else {
+        showToast('Teléfono Web registrando... se marcará al estar listo', 'info');
         _webphonePending.push(phone);
         dbg('no listo; encolado y consulto estado (loaded=' + _webphoneLoaded + ')');
         webphonePost({ source: 'app', type: 'webphone-status' });
@@ -1460,9 +1461,11 @@ function webphoneHangup() {
     if (_webphoneActiveBtn) { webphoneSetBtn(_webphoneActiveBtn, false); _webphoneActiveBtn = null; }
 }
 function webphoneReset() {
+    var hadPending = _webphonePending.length > 0;
     _webphonePending = [];
     if (_webphoneActiveBtn) { webphoneSetBtn(_webphoneActiveBtn, false); _webphoneActiveBtn = null; }
     _webphoneContactId = '';
+    return hadPending;
 }
 
 async function reportWebphoneRecord(d) {
@@ -1588,15 +1591,15 @@ if (window.addEventListener) {
             webphoneHideCard();
         }
         else if (d.type === 'webphone-registration-failed') {
-            webphoneReset();
-            showToast('No se pudo registrar el Teléfono Web (' + (d.cause || 'error') + '). Inicia sesion en /static/phone/index.html.', 'error');
+            var rp = webphoneReset();
+            showToast('No se pudo registrar el Teléfono Web (' + (d.cause || 'error') + '). Inicia sesion en /static/phone/index.html.' + (rp ? ' La llamada en cola se canceló.' : ''), 'error');
         }
         else if (d.type === 'webphone-disconnected' || d.type === 'webphone-unregistered') {
             _webphoneReady = false;
         }
         else if (d.type === 'webphone-not-registered') {
-            webphoneReset();
-            showToast('Telefono Web no registrado. Abre /static/phone/index.html e inicia sesion una vez.', 'error');
+            var rn = webphoneReset();
+            showToast('Telefono Web no registrado. Abre /static/phone/index.html e inicia sesion una vez.' + (rn ? ' La llamada en cola se canceló.' : ''), 'error');
         }
         else if (d.type === 'webphone-toast') {
             showToast(d.message || '', d.level === 'error' ? 'error' : (d.level === 'info' ? 'info' : 'success'));
