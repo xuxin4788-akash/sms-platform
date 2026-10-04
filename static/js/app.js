@@ -1416,7 +1416,11 @@ function webphonePost(msg) {
 function webphoneFlushPending() {
     if (!_webphoneReady) { return; }
     var q = _webphonePending; _webphonePending = [];
-    q.forEach(function (n) { webphonePost({ source: 'app', type: 'webphone-dial', number: n }); });
+    q.forEach(function (n) {
+        webphonePost({ source: 'app', type: 'webphone-dial', number: n });
+        setCardStatusText('Llamando...');
+        showToast('Teléfono Web listo, marcando ' + n + '...', 'info');
+    });
 }
 function webphoneNormalize(raw) {
     var num = String(raw == null ? '' : raw).replace(/[^0-9]/g, '');
