@@ -50,6 +50,10 @@ services:
       # Shared SIP peer secret so the webphone can auto-register without a
       # manual login (served to the softphone via /api/my/webphone-credential).
       - PHONE_PEER_SECRET=${PHONE_PEER_SECRET:-}
+      # Asterisk-generated peer range; the credential endpoint must only serve
+      # extensions that actually exist as Asterisk peers (defaults 1001-1050).
+      - PHONE_PEER_START=${PHONE_PEER_START:-1001}
+      - PHONE_PEER_END=${PHONE_PEER_END:-1050}
     volumes:
       - app-logs:/app/logs
       - recordings:/recordings:ro

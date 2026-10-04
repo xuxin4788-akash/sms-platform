@@ -3384,6 +3384,66 @@ def _normalize_extnumber(value):
     return ext
 
 
+# ---------------------------------------------------------------------------
+# Asterisk static peer range (the only extensions Asterisk actually answers)
+# ---------------------------------------------------------------------------
+
+def _asterisk_peer_range():
+    """Return (start, end) integers for the Asterisk-generated WebRTC peers.
+
+    Must mirror the asterisk container's PEER_START/PEER_END (entrypoint.sh).
+    """
+    def _int(name, default):
+        try:
+            return int(str(os.environ.get(name, default)).strip())
+        except (TypeError, ValueError):
+            return default
+    start = _int('PHONE_PEER_START', 1001)
+    end = _int('PHONE_PEER_END', 1050)
+    if end < start:
+        end = start
+    return start, end
+
+
+def _is_asterisk_peer(ext):
+    """True when ext is a 4-digit number within the Asterisk peer range."""
+    e = _normalize_extnumber(ext)
+    if not e or not e.isdigit():
+        return False
+    start, end = _asterisk_peer_range()
+    n = int(e)
+    return start <= n <= end
+
+
+def _allocate_asterisk_peer(db, exclude_id=None):
+    """Pick a free Asterisk peer (in range, not held by another active user).
+
+    Returns the zero-padded extension string or '' if the whole range is used.
+    """
+    start, end = _asterisk_peer_range()
+    rows = db.execute(
+        "SELECT extnumber FROM users "
+        "WHERE is_active = 1 AND extnumber IS NOT NULL AND TRIM(extnumber) <> ''"
+    ).fetchall()
+    taken = set()
+    for row in rows:
+        val = row['extnumber'] if not isinstance(row, tuple) else row[0]
+        e = _normalize_extnumber(val)
+        if e.isdigit():
+            taken.add(int(e))
+    if exclude_id:
+        owner = db.execute(
+            "SELECT extnumber FROM users WHERE id=?", (exclude_id,)
+        ).fetchone()
+        own = owner['extnumber'] if owner and not isinstance(owner, tuple) else (owner[0] if owner else '')
+        if _normalize_extnumber(own).isdigit():
+            taken.discard(int(_normalize_extnumber(own)))
+    for n in range(start, end + 1):
+        if n not in taken:
+            return str(n)
+    return ''
+
+
 def _find_user_by_extnumber(extnumber, exclude_id=None):
     """Return the first active user already bound to the given extension, or None.
 
@@ -4219,40 +4279,36 @@ def my_send_quota():
 def my_webphone_credential():
     """Return the current user's SIP extension + shared peer secret so the
     embedded webphone can auto-register (autoLogin) without a prior manual
-    login on the standalone phone page. Auto-assigns a free extension for the
-    user's country when they have none yet.
+    login on the standalone phone page.
+
+    Only Asterisk-generated peers (the numeric PHONE_PEER_START..PHONE_PEER_END
+    range) can register. Any other stored value (e.g. a real phone number
+    imported into the extensions catalog) is replaced with a free Asterisk peer.
     """
     db = get_db()
     uid = g.user['id']
-    country = (
-        normalize_country(g.user.get('country') or '')
-        or _leader_country(db, g.user.get('team_creator_id'))
-        or 'mx'
-    )
     ext = _normalize_extnumber(g.user.get('extnumber') or '')
 
-    if not ext:
-        try:
-            picked = allocate_extension(exclude_id=uid, country=country)
-        except Exception:
-            picked = ''
+    if not _is_asterisk_peer(ext):
+        picked = _allocate_asterisk_peer(db, exclude_id=uid)
         if not picked:
             return jsonify({
                 'configured': False,
                 'reason': 'no_extension',
-                'message': 'No hay extensiones SIP libres; pida al administrador que agregue mas.',
+                'message': 'Todas las extensiones Asterisk estan en uso; pida al administrador que amplie el rango.',
             }), 409
-        ext = _normalize_extnumber(picked)
+        ext = picked
         try:
             db.execute(
-                "UPDATE users SET extnumber=?, country=? WHERE id=?",
-                (ext, country, uid),
+                "UPDATE users SET extnumber=? WHERE id=?",
+                (ext, uid),
             )
             db.commit()
         except Exception:
             db.rollback()
+        # Keep the management catalog consistent when it contains this peer.
         try:
-            _extensions_mark_assigned(ext, uid, country)
+            _extensions_mark_assigned(ext, uid, normalize_country(g.user.get('country') or ''))
         except Exception:
             pass
 
