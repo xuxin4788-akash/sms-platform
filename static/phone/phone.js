@@ -190,6 +190,53 @@
     callTimer.textContent = "00:00";
   }
 
+  /* ---------------- Local ringback tone ----------------
+   * While waiting for the remote party to answer, many SIP trunks only send
+   * 180 Ringing with no early media, so the caller would hear silence. We play
+   * a local ringback (North-American cadence: 2 s on / 4 s off, 440+480 Hz)
+   * so the wait is always audible. Stopped on answer / failure / hangup. */
+  var ringCtx = null;
+  var ringTimer = null;
+
+  function _ringBeep() {
+    if (!ringCtx) { return; }
+    var t = ringCtx.currentTime;
+    var dur = 2;
+    var g = ringCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.18, t + 0.02);
+    g.gain.setValueAtTime(0.18, t + dur - 0.05);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    g.connect(ringCtx.destination);
+    [440, 480].forEach(function (f) {
+      var o = ringCtx.createOscillator();
+      o.type = "sine";
+      o.frequency.value = f;
+      o.connect(g);
+      o.start(t);
+      o.stop(t + dur);
+    });
+  }
+
+  function startRingback() {
+    stopRingback();
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      ringCtx = new Ctx();
+      if (ringCtx.state === "suspended") { ringCtx.resume(); }
+      _ringBeep();
+      ringTimer = setInterval(_ringBeep, 6000);
+    } catch (e) { ringCtx = null; }
+  }
+
+  function stopRingback() {
+    if (ringTimer) { clearInterval(ringTimer); ringTimer = null; }
+    if (ringCtx) {
+      try { ringCtx.close(); } catch (e) { /* noop */ }
+      ringCtx = null;
+    }
+  }
+
   /* ---------------- Local mic level meter ----------------
    * The meter observes the mic stream but never owns/stops it (SIP.js does). */
   var micAudioCtx = null;
@@ -384,8 +431,12 @@
       } catch (e) { /* monitor optional */ }
     }
 
-    session.on("progress", function () {
+    session.on("progress", function (response) {
       callState.textContent = "Llamando...";
+      // If the provider sends early media (183 with an SDP answer), its own
+      // ringback/audio will flow on the remote stream — don't add a local tone.
+      var hasEarlyMedia = response && (response.body || (response.data && response.data.toString()));
+      if (!hasEarlyMedia) { startRingback(); }
       forceRemotePlay();
       bindLocalMedia();
       monitorRemoteTrack();
@@ -393,6 +444,7 @@
     });
     session.on("accepted", function () {
       callState.textContent = "En llamada";
+      stopRingback();
       startTimer();
       if (callContext) { callContext.connectedAt = Math.floor(Date.now() / 1000); }
       forceRemotePlay();
@@ -437,6 +489,7 @@
     hangupBtn.disabled = true;
     callBtn.disabled = false;
     stopTimer();
+    stopRingback();
     stopMicMeter();
     stopInboundHud();
     try { remoteAudio.srcObject = null; } catch (e) { /* noop */ }
