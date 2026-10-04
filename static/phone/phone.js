@@ -437,12 +437,10 @@
     session.on("progress", function (response) {
       callState.textContent = "Llamando...";
       // If the provider sends early media (183 with an SDP answer), its own
-      // ringback/audio will flow on the remote stream — don't add a local tone.
-      var hasEarlyMedia = response && (response.body || (response.data && response.data.toString()));
-      // Ringback was already started right after INVITE. If the provider now
-      // sends early media (183 with SDP), its own audio flows on the remote
-      // stream — stop the local tone to avoid both playing at once.
-      if (hasEarlyMedia) { stopRingback(); }
+      // Keep the local ringback running through 180/183: this trunk signals
+      // progress but sends no usable early-media audio, and stopping the tone
+      // here left the caller in silence until 408. It only stops on
+      // accepted/failed/rejected/terminated.
       forceRemotePlay();
       bindLocalMedia();
       monitorRemoteTrack();
