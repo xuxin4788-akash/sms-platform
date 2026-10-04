@@ -465,26 +465,30 @@
       }
       return (code ? code : "") + (txt ? (" " + txt) : "") + (cause ? (" [" + cause + "]") : "");
     }
-    session.on("failed", function (response, cause) {
-      callState.textContent = "Falló la llamada";
-      notifyParent({ type: "webphone-session-ended", outcome: "failed", reason: failInfo(response, cause),
+    var endReported = false;
+    function reportEnd(kind, reason, callStateText) {
+      if (endReported) { return; }
+      endReported = true;
+      if (callState) { callState.textContent = callStateText; }
+      notifyParent({ type: "webphone-session-ended", outcome: kind, reason: reason,
         number: callContext ? callContext.number : "", extension: myExtension, duration: connectedSeconds() });
       resetCall();
+    }
+    session.on("failed", function (response, cause) {
+      reportEnd("failed", failInfo(response, cause), "Falló la llamada");
     });
     session.on("terminated", function () {
-      callState.textContent = "Finalizada";
-      var dur = connectedSeconds();
       var wasConnected = callContext && callContext.connectedAt;
+      if (endReported) { return; }
+      endReported = true;
+      if (callState) { callState.textContent = "Finalizada"; }
       notifyParent({ type: "webphone-session-ended", outcome: wasConnected ? "answered" : "no-answer",
         reason: wasConnected ? "hangup" : "terminated",
-        number: callContext ? callContext.number : "", extension: myExtension, duration: dur });
+        number: callContext ? callContext.number : "", extension: myExtension, duration: connectedSeconds() });
       resetCall();
     });
     session.on("rejected", function (response, cause) {
-      callState.textContent = "Rechazada";
-      notifyParent({ type: "webphone-session-ended", outcome: "rejected", reason: failInfo(response, cause),
-        number: callContext ? callContext.number : "", extension: myExtension, duration: connectedSeconds() });
-      resetCall();
+      reportEnd("rejected", failInfo(response, cause), "Rechazada");
     });
   }
 
