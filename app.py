@@ -6189,6 +6189,114 @@ def _contact_stats_map(contacts):
     return out
 
 
+def _call_result_label(status: str) -> str:
+    """Normalize a raw call status/outcome into a short Spanish result label."""
+    s = str(status or '').strip().lower()
+    return {
+        'completed': 'Contestada',
+        'answered': 'Contestada',
+        'connected': 'Contestada',
+        'conectada': 'Contestada',
+        'busy': 'Ocupado',
+        'no-answer': 'Sin respuesta',
+        'failed': 'Fallida',
+        'rejected': 'Rechazada',
+        'canceled': 'Cancelada',
+        'cancelled': 'Cancelada',
+        'ringing': 'Timbrando',
+        'initiated': 'Iniciada',
+        'pending': 'Pendiente',
+        'unknown': 'Desconocido',
+    }.get(s, 'Desconocido')
+
+
+def _call_ts(row, *cols) -> str:
+    """Return a normalized 'YYYY-MM-DD HH:MM:SS' string for the first non-empty
+    timestamp column present on the row (works for PG datetime and SQLite str)."""
+    for col in cols:
+        try:
+            v = row[col]
+        except (IndexError, KeyError):
+            v = None
+        if v in (None, ''):
+            continue
+        if isinstance(v, datetime):
+            return v.strftime('%Y-%m-%d %H:%M:%S')
+        sval = str(v)
+        return sval.split('.', 1)[0] if len(sval) >= 19 else sval
+    return ''
+
+
+def _last_call_map(contacts) -> dict:
+    """For each contact (matched by last-10 phone digits), return the single most
+    recent call across BOTH voice_records (电呼) and webphone_records (Telefono Web).
+    Same role scope as SMS/voice records.
+    Returns {phone_key: {result, status, at, duration, channel}}.
+    """
+    out: dict = {}
+    if not contacts:
+        return out
+    uid = session.get('user_id')
+    role = session.get('role')
+    keys = {k for c in contacts
+            for k in (_phone_digits_tail(c['phone']),) if k}
+    if not keys:
+        return out
+    scope, sparams = _scope_where_unnamed(uid, role)
+    scope = ' AND (' + scope + ')'
+    sparams = list(sparams)
+
+    tails8 = sorted({re.sub(r'\D', '', str(c['phone']))[-8:]
+                     for c in contacts
+                     if re.sub(r'\D', '', str(c['phone'] or ''))})
+    if not tails8:
+        return out
+    like_clause = ' OR '.join(['phone LIKE ?'] * len(tails8))
+    like_params = [f'%{t}' for t in tails8]
+
+    def _consider(rows, channel):
+        for r in rows:
+            k = _phone_digits_tail(r['phone'])
+            if k not in keys:
+                continue
+            at = _call_ts(r, 'finished_at', 'answer_at', 'initiated_at', 'created_at')
+            cur = out.get(k)
+            if cur is not None and cur.get('at') and (not at or cur['at'] >= at):
+                continue
+            try:
+                dur = int(r['duration'] or 0)
+            except (TypeError, ValueError):
+                dur = 0
+            raw = r['status']
+            out[k] = {
+                'result': _call_result_label(raw),
+                'status': str(raw or ''),
+                'at': at,
+                'duration': dur,
+                'channel': channel,
+            }
+
+    # 电呼 (Infinity/simulation)
+    try:
+        rows = get_db().execute(
+            "SELECT phone, status, duration, answer_at, initiated_at, finished_at, created_at "
+            "FROM voice_records WHERE (" + like_clause + ")" + scope,
+            like_params + sparams).fetchall()
+        _consider(rows, 'voice')
+    except Exception:
+        pass
+    # 软电话 (Telefono Web)
+    try:
+        rows = get_db().execute(
+            "SELECT phone, outcome AS status, duration, initiated_at, finished_at, created_at "
+            "FROM webphone_records WHERE (" + like_clause + ")" + scope,
+            like_params + sparams).fetchall()
+        _consider(rows, 'webphone')
+    except Exception:
+        pass
+    return out
+
+
 @app.route('/api/contacts', methods=['GET'])
 @login_required
 def list_contacts():
@@ -6305,10 +6413,12 @@ def list_contacts():
     query += f" ORDER BY {order} LIMIT ? OFFSET ?"
     params.extend([per_page, offset])
     contacts = db.execute(query, params).fetchall()
+    last_call = _last_call_map(contacts)
 
     contact_list = []
     for c in contacts:
         d = dict(c)
+        d['last_call'] = last_call.get(_phone_digits_tail(d.get('phone')))
         try:
             d['sms_count'] = int(d.get('sms_count') or 0)
             d['call_count'] = int(d.get('call_count') or 0)

@@ -229,6 +229,34 @@ function smsSegmentsCell(r) {
     return '<span style="font-weight:600;color:#1E293B;">' + parts + '</span>';
 }
 
+// Compact marker for the contact's most recent call result (unified across
+// 电呼/voice and Telefono Web). Color encodes the outcome.
+function lastCallCell(lc) {
+    if (!lc || !lc.result) return '';
+    var palette = {
+        'Contestada': ['#065F46', '#D1FAE5'],
+        'Ocupado': ['#92400E', '#FEF3C7'],
+        'Sin respuesta': ['#9A3412', '#FFEDD5'],
+        'Fallida': ['#991B1B', '#FEE2E2'],
+        'Rechazada': ['#991B1B', '#FEE2E2'],
+        'Cancelada': ['#374151', '#E5E7EB'],
+        'Timbrando': ['#1E40AF', '#DBEAFE'],
+        'Iniciada': ['#1E40AF', '#DBEAFE'],
+        'Pendiente': ['#1E40AF', '#DBEAFE'],
+        'Desconocido': ['#374151', '#E5E7EB']
+    };
+    var p = palette[lc.result] || palette['Desconocido'];
+    var when = lc.at ? formatShortDateTime(lc.at) : '';
+    var via = lc.channel === 'webphone' ? 'Telefono Web' : 'Llamada';
+    var dur = (lc.result === 'Contestada' && lc.duration) ? ' (' + formatDuration(lc.duration) + ')' : '';
+    var title = 'Ultima llamada (' + via + '): ' + lc.result + dur + (when ? ' · ' + when : '');
+    return '<span class="last-call-badge" title="' + escapeHtml(title) + '" ' +
+        'style="display:inline-flex;align-items:center;gap:4px;margin-top:4px;padding:2px 8px;border-radius:999px;' +
+        'background:' + p[1] + ';color:' + p[0] + ';font-weight:600;font-size:11px;">' +
+        '<span style="width:6px;height:6px;border-radius:50%;background:' + p[0] + ';"></span>' +
+        escapeHtml(lc.result) + '</span>';
+}
+
 function smsCharCountCell(r) {
     // SMS character count = Unicode code points of the sent content (see DATA_SPEC 1.5).
     var txt = (r && r.content) ? r.content : '';
@@ -955,6 +983,7 @@ async function renderContacts(container) {
                         '<span class="ca-item" title="Llamadas realizadas" style="color:#059669;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>' + Number(c.call_count || 0) + '</span>' +
                         '<span class="ca-item" title="Tiempo total de conversacion" style="color:#7C3AED;">' + formatDuration(Number(c.talk_time || 0)) + '</span>' +
                         '<span class="ca-item" title="Correos enviados" style="color:#2563EB;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>' + Number(c.email_count || 0) + '</span>' +
+                        lastCallCell(c.last_call) +
                     '</div>';
                 var fuBadge = '';
                 if (c.next_follow_up_at) {
@@ -5029,6 +5058,17 @@ function formatShortDate(v) {
     var dd = String(d.getDate()).padStart(2, '0');
     var mm = String(d.getMonth() + 1).padStart(2, '0');
     return dd + '/' + mm;
+}
+
+function formatShortDateTime(v) {
+    if (!v) return '';
+    var d = new Date(String(v).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return String(v).slice(0, 16);
+    var dd = String(d.getDate()).padStart(2, '0');
+    var mm = String(d.getMonth() + 1).padStart(2, '0');
+    var hh = String(d.getHours()).padStart(2, '0');
+    var mi = String(d.getMinutes()).padStart(2, '0');
+    return dd + '/' + mm + ' ' + hh + ':' + mi;
 }
 
 function formatFullDate(v) {
