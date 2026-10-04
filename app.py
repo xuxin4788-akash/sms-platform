@@ -11790,8 +11790,15 @@ def webphone_record_create():
             row = db.execute("SELECT * FROM webphone_records WHERE id=?", (row['id'],)).fetchone()
     except Exception:
         pass
-    # Keep the per-account per-day aggregate in sync
-    day = (row['initiated_at'] or now_ts)[:10]
+    # Keep the per-account per-day aggregate in sync.
+    # NB: initiated_at is a datetime when read back from PostgreSQL (not a str as
+    # in SQLite), so normalise to 'YYYY-MM-DD' before slicing.
+    raws = row['initiated_at'] or now_ts
+    if hasattr(raws, 'strftime'):
+        init_s = raws.strftime('%Y-%m-%d %H:%M:%S')
+    else:
+        init_s = str(raws)
+    day = init_s[:10]
     try:
         _sync_webphone_daily(uid, day)
     except Exception:
