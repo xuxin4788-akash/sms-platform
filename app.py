@@ -1233,6 +1233,8 @@ def init_db():
         # users: per-user fixed extension (asignacion de telefono/ext fija)
         if not pg_column_exists('users', 'extnumber'):
             cur.execute("ALTER TABLE users ADD COLUMN extnumber VARCHAR(50) DEFAULT NULL")
+        if not pg_column_exists('users', 'webphone_ext'):
+            cur.execute("ALTER TABLE users ADD COLUMN webphone_ext VARCHAR(20) DEFAULT NULL")
         if not pg_column_exists('users', 'country'):
             cur.execute("ALTER TABLE users ADD COLUMN country VARCHAR(5) DEFAULT NULL")
         if not pg_column_exists('users', 'category_id'):
@@ -1434,6 +1436,7 @@ def init_db():
                 daily_limit INTEGER DEFAULT 0,
                 session_token TEXT DEFAULT '',
                 extnumber TEXT DEFAULT NULL,
+                webphone_ext TEXT DEFAULT NULL,
                 country TEXT DEFAULT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -2002,6 +2005,12 @@ def init_db():
             db.commit()
         except Exception:
             pass
+        # Migration: add webphone_ext (Asterisk local WebRTC peer) to users
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN webphone_ext TEXT DEFAULT NULL")
+            db.commit()
+        except Exception:
+            pass
         # Migration: add country (mx/co/pe) tag to users
         try:
             db.execute("ALTER TABLE users ADD COLUMN country TEXT DEFAULT NULL")
@@ -2484,6 +2493,7 @@ def init_db():
             'daily_limit INTEGER DEFAULT 0,'
             'permissions TEXT DEFAULT \'\','
             'extnumber TEXT DEFAULT NULL,'
+            'webphone_ext TEXT DEFAULT NULL,'
             'country TEXT DEFAULT NULL,'
             'last_login_ip TEXT DEFAULT \'\','
             'last_login_at TEXT DEFAULT NULL,'
@@ -2501,7 +2511,7 @@ def init_db():
                 db.execute("PRAGMA foreign_keys=OFF")
                 db.execute(USERS_DDL_NO_CHECK)
                 old_cols = [r[1] for r in db.execute("PRAGMA table_info(users_old)").fetchall()]
-                cols = [c for c in ['id','username','password_hash','full_name','role','team_creator_id','category_id','is_active','daily_limit','permissions','extnumber','country','last_login_ip','last_login_at','session_token','created_at','updated_at'] if c in old_cols]
+                cols = [c for c in ['id','username','password_hash','full_name','role','team_creator_id','category_id','is_active','daily_limit','permissions','extnumber','webphone_ext','country','last_login_ip','last_login_at','session_token','created_at','updated_at'] if c in old_cols]
                 sel = ','.join('"' + c + '"' if c != 'role' else "CASE WHEN role='employee' THEN 'team_member' ELSE role END" for c in cols)
                 db.execute("INSERT INTO users (" + ','.join('"' + c + '"' for c in cols) + ") SELECT " + sel + " FROM users_old")
                 db.execute("DROP TABLE users_old")
@@ -2515,7 +2525,7 @@ def init_db():
                 db.execute("ALTER TABLE users RENAME TO users_old")
                 db.execute(USERS_DDL_NO_CHECK)
                 old_cols = [r[1] for r in db.execute("PRAGMA table_info(users_old)").fetchall()]
-                cols = [c for c in ['id','username','password_hash','full_name','role','team_creator_id','category_id','is_active','daily_limit','permissions','extnumber','country','last_login_ip','last_login_at','session_token','created_at','updated_at'] if c in old_cols]
+                cols = [c for c in ['id','username','password_hash','full_name','role','team_creator_id','category_id','is_active','daily_limit','permissions','extnumber','webphone_ext','country','last_login_ip','last_login_at','session_token','created_at','updated_at'] if c in old_cols]
                 sel = ','.join('"' + c + '"' if c != 'role' else "CASE WHEN role='employee' THEN 'team_member' ELSE role END" for c in cols)
                 db.execute("INSERT INTO users (" + ','.join('"' + c + '"' for c in cols) + ") SELECT " + sel + " FROM users_old")
                 db.execute("DROP TABLE users_old")
@@ -3384,66 +3394,6 @@ def _normalize_extnumber(value):
     return ext
 
 
-# ---------------------------------------------------------------------------
-# Asterisk static peer range (the only extensions Asterisk actually answers)
-# ---------------------------------------------------------------------------
-
-def _asterisk_peer_range():
-    """Return (start, end) integers for the Asterisk-generated WebRTC peers.
-
-    Must mirror the asterisk container's PEER_START/PEER_END (entrypoint.sh).
-    """
-    def _int(name, default):
-        try:
-            return int(str(os.environ.get(name, default)).strip())
-        except (TypeError, ValueError):
-            return default
-    start = _int('PHONE_PEER_START', 1001)
-    end = _int('PHONE_PEER_END', 1050)
-    if end < start:
-        end = start
-    return start, end
-
-
-def _is_asterisk_peer(ext):
-    """True when ext is a 4-digit number within the Asterisk peer range."""
-    e = _normalize_extnumber(ext)
-    if not e or not e.isdigit():
-        return False
-    start, end = _asterisk_peer_range()
-    n = int(e)
-    return start <= n <= end
-
-
-def _allocate_asterisk_peer(db, exclude_id=None):
-    """Pick a free Asterisk peer (in range, not held by another active user).
-
-    Returns the zero-padded extension string or '' if the whole range is used.
-    """
-    start, end = _asterisk_peer_range()
-    rows = db.execute(
-        "SELECT extnumber FROM users "
-        "WHERE is_active = 1 AND extnumber IS NOT NULL AND TRIM(extnumber) <> ''"
-    ).fetchall()
-    taken = set()
-    for row in rows:
-        val = row['extnumber'] if not isinstance(row, tuple) else row[0]
-        e = _normalize_extnumber(val)
-        if e.isdigit():
-            taken.add(int(e))
-    if exclude_id:
-        owner = db.execute(
-            "SELECT extnumber FROM users WHERE id=?", (exclude_id,)
-        ).fetchone()
-        own = owner['extnumber'] if owner and not isinstance(owner, tuple) else (owner[0] if owner else '')
-        if _normalize_extnumber(own).isdigit():
-            taken.discard(int(_normalize_extnumber(own)))
-    for n in range(start, end + 1):
-        if n not in taken:
-            return str(n)
-    return ''
-
-
 def _find_user_by_extnumber(extnumber, exclude_id=None):
     """Return the first active user already bound to the given extension, or None.
 
@@ -3590,6 +3540,108 @@ def allocate_extension(exclude_id=None, country=None):
     if not free:
         return ''
     return _random.choice(free)
+
+
+# ---------------------------------------------------------------------------
+# Webphone (browser SIP.js -> Asterisk gateway) local peer allocation.
+#
+# This is a DIFFERENT number space from `extensions`/`users.extnumber`:
+#   * users.extnumber = VOS3000 large number, used by the Infinity voice
+#     click-to-call feature (provider-side SIP).
+#   * users.webphone_ext = a local Asterisk WebRTC endpoint from the numeric
+#     peer range (default 1001-1050, mirrors the asterisk container's
+#     PEER_START..PEER_END). The browser registers this over WSS; Asterisk
+#     then routes the call out through its VOS3000 trunk.
+# All local peers authenticate with the single shared PHONE_PEER_SECRET.
+# ---------------------------------------------------------------------------
+
+def _webphone_peer_range():
+    """Return (start, end) local Asterisk peer numbers from the environment.
+
+    Defaults mirror the asterisk container entrypoint (1001-1050).
+    """
+    def _int(name, default):
+        try:
+            v = int(os.environ.get(name, ''))
+            return v if v > 0 else default
+        except (TypeError, ValueError):
+            return default
+    start = _int('PHONE_PEER_START', 1001)
+    end = _int('PHONE_PEER_END', 1050)
+    if end < start:
+        end = start
+    return start, end
+
+
+def _normalize_webphone_peer(value):
+    """Normalize to a 4-digit local peer string, or '' if not a plain number."""
+    d = ''.join(ch for ch in str(value or '') if ch.isdigit())
+    return d.lstrip('0') and str(int(d)).zfill(4) or ''
+
+
+def allocate_webphone_peer(exclude_id=None):
+    """Pick a free local Asterisk WebRTC peer and persist it on the user.
+
+    Selects the lowest free peer in PHONE_PEER_START..PHONE_PEER_END that is
+    not already held by another (active or inactive) account, then writes it
+    to users.webphone_ext. Returns the 4-digit peer string, or '' when the
+    whole range is in use. The exclusion id is the caller's own row so its
+    current peer is reused rather than treated as taken.
+    """
+    db = get_db()
+    start, end = _webphone_peer_range()
+    taken = set()
+    rows = db.execute(
+        "SELECT webphone_ext FROM users "
+        "WHERE webphone_ext IS NOT NULL AND TRIM(webphone_ext) <> ''"
+    ).fetchall()
+    for row in rows:
+        val = row['webphone_ext'] if not isinstance(row, tuple) else row[0]
+        p = _normalize_webphone_peer(val)
+        if p and p.isdigit():
+            taken.add(int(p))
+    if exclude_id:
+        own = db.execute(
+            "SELECT webphone_ext FROM users WHERE id=?", (exclude_id,)
+        ).fetchone()
+        ownv = own['webphone_ext'] if own and not isinstance(own, tuple) else (own[0] if own else '')
+        ownp = _normalize_webphone_peer(ownv)
+        if ownp and ownp.isdigit():
+            taken.discard(int(ownp))
+    for n in range(start, end + 1):
+        if n not in taken:
+            return str(n).zfill(4)
+    return ''
+
+
+def ensure_webphone_peer(user_id):
+    """Make sure one account holds a valid local webphone peer; allocate and
+    persist one when it has none. Returns the peer string or '' if the whole
+    range is exhausted. Safe to call repeatedly (idempotent).
+    """
+    db = get_db()
+    row = db.execute(
+        "SELECT webphone_ext FROM users WHERE id=?", (user_id,)
+    ).fetchone()
+    if not row:
+        return ''
+    val = row['webphone_ext'] if not isinstance(row, tuple) else row[0]
+    peer = _normalize_webphone_peer(val)
+    start, end = _webphone_peer_range()
+    if peer and peer.isdigit() and start <= int(peer) <= end:
+        return peer
+    picked = allocate_webphone_peer(exclude_id=user_id)
+    if not picked:
+        return ''
+    try:
+        db.execute(
+            "UPDATE users SET webphone_ext=? WHERE id=?", (picked, user_id)
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        return ''
+    return picked
 
 
 # ---------------------------------------------------------------------------
@@ -4229,6 +4281,8 @@ def get_me():
             'permissions': permissions,
             'permsConfigured': perms_configured,
             'extnumber': g.user['extnumber'] if 'extnumber' in g.user.keys() else None,
+            'webphone_ext': g.user['webphone_ext'] if 'webphone_ext' in g.user.keys() else None,
+            'webphone_configured': bool(os.environ.get('PHONE_PEER_SECRET', '')),
             'country': normalize_country(g.user['country']) if 'country' in g.user.keys() else '',
             'country_label': COUNTRY_LABELS.get(normalize_country(g.user['country'])) if 'country' in g.user.keys() else '',
             'category_id': category_id,
@@ -4277,40 +4331,37 @@ def my_send_quota():
 @app.route('/api/my/webphone-credential', methods=['GET'])
 @login_required
 def my_webphone_credential():
-    """Return the current user's SIP extension + shared peer secret so the
-    embedded webphone can auto-register (autoLogin) without a prior manual
-    login on the standalone phone page.
+    """Return the current user's local Asterisk peer + shared peer secret so
+    the embedded webphone auto-registers without a prior manual login on the
+    standalone phone page.
 
-    Only Asterisk-generated peers (the numeric PHONE_PEER_START..PHONE_PEER_END
-    range) can register. Any other stored value (e.g. a real phone number
-    imported into the extensions catalog) is replaced with a free Asterisk peer.
+    The registered account is users.webphone_ext (a numeric local WebRTC peer
+    in PHONE_PEER_START..PHONE_PEER_END), NOT users.extnumber (which is the
+    VOS3000 large number used by Infinity voice calls). A free peer is auto-
+    allocated on first use.
     """
     db = get_db()
     uid = g.user['id']
-    ext = _normalize_extnumber(g.user.get('extnumber') or '')
+    ext = _normalize_webphone_peer(g.user.get('webphone_ext') or '')
+    start, end = _webphone_peer_range()
 
-    if not _is_asterisk_peer(ext):
-        picked = _allocate_asterisk_peer(db, exclude_id=uid)
+    if not ext or not (start <= int(ext) <= end):
+        picked = allocate_webphone_peer(exclude_id=uid)
         if not picked:
             return jsonify({
                 'configured': False,
                 'reason': 'no_extension',
-                'message': 'Todas las extensiones Asterisk estan en uso; pida al administrador que amplie el rango.',
+                'message': 'Todas las extensiones del telefono web (' + str(start) + '-' + str(end) + ') estan en uso; pida al administrador que amplie el rango.',
             }), 409
         ext = picked
         try:
             db.execute(
-                "UPDATE users SET extnumber=? WHERE id=?",
+                "UPDATE users SET webphone_ext=? WHERE id=?",
                 (ext, uid),
             )
             db.commit()
         except Exception:
             db.rollback()
-        # Keep the management catalog consistent when it contains this peer.
-        try:
-            _extensions_mark_assigned(ext, uid, normalize_country(g.user.get('country') or ''))
-        except Exception:
-            pass
 
     secret = os.environ.get('PHONE_PEER_SECRET', '') or ''
     if not secret:
@@ -4525,7 +4576,7 @@ def list_users():
     base_select = """
         SELECT u.id, u.username, u.full_name, u.role, u.permissions, u.team_creator_id,
                u.is_active, u.created_at, u.updated_at,
-               u.last_login_ip, u.last_login_at, u.extnumber, u.country,
+               u.last_login_ip, u.last_login_at, u.extnumber, u.webphone_ext, u.country,
                u.category_id,
                c.name AS category_name, c.retention_days AS category_retention_days,
                tc.username AS team_creator_name, tc.full_name AS team_creator_fullname,
@@ -4690,9 +4741,13 @@ def create_user():
         if not extnumber:
             label = {'mx': 'Mexico', 'co': 'Colombia', 'pe': 'Peru', 'ar': 'Argentina'}.get(country, 'el pool')
             return jsonify({'error': f'No hay extensiones disponibles para {label}. Pida al administrador del sistema que agregue mas extensiones en Configuracion de Voz.'}), 409
+    # Pre-allocate a local webphone peer so every new account is immediately
+    # able to register the embedded phone. A full range leaves webphone_ext
+    # NULL (the admin backfill or lazy credential endpoint fills it later).
+    webphone_peer = allocate_webphone_peer() or None
     cur = db.execute(
-        "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, country, category_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (username, hash_password(password), full_name, role, team_creator_id, extnumber, country or None, category_id)
+        "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, webphone_ext, country, category_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (username, hash_password(password), full_name, role, team_creator_id, extnumber, webphone_peer, country or None, category_id)
     )
     new_user_id = cur.lastrowid
     EXPORTABLE_PASSWORDS[int(new_user_id)] = password
@@ -5027,9 +5082,12 @@ def _bulk_create_users_core(current_user, users, default_api_config_id, default_
             row_cat = resolve_category_id(u.get('category_id'))
             if row_cat is None:
                 row_cat = bulk_category_id
+            # Every bulk-created account also gets a local webphone peer when
+            # the range still has free ones (NULL once exhausted).
+            webphone_peer = allocate_webphone_peer() or None
             db.execute(
-                "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, country, category_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (username, hash_password(password), full_name, role, team_creator_id, extnumber, country or None, row_cat)
+                "INSERT INTO users (username, password_hash, full_name, role, team_creator_id, extnumber, webphone_ext, country, category_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (username, hash_password(password), full_name, role, team_creator_id, extnumber, webphone_peer, country or None, row_cat)
             )
             new_user_row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
             new_user_id = new_user_row['id']
@@ -8369,6 +8427,48 @@ def update_billing_settings():
     )
     db.commit()
     return jsonify({'message': 'Precio por SMS actualizado', 'sms_unit_price': price})
+
+
+@app.route('/api/admin/webphone-backfill', methods=['POST'])
+@admin_required
+def admin_webphone_backfill():
+    """Provision a local webphone peer for every existing account that lacks
+    one. Returns counts so the admin can see how many remain unassigned (when
+    the peer range is exhausted). Idempotent: accounts that already hold a
+    valid in-range peer are untouched.
+    """
+    db = get_db()
+    start, end = _webphone_peer_range()
+    rows = db.execute(
+        "SELECT id, webphone_ext FROM users WHERE is_active = 1 ORDER BY id"
+    ).fetchall()
+    assigned = 0
+    already = 0
+    failed = 0
+    failed_ids = []
+    for row in rows:
+        uid = row['id'] if not isinstance(row, tuple) else row[0]
+        val = row['webphone_ext'] if not isinstance(row, tuple) else row[1]
+        peer = _normalize_webphone_peer(val)
+        if peer and peer.isdigit() and start <= int(peer) <= end:
+            already += 1
+            continue
+        picked = ensure_webphone_peer(uid)
+        if picked:
+            assigned += 1
+        else:
+            failed += 1
+            failed_ids.append(uid)
+    return jsonify({
+        'message': 'Asignacion de extensiones de telefono web completada',
+        'total': len(rows),
+        'already_assigned': already,
+        'newly_assigned': assigned,
+        'unassigned': failed,
+        'unassigned_user_ids': failed_ids,
+        'peer_range': {'start': start, 'end': end},
+    })
+
 
 @app.route('/api/admin/user-usage', methods=['GET'])
 @manager_required

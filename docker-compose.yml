@@ -79,9 +79,9 @@ services:
       - TRUNK_PORT=${VOS3000_PORT:-5060}
       # Provider dial prefix: 52 / 0052 / empty (confirm with the line vendor)
       - OUTBOUND_PREFIX=${VOS3000_PREFIX:-}
-      # WebRTC peer/extension range: 50 extensions for 50 agents (1001-1050).
-      - PEER_START=1001
-      - PEER_END=1050
+      # WebRTC peer/extension range (must match PHONE_PEER_START/END in .env).
+      - PEER_START=${PHONE_PEER_START:-1001}
+      - PEER_END=${PHONE_PEER_END:-1050}
       # Shared initial secret for the web peers (set in .env)
       - PEER_SECRET=${PHONE_PEER_SECRET:-}
       - RECORD_DIR=/recordings
