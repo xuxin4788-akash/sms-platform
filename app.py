@@ -4214,6 +4214,64 @@ def my_send_quota():
     })
 
 
+@app.route('/api/my/webphone-credential', methods=['GET'])
+@login_required
+def my_webphone_credential():
+    """Return the current user's SIP extension + shared peer secret so the
+    embedded webphone can auto-register (autoLogin) without a prior manual
+    login on the standalone phone page. Auto-assigns a free extension for the
+    user's country when they have none yet.
+    """
+    db = get_db()
+    uid = g.user['id']
+    country = (
+        normalize_country(g.user.get('country') or '')
+        or _leader_country(db, g.user.get('team_creator_id'))
+        or 'mx'
+    )
+    ext = _normalize_extnumber(g.user.get('extnumber') or '')
+
+    if not ext:
+        try:
+            picked = allocate_extension(exclude_id=uid, country=country)
+        except Exception:
+            picked = ''
+        if not picked:
+            return jsonify({
+                'configured': False,
+                'reason': 'no_extension',
+                'message': 'No hay extensiones SIP libres; pida al administrador que agregue mas.',
+            }), 409
+        ext = _normalize_extnumber(picked)
+        try:
+            db.execute(
+                "UPDATE users SET extnumber=?, country=? WHERE id=?",
+                (ext, country, uid),
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+        try:
+            _extensions_mark_assigned(ext, uid, country)
+        except Exception:
+            pass
+
+    secret = os.environ.get('PHONE_PEER_SECRET', '') or ''
+    if not secret:
+        return jsonify({
+            'configured': False,
+            'reason': 'no_secret',
+            'extension': ext,
+            'message': 'El servidor no tiene configurado el secreto SIP (PHONE_PEER_SECRET).',
+        }), 503
+
+    return jsonify({
+        'configured': True,
+        'extension': ext,
+        'secret': secret,
+    })
+
+
 # ============================================================
 # User Categories (clasificacion de empleados + retencion de contactos)
 # ============================================================

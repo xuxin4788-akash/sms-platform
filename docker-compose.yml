@@ -47,6 +47,9 @@ services:
       # Base public URL for payment short links (e.g. https://test.pagoserve.com).
       # Falls back to the request host when empty.
       - SHORT_LINK_BASE_URL=${SHORT_LINK_BASE_URL:-}
+      # Shared SIP peer secret so the webphone can auto-register without a
+      # manual login (served to the softphone via /api/my/webphone-credential).
+      - PHONE_PEER_SECRET=${PHONE_PEER_SECRET:-}
     volumes:
       - app-logs:/app/logs
       - recordings:/recordings:ro

@@ -648,19 +648,47 @@
     });
   }
 
-  // Auto-login with remembered credentials.
+  // Auto-login: remembered credentials first, otherwise ask the platform
+  // backend to hand us this user's SIP extension + shared peer secret so the
+  // embedded iframe can register without a prior manual phone-page login.
   (function autoLogin() {
+    var saved = null;
     try {
       var raw = localStorage.getItem(STORE_KEY);
-      if (raw) {
-        var saved = JSON.parse(raw);
-        if (saved && saved.ext && saved.pwd) {
-          extInput.value = saved.ext;
-          pwdInput.value = saved.pwd;
-          connect(saved.ext, saved.pwd);
-        }
+      if (raw) { saved = JSON.parse(raw); }
+    } catch (e) { saved = null; }
+
+    if (saved && saved.ext && saved.pwd) {
+      extInput.value = saved.ext;
+      pwdInput.value = saved.pwd;
+      connect(saved.ext, saved.pwd);
+      return;
+    }
+
+    // No stored credentials: fetch server-provided credential (same-origin,
+    // carries the platform session cookie).
+    fetch("/api/my/webphone-credential", {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { "Accept": "application/json" }
+    }).then(function (res) {
+      return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+    }).then(function (r) {
+      var d = r.data || {};
+      if (r.ok && d.configured && d.extension && d.secret) {
+        extInput.value = d.extension;
+        pwdInput.value = d.secret;
+        try {
+          localStorage.setItem(STORE_KEY, JSON.stringify({ ext: d.extension, pwd: d.secret }));
+        } catch (e) { /* storage blocked */ }
+        connect(d.extension, d.secret);
+      } else {
+        plog("credencial webphone no disponible: " + (d.reason || "error") + " (" + (d.message || "") + ")");
+        notifyParent({ type: "webphone-credential-error", reason: String(d.reason || "error"), message: String(d.message || "") });
       }
-    } catch (e) { /* corrupt storage */ }
+    }).catch(function (err) {
+      plog("fallo al pedir credencial webphone: " + (err && err.message ? err.message : err));
+    });
   })();
 
   // ---- Parent-window control (contact page click-to-call) ----------------
