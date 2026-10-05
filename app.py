@@ -3549,7 +3549,7 @@ def allocate_extension(exclude_id=None, country=None):
 #   * users.extnumber = VOS3000 large number, used by the Infinity voice
 #     click-to-call feature (provider-side SIP).
 #   * users.webphone_ext = a local Asterisk WebRTC endpoint from the numeric
-#     peer range (default 1001-2000, mirrors the asterisk container's
+#     peer range (default 1001-1200, mirrors the asterisk container's
 #     PEER_START..PEER_END). The browser registers this over WSS; Asterisk
 #     then routes the call out through its VOS3000 trunk.
 # All local peers authenticate with the single shared PHONE_PEER_SECRET.
@@ -3567,7 +3567,7 @@ def _webphone_peer_range():
         except (TypeError, ValueError):
             return default
     start = _int('PHONE_PEER_START', 1001)
-    end = _int('PHONE_PEER_END', 2000)
+    end = _int('PHONE_PEER_END', 1200)
     if end < start:
         end = start
     return start, end

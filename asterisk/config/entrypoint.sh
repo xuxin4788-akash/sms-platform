@@ -8,7 +8,7 @@ CONF=/etc/asterisk
 
 : "${HTTP_PORT:=8089}"
 : "${RTP_START:=10000}"
-: "${RTP_END:=12000}"
+: "${RTP_END:=10800}"
 : "${STUN_SERVER:=stun.l.google.com:19302}"
 : "${EXTERNAL_IP:=$(curl -s --max-time 5 ifconfig.me || echo '')}"
 : "${LOCAL_NET:=172.16.0.0/12}"
@@ -17,7 +17,7 @@ CONF=/etc/asterisk
 : "${OUTBOUND_PREFIX:=}"
 : "${PEER_SECRET:=}"
 : "${PEER_START:=1001}"
-: "${PEER_END:=2000}"
+: "${PEER_END:=1200}"
 # Where MixMonitor writes call recordings (shared volume, see compose).
 : "${RECORD_DIR:=/recordings}"
 

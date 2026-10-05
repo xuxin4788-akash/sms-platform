@@ -43,8 +43,8 @@ nginx (contenedor existente)  ── proxy /ws ──►  Asterisk :8089 (conten
 1. En `.env` define `PHONE_PEER_SECRET` (contraseña inicial de las extensiones)
    y, si aplica, `VOS3000_HOST`, `VOS3000_PORT`, `VOS3000_PREFIX`.
 2. Reglas de firewall / grupo de seguridad:
-   - Entrada UDP `10000-12000` en este servidor (medio navegador ↔ Asterisk,
-     rango para hasta ~1000 agentes/llamadas concurrentes).
+   - Entrada UDP `10000-10800` en este servidor (medio navegador ↔ Asterisk,
+     rango para hasta ~200 agentes/llamadas concurrentes).
    - Entrada UDP `5060` (señalización de la troncal).
    - En el servidor VOS3000: entrada UDP `5060` y UDP `10000-20000`,
      origen restringido a `47.87.38.52/32`.
@@ -72,7 +72,7 @@ extensión (1001) y la contraseña, y marcar **7777** para la prueba de eco.
 
 ## Asignación de agentes
 
-Ver `static/phone/ASIGNACION.md`. El contenedor crea 1001-2000 (1000 extensiones) automáticamente.
+Ver `static/phone/ASIGNACION.md`. El contenedor crea 1001-1200 (200 extensiones) automáticamente.
 
 ## Pendiente operativo
 

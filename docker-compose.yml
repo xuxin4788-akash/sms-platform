@@ -51,10 +51,10 @@ services:
       # manual login (served to the softphone via /api/my/webphone-credential).
       - PHONE_PEER_SECRET=${PHONE_PEER_SECRET:-}
       # Asterisk-generated peer range; the credential endpoint must only serve
-      # extensions that actually exist as Asterisk peers (defaults 1001-2000,
-      # i.e. 1000 local phone extensions).
+      # extensions that actually exist as Asterisk peers (defaults 1001-1200,
+      # i.e. 200 local phone extensions).
       - PHONE_PEER_START=${PHONE_PEER_START:-1001}
-      - PHONE_PEER_END=${PHONE_PEER_END:-2000}
+      - PHONE_PEER_END=${PHONE_PEER_END:-1200}
     volumes:
       - app-logs:/app/logs
       - recordings:/recordings:ro
@@ -72,9 +72,10 @@ services:
     environment:
       - HTTP_PORT=8089
       # RTP media ports must cover the peak number of concurrent calls. With
-      # 1000 local extensions we publish a 2000-port range (10000-12000).
+      # 200 local extensions we publish an 800-port range (10000-10800), ample
+      # headroom above the configured peer count.
       - RTP_START=10000
-      - RTP_END=12000
+      - RTP_END=10800
       - STUN_SERVER=${STUN_SERVER:-stun.l.google.com:19302}
       - EXTERNAL_IP=${PHONE_EXTERNAL_IP:-47.87.38.52}
       - LOCAL_NET=${PHONE_LOCAL_NET:-172.16.0.0/12}
@@ -84,7 +85,7 @@ services:
       - OUTBOUND_PREFIX=${VOS3000_PREFIX:-}
       # WebRTC peer/extension range (must match PHONE_PEER_START/END in .env).
       - PEER_START=${PHONE_PEER_START:-1001}
-      - PEER_END=${PHONE_PEER_END:-2000}
+      - PEER_END=${PHONE_PEER_END:-1200}
       # Shared initial secret for the web peers (set in .env)
       - PEER_SECRET=${PHONE_PEER_SECRET:-}
       - RECORD_DIR=/recordings
@@ -92,8 +93,8 @@ services:
       - recordings:/recordings
     ports:
       # Browser <-> Asterisk media (published; opened in the cloud firewall).
-      # 2000 ports to support up to ~1000 concurrent WebRTC calls.
-      - "10000-12000:10000-12000/udp"
+      # 800 ports (10000-10800) for up to ~200 concurrent WebRTC calls.
+      - "10000-10800:10000-10800/udp"
       # SIP trunk signaling/media toward VOS3000 (outbound + inbound RTP)
       - "5060:5060/udp"
     deploy:
