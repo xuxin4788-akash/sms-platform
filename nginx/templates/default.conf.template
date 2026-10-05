@@ -16,6 +16,12 @@ upstream app_server {
     server app:5000;
 }
 
+# Docker's embedded DNS. Used with a variable proxy_pass so nginx resolves the
+# Asterisk host at REQUEST time instead of at startup. Without this, if the
+# asterisk container is not running when nginx starts, nginx aborts with
+# "[emerg] host not found in upstream 'asterisk'" and the whole site goes down.
+resolver 127.0.0.11 valid=30s ipv6=off;
+
 # HTTP (port 80): serve ACME challenges, redirect everything else to HTTPS
 server {
     listen 80;
@@ -94,7 +100,9 @@ server {
     # WebRTC softphone: WSS -> Asterisk embedded HTTP/WS transport.
     # SIP.js connects to wss://DOMAIN/ws; upgrade headers are required.
     location /ws {
-        proxy_pass http://asterisk:8089/ws;
+        # Variable target forces runtime DNS resolution via the resolver above.
+        set $asterisk_upstream "asterisk:8089";
+        proxy_pass http://$asterisk_upstream/ws;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
