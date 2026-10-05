@@ -43,6 +43,8 @@ if "<queries>" not in text:
 permissions = [
     '<uses-permission android:name="android.permission.INTERNET" />',
     '<uses-permission android:name="android.permission.READ_CONTACTS" />',
+    '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
+    '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />',
     '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />',
 ]
 for perm in permissions:
