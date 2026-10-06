@@ -520,9 +520,43 @@
   }
 
   /* ---------------- Connect / register ---------------- */
+  var REGISTER_TIMEOUT_MS = 15000; // no registered/failed event within this -> stale
+  var MAX_CONNECT_ATTEMPTS = 5;
+  var registerWatchdog = null;
+  var connectAttempts = 0;
+  var pendingCred = null;          // {ext,pwd} retained for auto re-connect
+
+  function clearRegisterWatchdog() {
+    if (registerWatchdog) { clearTimeout(registerWatchdog); registerWatchdog = null; }
+  }
+
+  function scheduleReconnect(cause) {
+    clearRegisterWatchdog();
+    stopUA();
+    busy = false;
+    loginBtn.disabled = false;
+    if (!pendingCred || connectAttempts >= MAX_CONNECT_ATTEMPTS) {
+      connectAttempts = 0;
+      setStatus("No se pudo registrar: " + cause, false);
+      notifyParent({ type: "webphone-registration-failed", cause: String(cause) });
+      showLogin();
+      return;
+    }
+    var attempt = connectAttempts;
+    var backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 16000); // 1s,2s,4s,8s,16s
+    setStatus("Reintentando registro (" + attempt + "/" + MAX_CONNECT_ATTEMPTS + ")...", false);
+    plog("registro sin respuesta (" + cause + "); reintento " + attempt + " en " + backoffMs + "ms");
+    setTimeout(function () {
+      if (registered || ua) { return; }       // recovered meanwhile
+      connect(pendingCred.ext, pendingCred.pwd);
+    }, backoffMs);
+  }
+
   function connect(extension, password) {
     if (busy) { return; }
     busy = true;
+    connectAttempts += 1;
+    pendingCred = { ext: String(extension || ""), pwd: password };
     myExtension = String(extension || "");
     showError("");
     loginBtn.disabled = true;
@@ -549,6 +583,8 @@
     }
 
     ua.on("registered", function () {
+      clearRegisterWatchdog();
+      connectAttempts = 0;
       busy = false;
       registered = true;
       setStatus("Conectado · " + extension, true);
@@ -562,12 +598,23 @@
 
     ua.on("registrationFailed", function (cause) {
       console.error("[phone] registrationFailed, cause =", cause);
+      clearRegisterWatchdog();
       registered = false;
       showError("No se pudo registrar la extensión (" + cause + "). Revisa número y contraseña.");
-      setStatus("Error de registro: " + cause, false);
-      notifyParent({ type: "webphone-registration-failed", cause: String(cause) });
-      stopUA();
-      showLogin();
+      // A rejected credential (401/403) will never succeed by retrying; stop.
+      var c = String(cause || "");
+      if (/\b(401|403)\b|Rejection|forbidden|unauthor/i.test(c)) {
+        connectAttempts = 0;
+        setStatus("Error de registro: " + cause, false);
+        notifyParent({ type: "webphone-registration-failed", cause: c });
+        stopUA();
+        busy = false;
+        loginBtn.disabled = false;
+        showLogin();
+        return;
+      }
+      // Transient failure -> bounded auto re-connect.
+      scheduleReconnect(c);
     });
 
     ua.on("unregistered", function () { registered = false; setStatus("Desconectado", false); notifyParent({ type: "webphone-unregistered" }); });
@@ -584,9 +631,19 @@
       attachSession(session);
       session.accept({ media: { render: { remote: remoteAudio } } });
     });
+
+    // Guard against a silent stall: SIP.js 0.15 emits neither 'registered' nor
+    // 'registrationFailed' when REGISTER is dropped after the WSS opens. Without
+    // this the UA hangs forever in 'registrando' and queued calls never fire.
+    clearRegisterWatchdog();
+    registerWatchdog = setTimeout(function () {
+      if (registered) { return; }
+      scheduleReconnect("timeout");
+    }, REGISTER_TIMEOUT_MS);
   }
 
   function stopUA() {
+    clearRegisterWatchdog();
     if (ua) {
       try { ua.stop(); } catch (e) { /* noop */ }
       ua = null;
@@ -595,8 +652,12 @@
 
   function logout() {
     stopUA();
+    pendingCred = null;
+    connectAttempts = 0;
     try { localStorage.removeItem(STORE_KEY); } catch (e) { /* noop */ }
     pwdInput.value = "";
+    busy = false;
+    loginBtn.disabled = false;
     setStatus("Desconectado", false);
     showLogin();
   }
@@ -608,6 +669,7 @@
     if (busy) { return; }
     if (!/^\d{2,6}$/.test(ext)) { showError("Ingresa una extensión válida (solo números)."); return; }
     if (!pwd) { showError("Ingresa la contraseña de la extensión."); return; }
+    connectAttempts = 0; // fresh explicit gesture -> full retry budget
     connect(ext, pwd);
   });
 
