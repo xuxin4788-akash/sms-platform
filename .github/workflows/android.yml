@@ -52,6 +52,11 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Default installs 'tools platform-tools'; newer runners no longer
+          # publish the legacy 'tools' package and the step fails
+          # ('Failed to find package tools'). platform-tools is all gradle needs.
+          packages: platform-tools
 
       - name: Install mobile dependencies
         working-directory: mobile
