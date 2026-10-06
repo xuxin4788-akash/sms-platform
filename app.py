@@ -12334,25 +12334,23 @@ def webphone_statistics():
                  f"THEN 1 ELSE 0 END),0) AS failed, "
                  f"COALESCE(SUM(CASE WHEN r.outcome='answered' THEN r.duration ELSE 0 END),0) AS total_duration, "
                  f"COALESCE(SUM(r.cost),0) AS cost, "
-                 f"MAX(CASE WHEN r.outcome='answered' THEN COALESCE(r.price,0) ELSE 0 END) AS unit_price, "
+                 f"MAX(CASE WHEN r.outcome='answered' THEN COALESCE(r.price, 0.0) ELSE 0.0 END) AS unit_price, "
                  f"MAX(r.initiated_at) AS last_active_at "
                  f"FROM webphone_records r LEFT JOIN users u ON u.id=r.created_by "
                  f"LEFT JOIN role_permissions rp ON rp.role=u.role "
-                 f"WHERE {where_sql} GROUP BY r.created_by, u.id, u.username, u.full_name, u.role, rp.label")
-    full_where = (' AND '.join(day_where)).replace('date(r.initiated_at)', 'date(d.initiated_at)')
-    inner_filtered = inner_sql
-    # filter date inside the grouped query by wrapping
-    cnt_inner = (f"SELECT user_id FROM ({inner_sql}) d WHERE {full_where}")
-    account_total_sql = f"SELECT COUNT(*) AS c FROM ({cnt_inner}) d"
-    account_total = db.execute(account_total_sql, list(scope_params) + day_params).fetchone()['c']
+                 f"WHERE {where_sql} AND ({(' AND '.join(day_where))}) "
+                 f"GROUP BY r.created_by, u.id, u.username, u.full_name, u.role, rp.label")
+    full_params = list(scope_params) + day_params
+    # filter date inside the grouped query (on the underlying r rows)
+    account_total_sql = f"SELECT COUNT(*) AS c FROM ({inner_sql}) d"
+    account_total = db.execute(account_total_sql, full_params).fetchone()['c']
 
     page = request.args.get('page', 1, type=int)
     per_page = min(request.args.get('per_page', 25, type=int), 200)
     offset = (page - 1) * per_page
-    rows_sql = (f"SELECT * FROM ({inner_sql}) d WHERE {full_where} "
+    rows_sql = (f"SELECT * FROM ({inner_sql}) d "
                 f"ORDER BY d.total_calls DESC, d.user_id ASC LIMIT ? OFFSET ?")
-    rows = db.execute(rows_sql,
-                      list(scope_params) + day_params + [per_page, offset]).fetchall()
+    rows = db.execute(rows_sql, full_params + [per_page, offset]).fetchall()
     total_cost = db.execute(
         f"SELECT COALESCE(SUM(cost),0) AS s FROM webphone_records r WHERE {where_sql}",
         scope_params).fetchone()['s'] or 0
