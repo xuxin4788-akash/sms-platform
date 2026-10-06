@@ -137,3 +137,29 @@ jobs:
           path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+      # Attach the build artifact to a rolling GitHub Release so the APK gets a
+      # stable, PUBLIC download URL (no login needed) that points to the latest
+      # build:
+      #   https://github.com/<owner>/<repo>/releases/latest/download/sms-marketing-android.apk
+      - name: Publish APK to GitHub Release (latest)
+        if: ${{ env.BUILD_TYPE == 'release' && env.HAS_SIGNING == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -exo pipefail
+          APK=mobile/android/app/build/outputs/apk/release/app-release.apk
+          cp "$APK" sms-marketing-android.apk  # stable renamed asset for the direct link
+          TAG="android-latest"
+          # Make sure a tag+release exists (create if missing).
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "SMS Marketing Android (latest)" --notes "Automatizado por CI. Ultima build valida de la app Android." || true
+          fi
+          # Upload the asset; the earlier copy is unlinked so the stable URL
+          # always resolves to this run's APK.
+          gh release upload "$TAG" sms-marketing-android.apk --clobber >/dev/null
+
+      - name: Print direct APK download link
+        if: ${{ env.BUILD_TYPE == 'release' && env.HAS_SIGNING == 'true' }}
+        run: |
+          echo "APK_DIRECT_LINK=https://github.com/${{ github.repository }}/releases/latest/download/sms-marketing-android.apk"
