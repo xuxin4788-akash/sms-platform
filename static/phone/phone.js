@@ -434,7 +434,19 @@
       } catch (e) { /* monitor optional */ }
     }
 
+    // No-response watchdog: if the INVITE produces neither progress nor a final
+    // outcome within this window, the server/relay dropped it. Fail visibly and
+    // end the session instead of leaving the caller stuck in 'Llamando' forever.
+    var INVITE_TIMEOUT_MS = 65000;
+    var inviteTimer = setTimeout(function () {
+      if (endReported) { return; }
+      reportEnd("failed", "sin respuesta del servidor (timeout)", "Sin respuesta");
+      try { session.cancel(); } catch (e) { try { session.terminate(); } catch (e2) { /* noop */ } }
+    }, INVITE_TIMEOUT_MS);
+    function clearInviteTimer() { if (inviteTimer) { clearTimeout(inviteTimer); inviteTimer = null; } }
+
     session.on("progress", function (response) {
+      clearInviteTimer(); // got a real provisional response -> no longer stalling
       callState.textContent = "Llamando...";
       // If the provider sends early media (183 with an SDP answer), its own
       // Keep the local ringback running through 180/183: this trunk signals
@@ -469,6 +481,7 @@
     function reportEnd(kind, reason, callStateText) {
       if (endReported) { return; }
       endReported = true;
+      clearInviteTimer();
       if (callState) { callState.textContent = callStateText; }
       notifyParent({ type: "webphone-session-ended", outcome: kind, reason: reason,
         number: callContext ? callContext.number : "", extension: myExtension, duration: connectedSeconds() });

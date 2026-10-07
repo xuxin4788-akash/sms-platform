@@ -4,6 +4,10 @@ type=endpoint
 transport=transport-ws
 context=from-internal
 disallow=all
+; Opus MUST be first for WebRTC: browsers negotiate Opus by default and often
+; offer nothing else. Without a common codec Asterisk cannot process the
+; INVITE's SDP and the call hangs with no response after ICE completes.
+allow=opus
 allow=ulaw
 allow=alaw
 auth=__EXT__

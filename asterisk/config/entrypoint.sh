@@ -42,6 +42,8 @@ render() {
         -e "s|__TRUNK_HOST__|${TRUNK_HOST}|g" \
         -e "s|__TRUNK_PORT__|${TRUNK_PORT}|g" \
         -e "s|__OUTBOUND_PREFIX__|${OUTBOUND_PREFIX}|g" \
+        -e "s|__TRUNK_HOST__|${TRUNK_HOST}|g" \
+        -e "s|__TRUNK_PORT__|${TRUNK_PORT}|g" \
         -e "s|__RECORD_DIR__|${RECORD_DIR}|g" \
         "$1" > "$2"
 }
