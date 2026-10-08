@@ -16,6 +16,11 @@ callerid="Agente __EXT__" <__EXT__>
 direct_media=no
 ice_support=yes
 media_use_received_transport=yes
+; Advertise the server's PUBLIC IP as the media address. Without this,
+; ICE/local_net matching makes Asterisk hand the browser the Docker container
+; IP (e.g. 172.18.0.2), which is unroutable from the outside -> signaling
+; works (via nginx) but RTP/DTLS never connects -> no media / no echo.
+media_address=__EXTERNAL_IP__
 webrtc=yes
 ; Let Asterisk generate and manage the self-signed DTLS cert itself. This
 ; guarantees the SDP fingerprint always matches the cert used on the DTLS

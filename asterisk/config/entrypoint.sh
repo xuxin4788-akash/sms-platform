@@ -68,7 +68,9 @@ render "$SRC/extensions.conf" "$CONF/extensions.conf"
 render "$SRC/pjsip.conf.head" "$CONF/pjsip.conf"
 for n in $(seq "$PEER_START" "$PEER_END"); do
     ext=$(printf '%04d' "$n")
-    sed -e "s|__EXT__|${ext}|g" -e "s|__PEER_SECRET__|${PEER_SECRET}|g" \
+    sed -e "s|__EXT__|${ext}|g" \
+        -e "s|__PEER_SECRET__|${PEER_SECRET}|g" \
+        -e "s|__EXTERNAL_IP__|${EXTERNAL_IP}|g" \
         "$SRC/pjsip.peer.template" >> "$CONF/pjsip.conf"
 done
 echo "[entrypoint] Generated peers ${PEER_START}-${PEER_END}, trunk=${TRUNK_HOST}:${TRUNK_PORT}, prefix='${OUTBOUND_PREFIX}'"
