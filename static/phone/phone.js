@@ -109,7 +109,12 @@
       try {
         pc.addEventListener("track", function (ev) {
           if (ev.track && ev.track.kind === "audio") {
-            addRemoteTrack(ev.track);
+            var t = ev.track;
+            plog("pista remota entrada: id=" + t.id + " muted=" + t.muted +
+                 " readyState=" + t.readyState + " enabled=" + t.enabled);
+            addRemoteTrack(t);
+            t.addEventListener("unmute", function () { plog("pista remota -> unmute (con audio)"); });
+            t.addEventListener("mute", function () { plog("pista remota -> mute (sin audio)"); });
           }
         });
       } catch (e) { /* noop */ }
@@ -316,6 +321,77 @@
     }
   }
 
+  /* ---------------- Live media stats into the debug card ---------------- */
+  // Uses the browser's own RTCPeerConnection.getStats() so the numbers are what
+  // the engine really sees — no tcpdump. Logs one compact line per tick with:
+  //   in: inbound audio packets/bytes/lost/jitter + codec
+  //   out: outbound audio packets/bytes + codec
+  //   path: selected ICE candidate pair (which local/remote addresses carry RTP)
+  var mediaStatsTimer = null;
+  function fmtKb(n) {
+    n = Number(n) || 0;
+    if (n >= 1e6) { return (n / 1e6).toFixed(2) + "MB"; }
+    if (n >= 1e3) { return (n / 1e3).toFixed(1) + "KB"; }
+    return String(n) + "B";
+  }
+  function dumpMediaStats(pc) {
+    if (!pc || !pc.getStats) { return; }
+    try {
+      pc.getStats().then(function (stats) {
+        var inbound = null, outbound = null, selectedPair = null;
+        var codecs = {};
+        stats.forEach(function (rep) {
+          if (rep.type === "codec" && rep.payloadType != null && rep.mimeType) {
+            codecs[rep.payloadType] = String(rep.mimeType).replace("audio/", "");
+          }
+          if (rep.type === "inbound-rtp" && rep.kind === "audio" && !inbound) { inbound = rep; }
+          if (rep.type === "outbound-rtp" && rep.kind === "audio" && !outbound) { outbound = rep; }
+          if (rep.type === "candidate-pair" &&
+              (rep.selected || rep.nominated) && rep.state === "succeeded" && !selectedPair) {
+            selectedPair = rep;
+          }
+        });
+        var codecName = function (r) {
+          if (!r) { return "-"; }
+          return codecs[r.codecId] ||
+                 (r.mimeType ? String(r.mimeType).replace("audio/", "") : "?");
+        };
+        var inLine = inbound
+          ? ("IN pkt=" + (inbound.packetsReceived || 0) +
+             " " + fmtKb(inbound.bytesReceived) +
+             " lost=" + (inbound.packetsLost || 0) +
+             " jit=" + Math.round((inbound.jitter || 0) * 1000) + "ms" +
+             " [" + codecName(inbound) + "]")
+          : "IN (sin inbound-rtp)";
+        var outLine = outbound
+          ? ("OUT pkt=" + (outbound.packetsSent || 0) +
+             " " + fmtKb(outbound.bytesSent) +
+             " [" + codecName(outbound) + "]")
+          : "OUT (sin outbound-rtp)";
+        var pathLine = "path=?";
+        if (selectedPair) {
+          var local = stats.get(selectedPair.localCandidateId);
+          var remote = stats.get(selectedPair.remoteCandidateId);
+          pathLine = "path=" +
+            (local ? (local.candidateType + ":" + (local.address || local.ip) + ":" + local.port) : "?") +
+            " -> " +
+            (remote ? (remote.candidateType + ":" + (remote.address || remote.ip) + ":" + remote.port) : "?");
+        }
+        plog("[media] " + inLine + " | " + outLine);
+        plog("[media] " + pathLine);
+      }).catch(function (e) { plog("getStats fallo: " + (e && e.message)); });
+    } catch (e) { /* noop */ }
+  }
+  function startMediaStats(pc) {
+    stopMediaStats();
+    if (!pc) { return; }
+    dumpMediaStats(pc);
+    mediaStatsTimer = setInterval(function () { dumpMediaStats(pc); }, 3000);
+  }
+  function stopMediaStats() {
+    if (mediaStatsTimer) { clearInterval(mediaStatsTimer); mediaStatsTimer = null; }
+  }
+
   /* ---------------- Force the remote <audio> to actually play ---------------- */
   function forceRemotePlay() {
     try {
@@ -467,6 +543,14 @@
       bindLocalMedia();
       monitorRemoteTrack();
       setTimeout(monitorRemoteTrack, 800);
+      // Begin live getStats() reporting into the debug card. Retry shortly because
+      // the PeerConnection handle may lag the accepted event by a tick.
+      var pc0 = session.sessionDescriptionHandler && session.sessionDescriptionHandler.peerConnection;
+      if (pc0) { startMediaStats(pc0); }
+      setTimeout(function () {
+        var pc1 = session.sessionDescriptionHandler && session.sessionDescriptionHandler.peerConnection;
+        if (pc1 && !mediaStatsTimer) { startMediaStats(pc1); }
+      }, 500);
       notifyParent({ type: "webphone-answer", number: callContext ? callContext.number : "", extension: myExtension });
     });
     function failInfo(response, cause) {
@@ -513,6 +597,7 @@
     stopRingback();
     stopMicMeter();
     stopInboundHud();
+    stopMediaStats();
     try { remoteAudio.srcObject = null; } catch (e) { /* noop */ }
     remoteStream = null;
     lastRemoteTrack = null;
