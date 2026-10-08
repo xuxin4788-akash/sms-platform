@@ -70,6 +70,18 @@
 
     <footer class="phone-footer">Solo en navegadores compatibles con WebRTC (Chrome/Edge).</footer>
   </main>
-  <script src="phone.js?v=webphone9"></script>
+
+  <!-- On-page debug card for the standalone page: open with ?debug=1 -->
+  <div id="wp-debug-card" hidden>
+    <div class="wp-debug-head">
+      <span>WebPhone debug</span>
+      <div>
+        <button type="button" id="wp-debug-clear">Limpiar</button>
+        <button type="button" id="wp-debug-close">x</button>
+      </div>
+    </div>
+    <pre id="wp-debug-log"></pre>
+  </div>
+  <script src="phone.js?v=webphone10"></script>
 </body>
 </html>

@@ -27,13 +27,34 @@
   // floating debug card so a failed invite is visible without opening DevTools
   // against the iframe. Defined before use; notifyParent is declared later but
   // these helpers only call it asynchronously (hoisted function is available).
+  // On-page debug card (standalone page only, enabled via ?debug=1).
+  var standaloneDebug = /(^|[?&])debug=1(&|$)/.test(location.search);
+  function writeOnPage(msg) {
+    try {
+      var box = document.getElementById("wp-debug-log");
+      if (!box) { return; }
+      box.appendChild(document.createTextNode(String(msg) + "\n"));
+      box.scrollTop = box.scrollHeight;
+    } catch (e) { /* noop */ }
+  }
   function plog(msg) {
     try {
       if (window.parent && window.parent !== window) {
         window.parent.postMessage({ source: "webphone", type: "webphone-debug", message: String(msg) }, "*");
       }
+      if (standaloneDebug) { writeOnPage(msg); }
       console.log("[phone]", msg);
     } catch (e) { /* noop */ }
+  }
+  function initStandaloneDebug() {
+    if (!standaloneDebug) { return; }
+    var card = document.getElementById("wp-debug-card");
+    var box = document.getElementById("wp-debug-log");
+    if (card) { card.hidden = false; }
+    var clearBtn = document.getElementById("wp-debug-clear");
+    var closeBtn = document.getElementById("wp-debug-close");
+    if (clearBtn && box) { clearBtn.addEventListener("click", function () { box.textContent = ""; }); }
+    if (closeBtn && card) { closeBtn.addEventListener("click", function () { card.hidden = true; }); }
   }
   window.addEventListener("error", function (ev) {
     plog("window.error: " + (ev && ev.message) + " @ " + (ev && ev.filename) + ":" + (ev && ev.lineno));
@@ -885,6 +906,9 @@
       plog("fallo al pedir credencial webphone: " + (err && err.message ? err.message : err));
     });
   }
+
+  // Show the on-page debug card before auto-login so early logs are captured.
+  initStandaloneDebug();
 
   // Auto-login: remembered credentials first, otherwise ask the platform
   // backend to hand us this user's SIP extension + shared peer secret.
