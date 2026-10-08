@@ -382,9 +382,24 @@
       }).catch(function (e) { plog("getStats fallo: " + (e && e.message)); });
     } catch (e) { /* noop */ }
   }
+  // Log the remote (Asterisk) SDP media address + ICE candidates so we can see
+  // exactly what media endpoint the server advertised to the browser.
+  function dumpRemoteSdp(pc) {
+    try {
+      var rd = pc.remoteDescription;
+      if (!rd || !rd.sdp) { plog("[sdp] sin remoteDescription"); return; }
+      var cLines = rd.sdp.match(/^c=IN.*$/gm) || [];
+      var mLine = rd.sdp.match(/^m=audio.*$/gm) || [];
+      var cands = (rd.sdp.match(/^a=candidate:.*$/gm) || []).slice(0, 6);
+      plog("[sdp] Asterisk media -> " + (cLines.join(" ; ") || "(sin c line)"));
+      plog("[sdp] m=audio -> " + (mLine.join(" ; ") || "(sin m=audio)"));
+      if (cands.length) { plog("[sdp] candidate remotos:\n" + cands.join("\n")); }
+    } catch (e) { plog("dumpRemoteSdp fallo: " + (e && e.message)); }
+  }
   function startMediaStats(pc) {
     stopMediaStats();
     if (!pc) { return; }
+    dumpRemoteSdp(pc);
     dumpMediaStats(pc);
     mediaStatsTimer = setInterval(function () { dumpMediaStats(pc); }, 3000);
   }
