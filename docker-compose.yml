@@ -83,6 +83,11 @@ services:
       - TRUNK_PORT=${VOS3000_PORT:-5060}
       # Provider dial prefix: 52 / 0052 / empty (confirm with the line vendor)
       - OUTBOUND_PREFIX=${VOS3000_PREFIX:-}
+      # Optional second IP trunk (LAN #2). TRUNK2_HOST empty = feature off.
+      - TRUNK2_HOST=${TRUNK2_HOST:-}
+      - TRUNK2_PORT=${TRUNK2_PORT:-5060}
+      - TRUNK2_PREFIX=${TRUNK2_PREFIX:-}
+      - TRUNK2_OUTBOUND_PREFIX=${TRUNK2_OUTBOUND_PREFIX:-}
       # WebRTC peer/extension range (must match PHONE_PEER_START/END in .env).
       - PEER_START=${PHONE_PEER_START:-1001}
       - PEER_END=${PHONE_PEER_END:-1200}

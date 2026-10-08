@@ -15,6 +15,13 @@ CONF=/etc/asterisk
 : "${TRUNK_HOST:=43.112.27.24}"
 : "${TRUNK_PORT:=5060}"
 : "${OUTBOUND_PREFIX:=}"
+# Optional second IP trunk (LAN #2). Enabled only by setting TRUNK2_HOST.
+: "${TRUNK2_HOST:=}"
+: "${TRUNK2_PORT:=5060}"
+# Route rule: numbers whose OUTBOUND-prefixed destination starts with this go to
+# trunk-lan2; empty = everything stays on trunk-vos3000 (backward compatible).
+: "${TRUNK2_PREFIX:=}"
+: "${TRUNK2_OUTBOUND_PREFIX:=}"
 : "${PEER_SECRET:=}"
 : "${PEER_START:=1001}"
 : "${PEER_END:=1200}"
@@ -44,6 +51,10 @@ render() {
         -e "s|__OUTBOUND_PREFIX__|${OUTBOUND_PREFIX}|g" \
         -e "s|__TRUNK_HOST__|${TRUNK_HOST}|g" \
         -e "s|__TRUNK_PORT__|${TRUNK_PORT}|g" \
+        -e "s|__TRUNK2_HOST__|${TRUNK2_HOST}|g" \
+        -e "s|__TRUNK2_PORT__|${TRUNK2_PORT}|g" \
+        -e "s|__TRUNK2_PREFIX__|${TRUNK2_PREFIX}|g" \
+        -e "s|__TRUNK2_OUTBOUND_PREFIX__|${TRUNK2_OUTBOUND_PREFIX}|g" \
         -e "s|__RECORD_DIR__|${RECORD_DIR}|g" \
         "$1" > "$2"
 }
@@ -61,6 +72,12 @@ for n in $(seq "$PEER_START" "$PEER_END"); do
         "$SRC/pjsip.peer.template" >> "$CONF/pjsip.conf"
 done
 echo "[entrypoint] Generated peers ${PEER_START}-${PEER_END}, trunk=${TRUNK_HOST}:${TRUNK_PORT}, prefix='${OUTBOUND_PREFIX}'"
+# Optional second IP trunk (LAN #2): append its blocks only when TRUNK2_HOST is set.
+if [ -n "$TRUNK2_HOST" ]; then
+    render "$SRC/pjsip.trunk2.template" "$CONF/pjsip.trunk2.conf"
+    cat "$CONF/pjsip.trunk2.conf" >> "$CONF/pjsip.conf"
+    echo "[entrypoint] Enabled second trunk trunk-lan2=${TRUNK2_HOST}:${TRUNK2_PORT}, route-prefix='${TRUNK2_PREFIX}', outbound-prefix='${TRUNK2_OUTBOUND_PREFIX}'"
+fi
 
 # Ensure the recording volume exists and is writable by Asterisk.
 mkdir -p "$RECORD_DIR"

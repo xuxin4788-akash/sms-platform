@@ -1,0 +1,26 @@
+; === Second IP trunk (static source-IP auth, no register) — appended only when
+; === TRUNK2_HOST is set in the environment. Single namespace per section:
+; === the two trunks use DIFFERENT aor/identify names to avoid collisions.
+
+[trunk-lan2]
+type=endpoint
+transport=transport-udp
+context=from-trunk
+disallow=all
+allow=ulaw
+allow=alaw
+aors=trunk-lan2
+direct_media=no
+rtp_symmetric=yes
+force_rport=yes
+rewrite_contact=yes
+
+[trunk-lan2]
+type=aor
+contact=sip:__TRUNK2_HOST__:__TRUNK2_PORT__\;transport=udp
+qualify_frequency=30
+
+[trunk-lan2]
+type=identify
+endpoint=trunk-lan2
+match=__TRUNK2_HOST__
