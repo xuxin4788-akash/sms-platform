@@ -107,6 +107,22 @@
     var WrappedPC = function (config, constraints) {
       var pc = new OrigPC(config, constraints);
       try {
+        // Log every LOCAL candidate gathered (address/type), plus any ICE
+        // gathering/connectivity error, so a blocked UDP path is explicit.
+        pc.addEventListener("icecandidate", function (ev) {
+          if (ev.candidate && ev.candidate.candidate) {
+            var c = ev.candidate;
+            plog("[ice-local] " + (c.type || "?") + " " +
+                 (c.address || c.ip || "?") + ":" + (c.port || "?") +
+                 (c.protocol ? " " + c.protocol : ""));
+          }
+        });
+        if (typeof pc.addEventListener === "function") {
+          pc.addEventListener("icecandidateerror", function (ev) {
+            plog("[ice-ERROR] code=" + ev.errorCode + " text='" + ev.errorText +
+                 "' url=" + ev.url);
+          });
+        }
         pc.addEventListener("track", function (ev) {
           if (ev.track && ev.track.kind === "audio") {
             var t = ev.track;
@@ -339,6 +355,7 @@
     try {
       pc.getStats().then(function (stats) {
         var inbound = null, outbound = null, selectedPair = null;
+        var allPairs = [];
         var codecs = {};
         stats.forEach(function (rep) {
           if (rep.type === "codec" && rep.payloadType != null && rep.mimeType) {
@@ -346,9 +363,11 @@
           }
           if (rep.type === "inbound-rtp" && rep.kind === "audio" && !inbound) { inbound = rep; }
           if (rep.type === "outbound-rtp" && rep.kind === "audio" && !outbound) { outbound = rep; }
-          if (rep.type === "candidate-pair" &&
-              (rep.selected || rep.nominated) && rep.state === "succeeded" && !selectedPair) {
-            selectedPair = rep;
+          if (rep.type === "candidate-pair") {
+            allPairs.push(rep);
+            if ((rep.selected || rep.nominated) && rep.state === "succeeded" && !selectedPair) {
+              selectedPair = rep;
+            }
           }
         });
         var codecName = function (r) {
@@ -376,6 +395,18 @@
             (local ? (local.candidateType + ":" + (local.address || local.ip) + ":" + local.port) : "?") +
             " -> " +
             (remote ? (remote.candidateType + ":" + (remote.address || remote.ip) + ":" + remote.port) : "?");
+        } else {
+          // No working path: summarize each pair state + STUN requests/responses.
+          var pinfo = allPairs.slice(0, 4).map(function (p) {
+            var lc = stats.get(p.localCandidateId);
+            var rc = stats.get(p.remoteCandidateId);
+            return p.state +
+              "[" + (lc ? lc.candidateType : "?") + "->" +
+              (rc ? (rc.candidateType + ":" + (rc.address || rc.ip)) : "?") + "]" +
+              " req=" + (p.requestsSent || 0) +
+              " rsp=" + (p.responsesReceived || 0);
+          }).join(" ; ");
+          pathLine = "SIN camino ICE: " + (pinfo || "(sin pares)");
         }
         plog("[media] " + inLine + " | " + outLine);
         plog("[media] " + pathLine);
