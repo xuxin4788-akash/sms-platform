@@ -51,9 +51,42 @@
     var card = document.getElementById("wp-debug-card");
     var box = document.getElementById("wp-debug-log");
     if (card) { card.hidden = false; }
+    var copyBtn = document.getElementById("wp-debug-copy");
     var clearBtn = document.getElementById("wp-debug-clear");
     var closeBtn = document.getElementById("wp-debug-close");
-    if (clearBtn && box) { clearBtn.addEventListener("click", function () { box.textContent = ""; }); }
+
+    function flashCopied(ok) {
+      if (!copyBtn) { return; }
+      var prev = copyBtn.textContent;
+      copyBtn.textContent = ok ? "Copiado" : "Error";
+      copyBtn.disabled = true;
+      setTimeout(function () { copyBtn.textContent = prev; copyBtn.disabled = false; }, 1500);
+    }
+    if (copyBtn && box) {
+      copyBtn.addEventListener("click", function () {
+        var text = box.textContent || "";
+        function fallback() {
+          try {
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            var ok = document.execCommand("copy");
+            document.body.removeChild(ta);
+            flashCopied(ok);
+          } catch (e) { flashCopied(false); }
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            flashCopied(true);
+          }).catch(fallback);
+        } else { fallback(); }
+      });
+    }
+    if (clearBtn) { clearBtn.addEventListener("click", function () { box.textContent = ""; }); }
     if (closeBtn && card) { closeBtn.addEventListener("click", function () { card.hidden = true; }); }
   }
   window.addEventListener("error", function (ev) {

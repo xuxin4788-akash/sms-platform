@@ -176,6 +176,7 @@ html, body {
   border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer;
 }
 .wp-debug-head button:hover { background: #1b2942; color: #fff; }
+.wp-debug-head button:disabled { opacity: 0.6; cursor: default; }
 #wp-debug-log {
   margin: 0; padding: 10px 12px; overflow-y: auto;
   white-space: pre-wrap; word-break: break-word;
