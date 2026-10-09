@@ -85,5 +85,34 @@ fi
 mkdir -p "$RECORD_DIR"
 chmod 0777 "$RECORD_DIR"
 
+# Shared dir for web-managed carrier trunks (app.py writes fragments here).
+# Placeholder files guarantee the #tryinclude directives never break startup.
+TRUNK_DYN_DIR="${SIP_TRUNK_CONFIG_DIR:-/var/lib/sip-trunks}"
+mkdir -p "$TRUNK_DYN_DIR"
+for f in pjsip-trunks.conf dial-trunks.conf; do
+    if [ ! -f "$TRUNK_DYN_DIR/$f" ]; then
+        printf '; placeholder (auto-generated on first save)\n' > "$TRUNK_DYN_DIR/$f"
+    fi
+done
+
+# Watch generated fragments; reload PJSIP + dialplan when they change.
+# The initial snapshot is taken but does not trigger a reload (Asterisk is
+# started afterwards and already reads the current files).
+(
+  sig=":"
+  while true; do
+    sleep 2
+    nsig="$(cat "$TRUNK_DYN_DIR/pjsip-trunks.conf" "$TRUNK_DYN_DIR/dial-trunks.conf" 2>/dev/null | md5sum | awk '{print $1}')"
+    if [ "$nsig" != "$sig" ]; then
+      if [ "$sig" != ":" ]; then
+        echo "$(date '+%F %T') change detected, reloading..."
+        asterisk -rx "pjsip reload"
+        asterisk -rx "dialplan reload"
+      fi
+      sig="$nsig"
+    fi
+  done
+) &
+
 echo "[entrypoint] Starting Asterisk (http ${HTTP_PORT}, rtp ${RTP_START}-${RTP_END}, recordings=${RECORD_DIR})"
 exec asterisk -f -U root -vvvg

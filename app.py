@@ -858,6 +858,24 @@ def init_db():
             );
         """)
 
+        # ---- Carrier SIP IP trunks (managed online, rendered to Asterisk) ----
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sip_trunks (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE,
+                host VARCHAR(255) NOT NULL,
+                port INTEGER NOT NULL DEFAULT 5060,
+                codecs VARCHAR(100) NOT NULL DEFAULT 'alaw,ulaw',
+                dial_prefix VARCHAR(20) NOT NULL DEFAULT '',
+                match_prefix VARCHAR(100) NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 100,
+                is_active BOOLEAN DEFAULT TRUE,
+                note VARCHAR(255) DEFAULT '',
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+        """)
+
         # extensions catalog (per-country extension numbers)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS extensions (
@@ -1693,6 +1711,21 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_voice_records_created_by ON voice_records(created_by);
             CREATE INDEX IF NOT EXISTS idx_voice_records_created_at ON voice_records(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_voice_records_status_created_at ON voice_records(status, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS sip_trunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 5060,
+                codecs TEXT NOT NULL DEFAULT 'alaw,ulaw',
+                dial_prefix TEXT NOT NULL DEFAULT '',
+                match_prefix TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 100,
+                is_active INTEGER DEFAULT 1,
+                note TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
 
             CREATE TABLE IF NOT EXISTS extensions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5730,6 +5763,7 @@ AVAILABLE_PAGES = [
     {'id': 'api-config', 'label': 'Configuracion de APIs', 'icon': 'settings'},
     {'id': 'email-senders', 'label': 'Envios por APP', 'icon': 'mail'},
     {'id': 'extensions', 'label': 'Extensiones', 'icon': 'phone'},
+    {'id': 'sip-trunks', 'label': 'Lineas de Operador', 'icon': 'server'},
     {'id': 'retention', 'label': 'Retencion de Contactos', 'icon': 'shield'},
     {'id': 'email-pricing', 'label': 'Facturacion', 'icon': 'mail'},
 ]
@@ -5745,7 +5779,7 @@ AVAILABLE_PAGES = [
 # (NULL team) mappings read-only as fallback. It must therefore NOT be in
 # ADMIN_ONLY_PAGES, so it can be granted to team_admin. The remaining pages
 # stay system-admin exclusive.
-ADMIN_ONLY_PAGES = {'api-config', 'extensions',
+ADMIN_ONLY_PAGES = {'api-config', 'extensions', 'sip-trunks',
                     'email-pricing', 'email-config', 'voice-config',
                     'role-permissions', 'team-api-select'}
 
@@ -12856,6 +12890,352 @@ def voice_test_config():
                         'scheme': scheme,
                         'token_preview': (token[:6] + '...' + token[-4:]) if len(token) > 12 else 'OK'})
     return jsonify({'error': 'Proveedor no soportado'}), 400
+
+
+# ---------------------------------------------------------------------------
+# Carrier SIP IP trunks (online-managed, rendered to Asterisk dynamic files)
+# ---------------------------------------------------------------------------
+
+# Shared volume mounted in BOTH the app container and the asterisk container.
+# The app writes generated pjsip/dialplan fragments here; the asterisk
+# entrypoint watches the files and runs `pjsip reload` when they change.
+SIP_TRUNK_CONFIG_DIR = os.environ.get('SIP_TRUNK_CONFIG_DIR', '/var/lib/sip-trunks')
+SIP_TRUNK_PJSIP_FILE = os.path.join(SIP_TRUNK_CONFIG_DIR, 'pjsip-trunks.conf')
+SIP_TRUNK_DIAL_FILE = os.path.join(SIP_TRUNK_CONFIG_DIR, 'dial-trunks.conf')
+
+_ALLOWED_CODEC_ORDER = ['opus', 'alaw', 'ulaw']
+_NAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,40}$')
+_HOST_RE = re.compile(
+    r'^(?=.{1,253}$)(?:(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)\.?)+$|^\d{1,3}(?:\.\d{1,3}){3}$')
+
+
+def _normalize_codecs(raw):
+    """Return a cleaned, ordered, unique comma list of allowed codecs."""
+    parts = [p.strip().lower() for p in re.split(r'[,\s]+', str(raw or '')) if p.strip()]
+    seen = []
+    for p in parts:
+        if p in _ALLOWED_CODEC_ORDER and p not in seen:
+            seen.append(p)
+    if not seen:
+        seen = ['alaw', 'ulaw']
+    seen.sort(key=lambda c: _ALLOWED_CODEC_ORDER.index(c))
+    return ','.join(seen)
+
+
+def _normalize_prefix_list(raw):
+    """Split match_prefix on comma/space/newline; keep digit-only tokens."""
+    parts = [p.strip() for p in re.split(r'[,\s]+', str(raw or '')) if p.strip()]
+    out = []
+    for p in parts:
+        p = ''.join(ch for ch in p if ch.isdigit())
+        if p and p not in out:
+            out.append(p)
+    return ','.join(out)
+
+
+def _digits_only(raw):
+    return ''.join(ch for ch in str(raw or '') if ch.isdigit())
+
+
+def list_sip_trunks(active_only=False):
+    """Return all carrier trunks (dicts) ordered for routing."""
+    db = get_db()
+    sql = "SELECT * FROM sip_trunks"
+    if active_only:
+        sql += " WHERE is_active=1"
+    sql += " ORDER BY sort_order ASC, id ASC"
+    rows = db.execute(sql).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        out.append({
+            'id': d.get('id'),
+            'name': d.get('name') or '',
+            'host': d.get('host') or '',
+            'port': int(d.get('port') or 5060),
+            'codecs': d.get('codecs') or 'alaw,ulaw',
+            'dial_prefix': d.get('dial_prefix') or '',
+            'match_prefix': d.get('match_prefix') or '',
+            'sort_order': int(d.get('sort_order') or 100),
+            'is_active': bool(d.get('is_active')),
+            'note': d.get('note') or '',
+            'updated_at': d.get('updated_at'),
+        })
+    return out
+
+
+def _trunk_endpoint_name(name):
+    return 'trunk-' + re.sub(r'[^A-Za-z0-9_-]', '-', name).strip('-').lower()
+
+
+def render_sip_trunk_pjsip(trunks):
+    """Build the pjsip endpoint/aor/identify blocks for all active trunks."""
+    lines = [
+        "; AUTO-GENERATED by app.py - do not edit by hand.",
+        "; Active carrier SIP trunks managed from #/sip-trunks.",
+        "",
+    ]
+    for t in trunks:
+        ep = _trunk_endpoint_name(t['name'])
+        codecs = t['codecs']
+        host = t['host']
+        port = int(t['port'] or 5060)
+        lines += [
+            "[%s]" % ep,
+            "type=endpoint",
+            "context=from-trunks",
+            "disallow=all",
+        ]
+        for c in codecs.split(','):
+            if c:
+                lines.append("allow=%s" % c)
+        lines += [
+            "direct_media=no",
+            "rtp_symmetric=yes",
+            "force_rport=yes",
+            "rewrite_contact=yes",
+            "dtmf_mode=rfc4733",
+            "jitterbuffer=yes",
+            "jb_impl=adaptive",
+            "jb_target=20",
+            "jb_max=100",
+            "jb_force=no",
+            "aors=%s" % ep,
+            "",
+            "[%s]" % ep,
+            "type=aor",
+            "contact=sip:%s:%d" % (host, port),
+            "qualify_frequency=30",
+            "",
+            "[%s]" % ep,
+            "type=identify",
+            "endpoint=%s" % ep,
+            "match=%s" % host,
+            "",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def render_sip_trunk_dial(trunks):
+    """Build the routing jumps + per-trunk outbound dial contexts.
+
+    Called from [out] BEFORE the static fallback. First matching match_prefix
+    (by sort order) wins. Trunks without a prefix are implicit here; the
+    static trunk-vos3000 remains the final fallback.
+    """
+    lines = [
+        "; AUTO-GENERATED by app.py - do not edit by hand.",
+        "; Routed to from [out] priority 2. Prefix matches jump to the trunk",
+        "; context; if none match we return to [out] priority 3 (static rules).",
+        "",
+        "[trunks-route]",
+        "exten => _X.,1,NoOp(Evaluar lineas gestionadas para ${EXTEN})",
+    ]
+    prio = 2
+    for t in trunks:
+        ep = _trunk_endpoint_name(t['name'])
+        prefixes = [p for p in (t.get('match_prefix') or '').split(',') if p]
+        for p in prefixes:
+            lines.append(
+                'same => n,GotoIf($["${EXTEN:0:%d}" = "%s"]?%s,${EXTEN},1)' % (len(p), p, ep))
+            prio += 1
+    lines.append("same => n,Goto(out,${EXTEN},3)")
+    lines.append("")
+    for t in trunks:
+        ep = _trunk_endpoint_name(t['name'])
+        host = t['host']
+        port = int(t['port'] or 5060)
+        prefix = t.get('dial_prefix') or ''
+        lines += [
+            "[%s]" % ep,
+            "exten => _X.,1,NoOp(${EXTEN} via %s)" % t['name'],
+            "same => n,Set(dest=%s${EXTEN})" % prefix,
+            "same => n,Verbose(2,Dialing %s/${dest} (raw=${EXTEN}))" % ep,
+            "same => n,Dial(PJSIP/%s/sip:${dest}@%s:%d,60,g)" % (ep, host, port),
+            "same => n,Hangup()",
+            "same => n(i,1),Hangup(34)",
+            "same => n(s,1),Hangup(34)",
+            "",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def publish_sip_trunk_configs():
+    """Render current active trunks and atomically write both config files."""
+    trunks = list_sip_trunks(active_only=True)
+    pjsip_text = render_sip_trunk_pjsip(trunks)
+    dial_text = render_sip_trunk_dial(trunks)
+    os.makedirs(SIP_TRUNK_CONFIG_DIR, exist_ok=True)
+
+    def _atomic_write(path, text):
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+
+    _atomic_write(SIP_TRUNK_PJSIP_FILE, pjsip_text)
+    _atomic_write(SIP_TRUNK_DIAL_FILE, dial_text)
+    return {'trunks': len(trunks),
+            'pjsip_file': SIP_TRUNK_PJSIP_FILE,
+            'dial_file': SIP_TRUNK_DIAL_FILE}
+
+
+def _probe_sip_trunk(host, port, timeout=2.0):
+    """UDP-probe a carrier by sending a SIP OPTIONS and awaiting any reply.
+
+    Returns (reachable, detail). A reply (even an error) proves host:port is
+    reachable; silence means packets were dropped or nothing is listening.
+    """
+    import socket as _socket
+    branch = 'z9hG4bK%032x' % int.from_bytes(os.urandom(16), 'little')
+    cid = ''.join('0123456789abcdef'[b % 16] for b in os.urandom(16))
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, int(port)))
+        laddr, lport = sock.getsockname()
+        msg = (
+            "OPTIONS sip:{host}:{port} SIP/2.0\r\n"
+            "Via: SIP/2.0/UDP {laddr}:{lport};branch={branch};rport\r\n"
+            "Max-Forwards: 70\r\n"
+            "From: <sip:probe@pagoserve.com>;tag=probe\r\n"
+            "To: <sip:{host}:{port}>\r\n"
+            "Call-ID: {cid}@pagoserve.com\r\n"
+            "CSeq: 1 OPTIONS\r\n"
+            "User-Agent: pagoserve-trunk-probe\r\n"
+            "Content-Length: 0\r\n\r\n"
+        )
+        payload = msg.format(host=host, port=port, laddr=laddr, lport=lport,
+                             branch=branch, cid=cid)
+        sock.sendall(payload.encode('utf-8'))
+        data, _ = sock.recvfrom(2048)
+        first = data.decode('utf-8', 'ignore').splitlines()[0] if data else ''
+        return True, (first or 'Respuesta recibida')
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        sock.close()
+
+
+@app.route('/api/config/sip-trunks', methods=['GET'])
+@admin_required
+def sip_trunks_list():
+    return jsonify({'trunks': list_sip_trunks()})
+
+
+@app.route('/api/config/sip-trunks', methods=['POST'])
+@admin_required
+def sip_trunks_create():
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    host = (data.get('host') or '').strip()
+    if not _NAME_RE.match(name):
+        return jsonify({'error': 'Nombre: solo letras, numeros, guion y subrayado (1-40)'}), 400
+    if not host or not _HOST_RE.match(host):
+        return jsonify({'error': 'Host/IP invalido'}), 400
+    try:
+        port = int(data.get('port') or 5060)
+        if not (1 <= port <= 65535):
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Puerto invalido (1-65535)'}), 400
+    db = get_db()
+    dup = db.execute("SELECT id FROM sip_trunks WHERE lower(name)=lower(?)", (name,)).fetchone()
+    if dup:
+        return jsonify({'error': 'Ya existe una linea con ese nombre'}), 409
+    cur = db.execute(
+        "INSERT INTO sip_trunks (name, host, port, codecs, dial_prefix, match_prefix, "
+        "sort_order, is_active, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, host, port, _normalize_codecs(data.get('codecs')),
+         _digits_only(data.get('dial_prefix')), _normalize_prefix_list(data.get('match_prefix')),
+         int(data.get('sort_order') or 100),
+         1 if data.get('is_active', True) else 0,
+         (data.get('note') or '').strip()[:255])
+    )
+    db.commit()
+    info = publish_sip_trunk_configs()
+    return jsonify({'message': 'Linea creada', 'id': cur.lastrowid, 'config': info}), 201
+
+
+@app.route('/api/config/sip-trunks/<int:trunk_id>', methods=['PUT'])
+@admin_required
+def sip_trunks_update(trunk_id):
+    data = request.get_json() or {}
+    db = get_db()
+    row = db.execute("SELECT * FROM sip_trunks WHERE id=?", (trunk_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Linea no encontrada'}), 404
+    row = dict(row)
+    name = (data.get('name', row.get('name')) or '').strip()
+    host = (data.get('host', row.get('host')) or '').strip()
+    if not _NAME_RE.match(name):
+        return jsonify({'error': 'Nombre: solo letras, numeros, guion y subrayado (1-40)'}), 400
+    if not host or not _HOST_RE.match(host):
+        return jsonify({'error': 'Host/IP invalido'}), 400
+    try:
+        port = int(data.get('port', row.get('port')) or 5060)
+        if not (1 <= port <= 65535):
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Puerto invalido (1-65535)'}), 400
+    dup = db.execute("SELECT id FROM sip_trunks WHERE lower(name)=lower(?) AND id<>?",
+                     (name, trunk_id)).fetchone()
+    if dup:
+        return jsonify({'error': 'Ya existe otra linea con ese nombre'}), 409
+    db.execute(
+        "UPDATE sip_trunks SET name=?, host=?, port=?, codecs=?, dial_prefix=?, "
+        "match_prefix=?, sort_order=?, is_active=?, note=?, updated_at=datetime('now') "
+        "WHERE id=?",
+        (name, host, port, _normalize_codecs(data.get('codecs', row.get('codecs'))),
+         _digits_only(data.get('dial_prefix', row.get('dial_prefix'))),
+         _normalize_prefix_list(data.get('match_prefix', row.get('match_prefix'))),
+         int(data.get('sort_order', row.get('sort_order')) or 100),
+         1 if data.get('is_active', bool(row.get('is_active'))) else 0,
+         (data.get('note', row.get('note')) or '').strip()[:255], trunk_id)
+    )
+    db.commit()
+    info = publish_sip_trunk_configs()
+    return jsonify({'message': 'Linea actualizada', 'config': info})
+
+
+@app.route('/api/config/sip-trunks/<int:trunk_id>', methods=['DELETE'])
+@admin_required
+def sip_trunks_delete(trunk_id):
+    db = get_db()
+    row = db.execute("SELECT id FROM sip_trunks WHERE id=?", (trunk_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Linea no encontrada'}), 404
+    db.execute("DELETE FROM sip_trunks WHERE id=?", (trunk_id,))
+    db.commit()
+    info = publish_sip_trunk_configs()
+    return jsonify({'message': 'Linea eliminada', 'config': info})
+
+
+@app.route('/api/config/sip-trunks/<int:trunk_id>/test', methods=['POST'])
+@admin_required
+def sip_trunks_test(trunk_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM sip_trunks WHERE id=?", (trunk_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Linea no encontrada'}), 404
+    row = dict(row)
+    ok, detail = _probe_sip_trunk(row['host'], int(row['port'] or 5060))
+    if ok:
+        return jsonify({'success': True, 'message': 'Alcanzable: %s' % detail[:160]})
+    return jsonify({'success': False,
+                    'error': 'Sin respuesta en %s:%s (%s). Revise que el operador '
+                             'acepte trafico desde esta IP y que el firewall de salida '
+                             'UDP este abierto.'
+                             % (row['host'], row['port'], detail[:120])}), 200
+
+
+@app.route('/api/config/sip-trunks/reload', methods=['POST'])
+@admin_required
+def sip_trunks_reload():
+    """Re-render files from DB and report; the asterisk watcher auto-reloads."""
+    info = publish_sip_trunk_configs()
+    return jsonify({'message': 'Configuracion publicada; Asterisk recargara en unos segundos',
+                    'config': info})
 
 
 # ---------------------------------------------------------------------------

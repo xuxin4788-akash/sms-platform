@@ -52,3 +52,7 @@ qualify_frequency=30
 type=identify
 endpoint=trunk-vos3000
 match=__TRUNK_HOST__
+
+; ---- Lineas de operador gestionadas por web (#/sip-trunks) ----
+; Endpoint/aor/identify generados por app.py en el volumen compartido.
+#tryinclude "pjsip-trunks.conf"

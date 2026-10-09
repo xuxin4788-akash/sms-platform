@@ -654,6 +654,9 @@ function navigateTo(page) {
         case 'extensions':
             if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderExtensions(content); break;
+        case 'sip-trunks':
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
+            renderSipTrunks(content); break;
         case 'retention':
             if (state.user.role !== 'admin' && state.user.role !== 'team_admin') { renderAccessDenied(content); break; }
             renderRetention(content); break;
@@ -6105,6 +6108,207 @@ function retentionDaysOptions(selected) {
             d + (d === 1 ? ' dia' : ' dias') + '</option>';
     }
     return opts;
+}
+
+// ============================================================
+// Carrier SIP IP trunks (Lineas de Operador) - online-managed
+// ============================================================
+var sipTrunkState = { data: [] };
+var SIP_CODEC_OPTIONS = [
+    { value: 'alaw', label: 'alaw (G.711a)' },
+    { value: 'ulaw', label: 'ulaw (G.711u)' },
+    { value: 'opus', label: 'opus' }
+];
+
+function renderSipTrunks(content) {
+    content.innerHTML =
+        '<h1 style="margin-bottom:4px;">Lineas de Operador (IP SIP)</h1>' +
+        '<p style="color:var(--text-secondary);margin-bottom:20px;">Conecte nuevas lineas de operador por IP sin editar archivos ni reiniciar. El enrutamiento por prefijo se aplica antes de la linea VOS3000 por defecto; los cambios se publican y Asterisk se recarga solo en unos segundos.</p>' +
+        '<div class="card" style="padding:0;overflow:hidden;">' +
+            '<div style="display:flex;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;">' +
+                '<button type="button" id="sip-new" class="btn btn-primary btn-sm">+ Nueva linea</button>' +
+                '<button type="button" id="sip-reload" class="btn btn-ghost btn-sm">Publicar / Recargar</button>' +
+            '</div>' +
+            '<div id="sip-body" style="padding:20px;"><div class="loading">Cargando...</div></div>' +
+        '</div>';
+    document.getElementById('sip-new').addEventListener('click', function() { showSipTrunkModal(null); });
+    document.getElementById('sip-reload').addEventListener('click', function() { publishSipTrunks(); });
+    loadSipTrunks();
+}
+
+function loadSipTrunks() {
+    api('/api/config/sip-trunks').then(function(d) {
+        sipTrunkState.data = d.trunks || [];
+        renderSipTrunksBody();
+    }).catch(function(e) {
+        var body = document.getElementById('sip-body');
+        if (body) body.innerHTML = '<div class="alert alert-danger">' + escapeHtml(e.message || 'Error al cargar') + '</div>';
+    });
+}
+
+function renderSipTrunksBody() {
+    var body = document.getElementById('sip-body');
+    if (!body) return;
+    var rows = sipTrunkState.data.map(function(t) {
+        var prefixes = (t.match_prefix || '') ? escapeHtml(t.match_prefix) : '<span style="color:var(--text-muted);">—</span>';
+        var status = t.is_active
+            ? '<span class="badge badge-green">Activa</span>'
+            : '<span class="badge badge-gray">Inactiva</span>';
+        return '<tr>' +
+            '<td style="font-weight:600;">' + escapeHtml(t.name) + '</td>' +
+            '<td style="font-family:monospace;">' + escapeHtml(t.host) + ':' + t.port + '</td>' +
+            '<td>' + escapeHtml(t.codecs) + '</td>' +
+            '<td>' + prefixes + '</td>' +
+            '<td>' + (t.dial_prefix ? escapeHtml(t.dial_prefix) : '<span style="color:var(--text-muted);">—</span>') + '</td>' +
+            '<td>' + status + '</td>' +
+            '<td style="text-align:right;white-space:nowrap;">' +
+                '<button type="button" data-test="' + t.id + '" class="btn btn-ghost btn-sm">Probar</button> ' +
+                '<button type="button" data-edit="' + t.id + '" class="btn btn-ghost btn-sm">Editar</button> ' +
+                '<button type="button" data-del="' + t.id + '" class="btn btn-ghost btn-sm" style="color:var(--danger);">Eliminar</button>' +
+            '</td>' +
+        '</tr>';
+    }).join('');
+    body.innerHTML =
+        '<div class="table-wrap">' +
+            '<table class="data-table"><thead><tr>' +
+                '<th>Nombre</th><th>Servidor</th><th>Codigos</th><th>Prefijos de ruta</th><th>Prefijo de salida</th><th>Estado</th><th style="text-align:right;">Acciones</th>' +
+            '</tr></thead><tbody>' +
+                (rows || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px;">No hay lineas. Agregue una con "Nueva linea".</td></tr>') +
+            '</tbody></table>' +
+        '</div>';
+    body.querySelectorAll('[data-edit]').forEach(function(b) {
+        b.addEventListener('click', function() { showSipTrunkModal(b.dataset.edit); });
+    });
+    body.querySelectorAll('[data-del]').forEach(function(b) {
+        b.addEventListener('click', function() { deleteSipTrunk(b.dataset.del); });
+    });
+    body.querySelectorAll('[data-test]').forEach(function(b) {
+        b.addEventListener('click', function() { testSipTrunk(b.dataset.test, b); });
+    });
+}
+
+function showSipTrunkModal(id) {
+    var t = null;
+    if (id != null) {
+        t = sipTrunkState.data.find(function(x) { return String(x.id) === String(id); });
+        if (!t) return;
+    }
+    var cur = t || { name: '', host: '', port: 5060, codecs: 'alaw,ulaw',
+                     dial_prefix: '', match_prefix: '', sort_order: 100,
+                     is_active: true, note: '' };
+    var selected = (cur.codecs || '').split(',');
+    var codecChecks = SIP_CODEC_OPTIONS.map(function(c) {
+        var on = selected.indexOf(c.value) >= 0;
+        return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;font-weight:500;">' +
+            '<input type="checkbox" data-codec="' + c.value + '"' + (on ? ' checked' : '') + '>' +
+            c.label + '</label>';
+    }).join('');
+    var modal = document.getElementById('modal');
+    modal.innerHTML =
+        '<div class="modal-content" style="max-width:560px;">' +
+            '<div class="modal-header">' +
+                '<h3>' + (t ? 'Editar linea' : 'Nueva linea de operador') + '</h3>' +
+                '<button type="button" class="modal-close" onclick="closeModal()">&times;</button>' +
+            '</div>' +
+            '<div class="modal-body">' +
+                '<div class="form-group"><label>Nombre (identificador)</label>' +
+                    '<input type="text" id="st-name" class="form-control" value="' + escapeHtml(cur.name) + '" placeholder="operador-a"></div>' +
+                '<div style="display:flex;gap:12px;">' +
+                    '<div class="form-group" style="flex:1;"><label>Host / IP del operador</label>' +
+                        '<input type="text" id="st-host" class="form-control" value="' + escapeHtml(cur.host) + '" placeholder="1.2.3.4 o sip.operador.com"></div>' +
+                    '<div class="form-group" style="width:110px;"><label>Puerto</label>' +
+                        '<input type="number" id="st-port" class="form-control" value="' + (cur.port || 5060) + '" min="1" max="65535"></div>' +
+                '</div>' +
+                '<div class="form-group"><label>Codigos admitidos</label><div>' + codecChecks + '</div></div>' +
+                '<div class="form-group"><label>Prefijos de enrutamiento (separados por coma)</label>' +
+                    '<input type="text" id="st-match" class="form-control" value="' + escapeHtml(cur.match_prefix) + '" placeholder="55, 33">' +
+                    '<small style="color:var(--text-secondary);">Las llamadas que comiencen por estos digitos se enrutan a esta linea (segun el orden).</small></div>' +
+                '<div class="form-group"><label>Prefijo de salida (opcional)</label>' +
+                    '<input type="text" id="st-dialprefix" class="form-control" value="' + escapeHtml(cur.dial_prefix) + '" placeholder="82152">' +
+                    '<small style="color:var(--text-secondary);">Se antepone al numero al marcar por esta linea.</small></div>' +
+                '<div style="display:flex;gap:12px;">' +
+                    '<div class="form-group" style="width:110px;"><label>Orden</label>' +
+                        '<input type="number" id="st-order" class="form-control" value="' + (cur.sort_order || 100) + '"></div>' +
+                    '<div class="form-group" style="flex:1;display:flex;align-items:flex-end;">' +
+                        '<label style="display:inline-flex;align-items:center;gap:8px;font-weight:500;">' +
+                            '<input type="checkbox" id="st-active"' + (cur.is_active ? ' checked' : '') + '> Linea activa</label>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="form-group"><label>Nota (opcional)</label>' +
+                    '<input type="text" id="st-note" class="form-control" value="' + escapeHtml(cur.note) + '"></div>' +
+            '</div>' +
+            '<div class="modal-footer">' +
+                '<button type="button" class="btn btn-ghost" onclick="closeModal()">Cancelar</button>' +
+                '<button type="button" class="btn btn-primary" id="st-save">Guardar</button>' +
+            '</div>' +
+        '</div>';
+    modal.classList.add('active');
+    document.getElementById('st-save').addEventListener('click', function() { saveSipTrunk(t ? t.id : null); });
+}
+
+function collectSipTrunkForm() {
+    var codecs = Array.prototype.map.call(
+        document.querySelectorAll('[data-codec]:checked'),
+        function(cb) { return cb.dataset.codec; }
+    );
+    return {
+        name: document.getElementById('st-name').value,
+        host: document.getElementById('st-host').value,
+        port: document.getElementById('st-port').value,
+        codecs: codecs.join(','),
+        match_prefix: document.getElementById('st-match').value,
+        dial_prefix: document.getElementById('st-dialprefix').value,
+        sort_order: document.getElementById('st-order').value,
+        is_active: document.getElementById('st-active').checked,
+        note: document.getElementById('st-note').value
+    };
+}
+
+function saveSipTrunk(id) {
+    var body = collectSipTrunkForm();
+    var req = id
+        ? api('/api/config/sip-trunks/' + id, { method: 'PUT', body: body })
+        : api('/api/config/sip-trunks', { method: 'POST', body: body });
+    req.then(function() {
+        closeModal();
+        showToast(id ? 'Linea actualizada' : 'Linea creada', 'success');
+        loadSipTrunks();
+    }).catch(function(e) {
+        showToast(e.message || 'Error al guardar', 'error');
+    });
+}
+
+function deleteSipTrunk(id) {
+    if (!window.confirm('Eliminar esta linea? Las llamadas que usaban sus prefijos volveran a la linea por defecto.')) return;
+    api('/api/config/sip-trunks/' + id, { method: 'DELETE' }).then(function() {
+        showToast('Linea eliminada', 'success');
+        loadSipTrunks();
+    }).catch(function(e) {
+        showToast(e.message || 'Error al eliminar', 'error');
+    });
+}
+
+function testSipTrunk(id, btn) {
+    var original = btn.textContent;
+    btn.textContent = 'Probando...';
+    btn.disabled = true;
+    api('/api/config/sip-trunks/' + id + '/test', { method: 'POST' }).then(function(d) {
+        if (d.success) showToast(d.message || 'Alcanzable', 'success');
+        else showToast(d.error || 'Sin respuesta', 'error');
+    }).catch(function(e) {
+        showToast(e.message || 'Error al probar', 'error');
+    }).finally(function() {
+        btn.textContent = original;
+        btn.disabled = false;
+    });
+}
+
+function publishSipTrunks() {
+    api('/api/config/sip-trunks/reload', { method: 'POST' }).then(function(d) {
+        showToast(d.message || 'Configuracion publicada', 'success');
+    }).catch(function(e) {
+        showToast(e.message || 'Error al publicar', 'error');
+    });
 }
 
 async function renderRetention(container) {

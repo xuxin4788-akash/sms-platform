@@ -55,9 +55,13 @@ services:
       # i.e. 200 local phone extensions).
       - PHONE_PEER_START=${PHONE_PEER_START:-1001}
       - PHONE_PEER_END=${PHONE_PEER_END:-1200}
+      # Directory where managed carrier-trunk fragments are written (shared
+      # with the asterisk container, which watches and reloads on change).
+      - SIP_TRUNK_CONFIG_DIR=/var/lib/sip-trunks
     volumes:
       - app-logs:/app/logs
       - recordings:/recordings:ro
+      - sip-trunks:/var/lib/sip-trunks
     deploy:
       resources:
         limits:
@@ -94,8 +98,11 @@ services:
       # Shared initial secret for the web peers (set in .env)
       - PEER_SECRET=${PHONE_PEER_SECRET:-}
       - RECORD_DIR=/recordings
+      # Web-managed carrier trunk fragments (shared with the app container).
+      - SIP_TRUNK_CONFIG_DIR=/var/lib/sip-trunks
     volumes:
       - recordings:/recordings
+      - sip-trunks:/var/lib/sip-trunks
     ports:
       # Browser <-> Asterisk media (published; opened in the cloud firewall).
       # 800 ports (10000-10800) for up to ~200 concurrent WebRTC calls.
@@ -149,4 +156,6 @@ volumes:
   app-logs:
     driver: local
   recordings:
+    driver: local
+  sip-trunks:
     driver: local
