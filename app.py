@@ -876,6 +876,28 @@ def init_db():
             );
         """)
 
+        # ---- Inbound client SIP trunks: WE terminate/resell lines to external
+        # PBX/call-center customers. They authenticate by static source IP
+        # (PJSIP identify, no registration); their calls land in [from-customer-*]
+        # which enforces a destination-prefix whitelist before re-originating via
+        # the shared [out] router. Managed online, rendered to Asterisk. ----
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sip_client_trunks (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE,
+                ip_whitelist VARCHAR(500) NOT NULL DEFAULT '',
+                codecs VARCHAR(100) NOT NULL DEFAULT 'alaw,ulaw',
+                allow_prefix VARCHAR(200) NOT NULL DEFAULT '52',
+                caller_id VARCHAR(100) NOT NULL DEFAULT '',
+                max_channels INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 100,
+                is_active BOOLEAN DEFAULT TRUE,
+                note VARCHAR(255) DEFAULT '',
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+        """)
+
         # extensions catalog (per-country extension numbers)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS extensions (
@@ -1720,6 +1742,21 @@ def init_db():
                 codecs TEXT NOT NULL DEFAULT 'alaw,ulaw',
                 dial_prefix TEXT NOT NULL DEFAULT '',
                 match_prefix TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 100,
+                is_active INTEGER DEFAULT 1,
+                note TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS sip_client_trunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                ip_whitelist TEXT NOT NULL DEFAULT '',
+                codecs TEXT NOT NULL DEFAULT 'alaw,ulaw',
+                allow_prefix TEXT NOT NULL DEFAULT '52',
+                caller_id TEXT NOT NULL DEFAULT '',
+                max_channels INTEGER NOT NULL DEFAULT 0,
                 sort_order INTEGER NOT NULL DEFAULT 100,
                 is_active INTEGER DEFAULT 1,
                 note TEXT DEFAULT '',
@@ -12978,6 +13015,9 @@ def voice_test_config():
 SIP_TRUNK_CONFIG_DIR = os.environ.get('SIP_TRUNK_CONFIG_DIR', '/var/lib/sip-trunks')
 SIP_TRUNK_PJSIP_FILE = os.path.join(SIP_TRUNK_CONFIG_DIR, 'pjsip-trunks.conf')
 SIP_TRUNK_DIAL_FILE = os.path.join(SIP_TRUNK_CONFIG_DIR, 'dial-trunks.conf')
+# Inbound CLIENT trunks (we resell/terminate lines to external systems).
+SIP_CLIENT_PJSIP_FILE = os.path.join(SIP_TRUNK_CONFIG_DIR, 'pjsip-inbound.conf')
+SIP_CLIENT_DIAL_FILE = os.path.join(SIP_TRUNK_CONFIG_DIR, 'dial-inbound.conf')
 
 _ALLOWED_CODEC_ORDER = ['opus', 'alaw', 'ulaw']
 _NAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,40}$')
@@ -13311,6 +13351,299 @@ def sip_trunks_reload():
     """Re-render files from DB and report; the asterisk watcher auto-reloads."""
     info = publish_sip_trunk_configs()
     return jsonify({'message': 'Configuracion publicada; Asterisk recargara en unos segundos',
+                    'config': info})
+
+
+# ---------------------------------------------------------------------------
+# Inbound CLIENT SIP trunks (we provide/terminate IP lines to external systems)
+# ---------------------------------------------------------------------------
+# An external customer PBX/call-center authenticates by its static source IP
+# (PJSIP identify, no registration). Its INVITE lands in a dedicated
+# [from-customer-<name>] context that enforces a destination-prefix whitelist
+# (default: only Mexico 52) and an optional per-customer channel cap, then re-
+# originates the call through the shared [out] router (VOS3000 / managed trunks).
+
+_IP_OR_CIDR_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?$')
+
+
+def _normalize_ip_list(raw):
+    """Split an IP whitelist on comma/space/newline; validate IPv4 or CIDR."""
+    parts = [p.strip() for p in str(raw or '').replace('\n', ',').split(',') if p.strip()]
+    out = []
+    for p in parts:
+        p = p.replace(' ', '')
+        if not _IP_OR_CIDR_RE.match(p):
+            raise ValueError('IP invalida (use IPv4 o CIDR, ej. 203.0.113.4 o 198.51.100.0/24): %s' % p)
+        if '/' in p:
+            network, bits = p.split('/')
+            if not (0 <= int(bits) <= 32) or any(not (0 <= int(o) <= 255) for o in network.split('.')):
+                raise ValueError('CIDR invalida: %s' % p)
+        elif any(not (0 <= int(o) <= 255) for o in p.split('.')):
+            raise ValueError('IP invalida: %s' % p)
+        if p not in out:
+            out.append(p)
+    return ','.join(out)
+
+
+def _client_endpoint_name(name):
+    return 'cust-' + re.sub(r'[^A-Za-z0-9_-]', '-', name).strip('-').lower()
+
+
+def list_sip_client_trunks(active_only=False):
+    """Return all inbound client trunks (dicts)."""
+    db = get_db()
+    sql = "SELECT * FROM sip_client_trunks"
+    if active_only:
+        sql += " WHERE is_active=1"
+    sql += " ORDER BY sort_order ASC, id ASC"
+    rows = db.execute(sql).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        out.append({
+            'id': d.get('id'),
+            'name': d.get('name') or '',
+            'ip_whitelist': d.get('ip_whitelist') or '',
+            'codecs': d.get('codecs') or 'alaw,ulaw',
+            'allow_prefix': d.get('allow_prefix') or '52',
+            'caller_id': d.get('caller_id') or '',
+            'max_channels': int(d.get('max_channels') or 0),
+            'sort_order': int(d.get('sort_order') or 100),
+            'is_active': bool(d.get('is_active')),
+            'note': d.get('note') or '',
+            'updated_at': d.get('updated_at'),
+        })
+    return out
+
+
+def render_sip_client_pjsip(clients):
+    """Build inbound endpoint + identify blocks for active client trunks.
+
+    Inbound-only endpoints need no AOR: the identify block matches the source
+    IP and maps the INVITE to the endpoint (same model as a static-IP carrier).
+    """
+    lines = [
+        "; AUTO-GENERATED by app.py - do not edit by hand.",
+        "; Inbound CLIENT trunks (we provide/terminate lines). IP whitelist auth.",
+        "",
+    ]
+    for c in clients:
+        ep = _client_endpoint_name(c['name'])
+        ips = [p for p in (c.get('ip_whitelist') or '').split(',') if p]
+        if not ips:
+            continue
+        lines += [
+            "[%s]" % ep,
+            "type=endpoint",
+            "transport=transport-udp",
+            "context=from-customer-%s" % ep,
+            "disallow=all",
+        ]
+        for codec in c['codecs'].split(','):
+            if codec:
+                lines.append("allow=%s" % codec)
+        lines += [
+            "direct_media=no",
+            "rtp_symmetric=yes",
+            "force_rport=yes",
+            "rewrite_contact=yes",
+            "dtmf_mode=rfc4733",
+            "jitterbuffer=yes",
+            "jb_impl=adaptive",
+            "jb_target=20",
+            "jb_max=100",
+            "jb_force=no",
+            "trust_id_inbound=no",
+            "",
+        ]
+        for ip in ips:
+            lines += [
+                "[%s]" % ep,
+                "type=identify",
+                "endpoint=%s" % ep,
+                "match=%s" % ip,
+                "",
+            ]
+    return "\n".join(lines) + "\n"
+
+
+def render_sip_client_dial(clients):
+    """Build the per-customer inbound contexts with whitelist + channel cap.
+
+    Only destinations whose leading digits match the customer's allow_prefix
+    list are accepted; everything else is rejected (anti-toll-fraud). Accepted
+    calls are normalized and routed via the shared [out] router.
+    """
+    lines = [
+        "; AUTO-GENERATED by app.py - do not edit by hand.",
+        "; Inbound CLIENT trunks: prefix whitelist + per-customer channel cap,",
+        "; then Goto(normalize) -> [out] (VOS3000 / managed carrier trunks).",
+        "",
+    ]
+    for c in clients:
+        ep = _client_endpoint_name(c['name'])
+        ips = [p for p in (c.get('ip_whitelist') or '').split(',') if p]
+        if not ips:
+            continue
+        prefixes = [p for p in (c.get('allow_prefix') or '52').split(',') if p]
+        max_ch = int(c.get('max_channels') or 0)
+        cid = (c.get('caller_id') or '').strip()
+        lines += [
+            "[from-customer-%s]" % ep,
+            # Strip a leading '+' (E.164) right away so one chain handles both
+            # "+52..." and "52..."/digits; then continue at priority 2.
+            "exten => _+X.,1,Goto(${CONTEXT},${FILTER(0-9,${EXTEN:1})},2)",
+            "exten => _X.,1,NoOp(Cliente %s entrante de ${CHANNEL(recvip)} -> ${EXTEN})" % c['name'],
+        ]
+        if cid.isdigit():
+            lines.append("same => n,Set(CALLERID(num)=%s)" % cid)
+        if max_ch > 0:
+            # Count live channels tagged for this customer; reject when at cap.
+            lines.append("same => n,Set(GROUP()=%s)" % ep)
+            lines.append('same => n,GotoIf($[${GROUP_COUNT(%s@)}>=%d]?rechazar,1)' % (ep, max_ch))
+        # Whitelist: accept if the destination begins with any allowed prefix.
+        for p in prefixes:
+            lines.append(
+                'same => n,GotoIf($["${EXTEN:0:%d}" = "%s"]?permitido,1)' % (len(p), p))
+        lines.append("same => n,Verbose(1,Rechazado por lista blanca cliente %s: ${EXTEN})" % c['name'])
+        lines.append("same => n,Hangup(57)")  # 57 = bearer capability not authorized
+        lines.append("exten => permitido,1,NoOp(Destino permitido, normalizando ${EXTEN})")
+        lines.append("same => n,Goto(normalize,${EXTEN},1)")
+        lines.append("exten => rechazar,1,Playtones(congestion)")
+        lines.append("same => n,Hangup(34)")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def publish_sip_client_configs():
+    """Render active client trunks and atomically write both inbound files."""
+    clients = list_sip_client_trunks(active_only=True)
+    pjsip_text = render_sip_client_pjsip(clients)
+    dial_text = render_sip_client_dial(clients)
+    os.makedirs(SIP_TRUNK_CONFIG_DIR, exist_ok=True)
+
+    def _atomic_write(path, text):
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+
+    _atomic_write(SIP_CLIENT_PJSIP_FILE, pjsip_text)
+    _atomic_write(SIP_CLIENT_DIAL_FILE, dial_text)
+    return {'clients': len(clients),
+            'pjsip_file': SIP_CLIENT_PJSIP_FILE,
+            'dial_file': SIP_CLIENT_DIAL_FILE}
+
+
+@app.route('/api/config/client-trunks', methods=['GET'])
+@admin_required
+def client_trunks_list():
+    return jsonify({'trunks': list_sip_client_trunks()})
+
+
+@app.route('/api/config/client-trunks', methods=['POST'])
+@admin_required
+def client_trunks_create():
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    if not _NAME_RE.match(name):
+        return jsonify({'error': 'Nombre: solo letras, numeros, guion y subrayado (1-40)'}), 400
+    try:
+        ip_whitelist = _normalize_ip_list(data.get('ip_whitelist'))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    if not ip_whitelist:
+        return jsonify({'error': 'Indique al menos una IP/CIDR en la lista blanca'}), 400
+    allow_prefix = _normalize_prefix_list(data.get('allow_prefix') or '52') or '52'
+    try:
+        max_channels = int(data.get('max_channels') or 0)
+        if max_channels < 0 or max_channels > 100000:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Limite de canales invalido (0 = sin limite)'}), 400
+    caller_id = _digits_only(data.get('caller_id'))
+    db = get_db()
+    dup = db.execute("SELECT id FROM sip_client_trunks WHERE lower(name)=lower(?)", (name,)).fetchone()
+    if dup:
+        return jsonify({'error': 'Ya existe un cliente con ese nombre'}), 409
+    cur = db.execute(
+        "INSERT INTO sip_client_trunks (name, ip_whitelist, codecs, allow_prefix, caller_id, "
+        "max_channels, sort_order, is_active, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, ip_whitelist, _normalize_codecs(data.get('codecs')), allow_prefix, caller_id,
+         max_channels, int(data.get('sort_order') or 100),
+         1 if data.get('is_active', True) else 0,
+         (data.get('note') or '').strip()[:255])
+    )
+    db.commit()
+    info = publish_sip_client_configs()
+    return jsonify({'message': 'Cliente creado', 'id': cur.lastrowid, 'config': info}), 201
+
+
+@app.route('/api/config/client-trunks/<int:trunk_id>', methods=['PUT'])
+@admin_required
+def client_trunks_update(trunk_id):
+    data = request.get_json() or {}
+    db = get_db()
+    row = db.execute("SELECT * FROM sip_client_trunks WHERE id=?", (trunk_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Cliente no encontrado'}), 404
+    row = dict(row)
+    name = (data.get('name', row.get('name')) or '').strip()
+    if not _NAME_RE.match(name):
+        return jsonify({'error': 'Nombre: solo letras, numeros, guion y subrayado (1-40)'}), 400
+    try:
+        ip_whitelist = _normalize_ip_list(data.get('ip_whitelist', row.get('ip_whitelist')))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    if not ip_whitelist:
+        return jsonify({'error': 'Indique al menos una IP/CIDR en la lista blanca'}), 400
+    allow_prefix = _normalize_prefix_list(
+        data.get('allow_prefix', row.get('allow_prefix')) or '52') or '52'
+    try:
+        max_channels = int(data.get('max_channels', row.get('max_channels')) or 0)
+        if max_channels < 0 or max_channels > 100000:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Limite de canales invalido (0 = sin limite)'}), 400
+    caller_id = _digits_only(data.get('caller_id', row.get('caller_id')))
+    dup = db.execute("SELECT id FROM sip_client_trunks WHERE lower(name)=lower(?) AND id<>?",
+                     (name, trunk_id)).fetchone()
+    if dup:
+        return jsonify({'error': 'Ya existe otro cliente con ese nombre'}), 409
+    db.execute(
+        "UPDATE sip_client_trunks SET name=?, ip_whitelist=?, codecs=?, allow_prefix=?, "
+        "caller_id=?, max_channels=?, sort_order=?, is_active=?, note=?, "
+        "updated_at=datetime('now') WHERE id=?",
+        (name, ip_whitelist, _normalize_codecs(data.get('codecs', row.get('codecs'))),
+         allow_prefix, caller_id, max_channels,
+         int(data.get('sort_order', row.get('sort_order')) or 100),
+         1 if data.get('is_active', bool(row.get('is_active'))) else 0,
+         (data.get('note', row.get('note')) or '').strip()[:255], trunk_id)
+    )
+    db.commit()
+    info = publish_sip_client_configs()
+    return jsonify({'message': 'Cliente actualizado', 'config': info})
+
+
+@app.route('/api/config/client-trunks/<int:trunk_id>', methods=['DELETE'])
+@admin_required
+def client_trunks_delete(trunk_id):
+    db = get_db()
+    row = db.execute("SELECT id FROM sip_client_trunks WHERE id=?", (trunk_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Cliente no encontrado'}), 404
+    db.execute("DELETE FROM sip_client_trunks WHERE id=?", (trunk_id,))
+    db.commit()
+    info = publish_sip_client_configs()
+    return jsonify({'message': 'Cliente eliminado', 'config': info})
+
+
+@app.route('/api/config/client-trunks/reload', methods=['POST'])
+@admin_required
+def client_trunks_reload():
+    """Re-render inbound files from DB; the asterisk watcher auto-reloads."""
+    info = publish_sip_client_configs()
+    return jsonify({'message': 'Configuracion de clientes publicada; Asterisk recargara en unos segundos',
                     'config': info})
 
 

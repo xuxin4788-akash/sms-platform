@@ -657,6 +657,9 @@ function navigateTo(page) {
         case 'sip-trunks':
             if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
             renderSipTrunks(content); break;
+        case 'client-trunks':
+            if (state.user.role !== 'admin') { renderAccessDenied(content); break; }
+            renderClientTrunks(content); break;
         case 'retention':
             if (state.user.role !== 'admin' && state.user.role !== 'team_admin') { renderAccessDenied(content); break; }
             renderRetention(content); break;
@@ -6306,6 +6309,187 @@ function testSipTrunk(id, btn) {
 
 function publishSipTrunks() {
     api('/api/config/sip-trunks/reload', { method: 'POST' }).then(function(d) {
+        showToast(d.message || 'Configuracion publicada', 'success');
+    }).catch(function(e) {
+        showToast(e.message || 'Error al publicar', 'error');
+    });
+}
+
+// ============================================================
+// Inbound CLIENT SIP trunks (Clientes SIP / reventa de lineas IP)
+// WE provide the line: external systems send calls from a whitelisted IP and
+// we terminate them through our own trunks, restricted to a prefix whitelist.
+// ============================================================
+var clientTrunkState = { data: [] };
+
+function renderClientTrunks(content) {
+    content.innerHTML =
+        '<h1 style="margin-bottom:4px;">Clientes SIP (Lineas IP que ofrecemos)</h1>' +
+        '<p style="color:var(--text-secondary);margin-bottom:20px;">Permita que sistemas externos (PBX / call center de un cliente) usen sus lineas por IP, sin usuario ni registro: autorice su IP publica y restrinja los destinos por lista blanca (por defecto solo Mexico 52). Las demas llamadas se rechazan. Los cambios se publican y Asterisk se recarga solo en unos segundos.</p>' +
+        '<div class="card" style="padding:0;overflow:hidden;">' +
+            '<div style="display:flex;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;">' +
+                '<button type="button" id="ct-new" class="btn btn-primary btn-sm">+ Nuevo cliente</button>' +
+                '<button type="button" id="ct-reload" class="btn btn-ghost btn-sm">Publicar / Recargar</button>' +
+            '</div>' +
+            '<div id="ct-body" style="padding:20px;"><div class="loading">Cargando...</div></div>' +
+        '</div>';
+    document.getElementById('ct-new').addEventListener('click', function() { showClientTrunkModal(null); });
+    document.getElementById('ct-reload').addEventListener('click', function() { publishClientTrunks(); });
+    loadClientTrunks();
+}
+
+function loadClientTrunks() {
+    api('/api/config/client-trunks').then(function(d) {
+        clientTrunkState.data = d.trunks || [];
+        renderClientTrunksBody();
+    }).catch(function(e) {
+        var body = document.getElementById('ct-body');
+        if (body) body.innerHTML = '<div class="alert alert-danger">' + escapeHtml(e.message || 'Error al cargar') + '</div>';
+    });
+}
+
+function renderClientTrunksBody() {
+    var body = document.getElementById('ct-body');
+    if (!body) return;
+    var rows = clientTrunkState.data.map(function(t) {
+        var status = t.is_active
+            ? '<span class="badge badge-green">Activo</span>'
+            : '<span class="badge badge-gray">Inactivo</span>';
+        var cap = (t.max_channels && t.max_channels > 0) ? t.max_channels : '<span style="color:var(--text-muted);">sin limite</span>';
+        var cid = t.caller_id ? escapeHtml(t.caller_id) : '<span style="color:var(--text-muted);">original</span>';
+        return '<tr>' +
+            '<td style="font-weight:600;">' + escapeHtml(t.name) + '</td>' +
+            '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(t.ip_whitelist) + '</td>' +
+            '<td>' + escapeHtml(t.allow_prefix) + '</td>' +
+            '<td>' + cap + '</td>' +
+            '<td>' + cid + '</td>' +
+            '<td>' + status + '</td>' +
+            '<td style="text-align:right;white-space:nowrap;">' +
+                '<button type="button" data-edit="' + t.id + '" class="btn btn-ghost btn-sm">Editar</button> ' +
+                '<button type="button" data-del="' + t.id + '" class="btn btn-ghost btn-sm" style="color:var(--danger);">Eliminar</button>' +
+            '</td>' +
+        '</tr>';
+    }).join('');
+    body.innerHTML =
+        '<div class="table-wrap">' +
+            '<table class="data-table"><thead><tr>' +
+                '<th>Cliente</th><th>IPs autorizadas</th><th>Prefijos permitidos</th><th>Canales</th><th>Caller ID</th><th>Estado</th><th style="text-align:right;">Acciones</th>' +
+            '</tr></thead><tbody>' +
+                (rows || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px;">No hay clientes. Agregue uno con "Nuevo cliente".</td></tr>') +
+            '</tbody></table>' +
+        '</div>';
+    body.querySelectorAll('[data-edit]').forEach(function(b) {
+        b.addEventListener('click', function() { showClientTrunkModal(b.dataset.edit); });
+    });
+    body.querySelectorAll('[data-del]').forEach(function(b) {
+        b.addEventListener('click', function() { deleteClientTrunk(b.dataset.del); });
+    });
+}
+
+function showClientTrunkModal(id) {
+    var t = null;
+    if (id != null) {
+        t = clientTrunkState.data.find(function(x) { return String(x.id) === String(id); });
+        if (!t) return;
+    }
+    var cur = t || { name: '', ip_whitelist: '', codecs: 'alaw,ulaw',
+                     allow_prefix: '52', caller_id: '', max_channels: 0,
+                     sort_order: 100, is_active: true, note: '' };
+    var selected = (cur.codecs || '').split(',');
+    var codecChecks = SIP_CODEC_OPTIONS.map(function(c) {
+        var on = selected.indexOf(c.value) >= 0;
+        return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;font-weight:500;">' +
+            '<input type="checkbox" data-codec="' + c.value + '"' + (on ? ' checked' : '') + '>' +
+            c.label + '</label>';
+    }).join('');
+    var modal = document.getElementById('modal');
+    modal.innerHTML =
+        '<div class="modal-content" style="max-width:560px;">' +
+            '<div class="modal-header">' +
+                '<h3>' + (t ? 'Editar cliente SIP' : 'Nuevo cliente SIP (linea ofrecida)') + '</h3>' +
+                '<button type="button" class="modal-close" onclick="closeModal()">&times;</button>' +
+            '</div>' +
+            '<div class="modal-body">' +
+                '<div class="form-group"><label>Nombre (identificador)</label>' +
+                    '<input type="text" id="ct-name" class="form-control" value="' + escapeHtml(cur.name) + '" placeholder="cliente-a"></div>' +
+                '<div class="form-group"><label>IPs autorizadas (separadas por coma; admite CIDR)</label>' +
+                    '<input type="text" id="ct-ips" class="form-control" value="' + escapeHtml(cur.ip_whitelist) + '" placeholder="203.0.113.4, 198.51.100.0/24">' +
+                    '<small style="color:var(--text-secondary);">El cliente envia llamadas SIN registrarse desde estas IPs. Es su unica credencial: mantengala exacta.</small></div>' +
+                '<div class="form-group"><label>Prefijos de destino permitidos (lista blanca)</label>' +
+                    '<input type="text" id="ct-allow" class="form-control" value="' + escapeHtml(cur.allow_prefix) + '" placeholder="52">' +
+                    '<small style="color:var(--text-secondary);">Solo las llamadas que empiecen por estos digitos se aceptan; el resto se rechaza. Mexico = 52.</small></div>' +
+                '<div class="form-group"><label>Codigos admitidos</label><div>' + codecChecks + '</div></div>' +
+                '<div style="display:flex;gap:12px;">' +
+                    '<div class="form-group" style="flex:1;"><label>Limite de canales (0 = sin limite)</label>' +
+                        '<input type="number" id="ct-max" class="form-control" value="' + (cur.max_channels || 0) + '" min="0" max="100000"></div>' +
+                    '<div class="form-group" style="flex:1;"><label>Caller ID forzado (opcional)</label>' +
+                        '<input type="text" id="ct-cid" class="form-control" value="' + escapeHtml(cur.caller_id) + '" placeholder="5512345678">' +
+                        '<small style="color:var(--text-secondary);">Vacio = conserva el del cliente.</small></div>' +
+                '</div>' +
+                '<div style="display:flex;gap:12px;">' +
+                    '<div class="form-group" style="width:110px;"><label>Orden</label>' +
+                        '<input type="number" id="ct-order" class="form-control" value="' + (cur.sort_order || 100) + '"></div>' +
+                    '<div class="form-group" style="flex:1;display:flex;align-items:flex-end;">' +
+                        '<label style="display:inline-flex;align-items:center;gap:8px;font-weight:500;">' +
+                            '<input type="checkbox" id="ct-active"' + (cur.is_active ? ' checked' : '') + '> Cliente activo</label>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="form-group"><label>Nota (opcional)</label>' +
+                    '<input type="text" id="ct-note" class="form-control" value="' + escapeHtml(cur.note) + '"></div>' +
+            '</div>' +
+            '<div class="modal-footer">' +
+                '<button type="button" class="btn btn-ghost" onclick="closeModal()">Cancelar</button>' +
+                '<button type="button" class="btn btn-primary" id="ct-save">Guardar</button>' +
+            '</div>' +
+        '</div>';
+    modal.classList.add('active');
+    document.getElementById('ct-save').addEventListener('click', function() { saveClientTrunk(t ? t.id : null); });
+}
+
+function collectClientTrunkForm() {
+    var codecs = Array.prototype.map.call(
+        document.querySelectorAll('.modal-content [data-codec]:checked'),
+        function(cb) { return cb.dataset.codec; }
+    );
+    return {
+        name: document.getElementById('ct-name').value,
+        ip_whitelist: document.getElementById('ct-ips').value,
+        codecs: codecs.join(','),
+        allow_prefix: document.getElementById('ct-allow').value,
+        max_channels: document.getElementById('ct-max').value,
+        caller_id: document.getElementById('ct-cid').value,
+        sort_order: document.getElementById('ct-order').value,
+        is_active: document.getElementById('ct-active').checked,
+        note: document.getElementById('ct-note').value
+    };
+}
+
+function saveClientTrunk(id) {
+    var body = collectClientTrunkForm();
+    var req = id
+        ? api('/api/config/client-trunks/' + id, { method: 'PUT', body: body })
+        : api('/api/config/client-trunks', { method: 'POST', body: body });
+    req.then(function() {
+        closeModal();
+        showToast(id ? 'Cliente actualizado' : 'Cliente creado', 'success');
+        loadClientTrunks();
+    }).catch(function(e) {
+        showToast(e.message || 'Error al guardar', 'error');
+    });
+}
+
+function deleteClientTrunk(id) {
+    if (!window.confirm('Eliminar este cliente? Dejara de poder enviar llamadas de inmediato.')) return;
+    api('/api/config/client-trunks/' + id, { method: 'DELETE' }).then(function() {
+        showToast('Cliente eliminado', 'success');
+        loadClientTrunks();
+    }).catch(function(e) {
+        showToast(e.message || 'Error al eliminar', 'error');
+    });
+}
+
+function publishClientTrunks() {
+    api('/api/config/client-trunks/reload', { method: 'POST' }).then(function(d) {
         showToast(d.message || 'Configuracion publicada', 'success');
     }).catch(function(e) {
         showToast(e.message || 'Error al publicar', 'error');

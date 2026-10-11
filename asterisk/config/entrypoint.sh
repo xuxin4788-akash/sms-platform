@@ -89,7 +89,9 @@ chmod 0777 "$RECORD_DIR"
 # Placeholder files guarantee the #tryinclude directives never break startup.
 TRUNK_DYN_DIR="${SIP_TRUNK_CONFIG_DIR:-/var/lib/sip-trunks}"
 mkdir -p "$TRUNK_DYN_DIR"
-for f in pjsip-trunks.conf dial-trunks.conf; do
+# pjsip-trunks/dial-trunks = outbound carrier lines; pjsip-inbound/dial-inbound
+# = inbound CLIENT trunks (lines we provide/resell to external systems).
+for f in pjsip-trunks.conf dial-trunks.conf pjsip-inbound.conf dial-inbound.conf; do
     if [ ! -f "$TRUNK_DYN_DIR/$f" ]; then
         printf '; placeholder (auto-generated on first save)\n' > "$TRUNK_DYN_DIR/$f"
     fi
@@ -102,7 +104,7 @@ done
   sig=":"
   while true; do
     sleep 2
-    nsig="$(cat "$TRUNK_DYN_DIR/pjsip-trunks.conf" "$TRUNK_DYN_DIR/dial-trunks.conf" 2>/dev/null | md5sum | awk '{print $1}')"
+    nsig="$(cat "$TRUNK_DYN_DIR/pjsip-trunks.conf" "$TRUNK_DYN_DIR/dial-trunks.conf" "$TRUNK_DYN_DIR/pjsip-inbound.conf" "$TRUNK_DYN_DIR/dial-inbound.conf" 2>/dev/null | md5sum | awk '{print $1}')"
     if [ "$nsig" != "$sig" ]; then
       if [ "$sig" != ":" ]; then
         echo "$(date '+%F %T') change detected, reloading..."

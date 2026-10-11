@@ -82,3 +82,36 @@ Ver `static/phone/ASIGNACION.md`. El contenedor crea 1001-1200 (200 extensiones)
   tarificarse mal.
 - Como mejora, la plataforma puede entregar a cada usuario su extensión y
   credencial propia tras iniciar sesión, en lugar de una contraseña compartida.
+
+## Ofrecer líneas IP a clientes externos (reventa / terminación)
+
+Además de comprar tráfico a VOS3000/operadores, Asterisk puede funcionar en
+sentido inverso: un sistema externo (PBX / call center / softswitch de un
+cliente) envía llamadas SIN registrarse, autenticado únicamente por su IP
+pública, y el contenedor las termina por las rutas salientes existentes.
+
+Se gestiona en el panel **`#/client-trunks` (Clientes SIP)** sin editar
+archivos ni reiniciar. Por cliente se define:
+
+- `ip_whitelist`: IPs/CIDR autorizadas (única credencial, sin usuario/clave).
+- `allow_prefix`: lista blanca de destinos (por defecto `52`, solo México);
+  lo demás se rechaza con `Hangup(57)`. Un `+` inicial se elimina antes.
+- `max_channels`: tope de llamadas simultáneas (0 = sin límite).
+- `caller_id` (opcional), codecs y nota.
+
+Archivos generados por la app en el volumen compartido `sip-trunks`
+(`/var/lib/sip-trunks`, mismo mecanismo que las líneas de operador):
+
+- `pjsip-inbound.conf`: `endpoint` de solo entrada (sin AOR) + un `identify`
+  por IP/CIDR, con `context=from-customer-cust-<nombre>`.
+- `dial-inbound.conf`: un contexto por cliente que aplica lista blanca, límite
+  de canales y luego `Goto(normalize) -> [out]` (VOS3000 / líneas gestionadas).
+
+Ambos se incorporan con `#tryinclude` en `pjsip.conf.head` y `extensions.conf`;
+el watcher de `entrypoint.sh` revisa los cuatro fragmentos cada 2 s y recarga
+`pjsip` + dialplan solo si cambian. Requisitos de red: el cliente debe poder
+llegar a este servidor por UDP `5060` y RTP `10000-10800` (ya publicados).
+
+> Seguridad: la IP de origen es la única barrera. Mantener la lista exacta, no
+> dejar nunca `allow_prefix` vacío/abierto, y usar `max_channels` para acotar
+> la exposición ante uso indebido o fraude de peaje.

@@ -56,3 +56,7 @@ match=__TRUNK_HOST__
 ; ---- Lineas de operador gestionadas por web (#/sip-trunks) ----
 ; Endpoint/aor/identify generados por app.py en el volumen compartido.
 #tryinclude "pjsip-trunks.conf"
+
+; ---- Clientes SIP entrantes: NOSOTROS les damos linea (#/client-trunks) ----
+; Endpoint (IP whitelist) + identify generados por app.py. Sin registro ni AOR.
+#tryinclude "pjsip-inbound.conf"
