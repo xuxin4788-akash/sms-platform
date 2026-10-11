@@ -888,6 +888,7 @@ def init_db():
                 ip_whitelist VARCHAR(500) NOT NULL DEFAULT '',
                 codecs VARCHAR(100) NOT NULL DEFAULT 'alaw,ulaw',
                 allow_prefix VARCHAR(200) NOT NULL DEFAULT '52',
+                dial_prefix VARCHAR(200) NOT NULL DEFAULT '',
                 caller_id VARCHAR(100) NOT NULL DEFAULT '',
                 max_channels INTEGER NOT NULL DEFAULT 0,
                 sort_order INTEGER NOT NULL DEFAULT 100,
@@ -897,6 +898,9 @@ def init_db():
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
         """)
+        if not pg_column_exists('sip_client_trunks', 'dial_prefix'):
+            cur.execute(
+                "ALTER TABLE sip_client_trunks ADD COLUMN dial_prefix VARCHAR(200) NOT NULL DEFAULT ''")
 
         # extensions catalog (per-country extension numbers)
         cur.execute("""
@@ -1755,6 +1759,7 @@ def init_db():
                 ip_whitelist TEXT NOT NULL DEFAULT '',
                 codecs TEXT NOT NULL DEFAULT 'alaw,ulaw',
                 allow_prefix TEXT NOT NULL DEFAULT '52',
+                dial_prefix TEXT NOT NULL DEFAULT '',
                 caller_id TEXT NOT NULL DEFAULT '',
                 max_channels INTEGER NOT NULL DEFAULT 0,
                 sort_order INTEGER NOT NULL DEFAULT 100,
@@ -2285,6 +2290,17 @@ def init_db():
             cols = [row[1] for row in cursor.fetchall()]
             if 'unit_price' not in cols:
                 db.execute("ALTER TABLE sms_api_configs ADD COLUMN unit_price REAL DEFAULT 0")
+                db.commit()
+        except Exception:
+            pass
+
+        # Migration: inbound client trunks dial_prefix (customer dial code stripped
+        # before the whitelist/normalize stage, e.g. 821 before 52XXXXXXXXXX).
+        try:
+            cursor = db.execute("PRAGMA table_info(sip_client_trunks)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if cols and 'dial_prefix' not in cols:
+                db.execute("ALTER TABLE sip_client_trunks ADD COLUMN dial_prefix TEXT DEFAULT ''")
                 db.commit()
         except Exception:
             pass
@@ -13406,6 +13422,7 @@ def list_sip_client_trunks(active_only=False):
             'ip_whitelist': d.get('ip_whitelist') or '',
             'codecs': d.get('codecs') or 'alaw,ulaw',
             'allow_prefix': d.get('allow_prefix') or '52',
+            'dial_prefix': d.get('dial_prefix') or '',
             'caller_id': d.get('caller_id') or '',
             'max_channels': int(d.get('max_channels') or 0),
             'sort_order': int(d.get('sort_order') or 100),
@@ -13486,6 +13503,12 @@ def render_sip_client_dial(clients):
         if not ips:
             continue
         prefixes = [p for p in (c.get('allow_prefix') or '52').split(',') if p]
+        # Customer dial code(s) stripped BEFORE the whitelist, e.g. dial 821 + 52XXXX
+        # -> strip 821 -> 52XXXX -> whitelist 52 -> normalize. Longest first so a
+        # code that is a prefix of another matches correctly.
+        dial_codes = sorted(
+            {p for p in (c.get('dial_prefix') or '').replace(';', ',').split(',') if p.isdigit()},
+            key=len, reverse=True)
         max_ch = int(c.get('max_channels') or 0)
         cid = (c.get('caller_id') or '').strip()
         lines += [
@@ -13501,14 +13524,29 @@ def render_sip_client_dial(clients):
             # Count live channels tagged for this customer; reject when at cap.
             lines.append("same => n,Set(GROUP()=%s)" % ep)
             lines.append('same => n,GotoIf($[${GROUP_COUNT(%s@)}>=%d]?rechazar,1)' % (ep, max_ch))
-        # Whitelist: accept if the destination begins with any allowed prefix.
+        # Default the working destination to the dialed number, then strip the first
+        # (longest) matching customer dial code. Each strip label jumps to the
+        # whitelist; with no dial code the number passes through unchanged.
+        lines.append("same => n,Set(dest=${EXTEN})")
+        if dial_codes:
+            for i, code in enumerate(dial_codes, start=1):
+                lines.append(
+                    'same => n,GotoIf($["${EXTEN:0:%d}" = "%s"]?strip%d,1)' % (len(code), code, i))
+        lines.append("same => n,Goto(wl,1)")
+        for i, code in enumerate(dial_codes, start=1):
+            lines.append("exten => strip%d,1,Set(dest=${EXTEN:%d})" % (i, len(code)))
+            lines.append("same => n,NoOp(Cliente %s: quite prefijo %s -> ${dest})" % (c['name'], code))
+            lines.append("same => n,Goto(wl,1)")
+        # Whitelist on the STRIPPED destination: empty or non-whitelisted is rejected.
+        lines.append("exten => wl,1,NoOp(Validando destino cliente %s: ${dest})" % c['name'])
+        lines.append('same => n,GotoIf($[${LEN(dest)}=0]?rechazar,1)')
         for p in prefixes:
             lines.append(
-                'same => n,GotoIf($["${EXTEN:0:%d}" = "%s"]?permitido,1)' % (len(p), p))
-        lines.append("same => n,Verbose(1,Rechazado por lista blanca cliente %s: ${EXTEN})" % c['name'])
+                'same => n,GotoIf($["${dest:0:%d}" = "%s"]?permitido,1)' % (len(p), p))
+        lines.append("same => n,Verbose(1,Rechazado por lista blanca cliente %s: ${EXTEN} -> ${dest})" % c['name'])
         lines.append("same => n,Hangup(57)")  # 57 = bearer capability not authorized
-        lines.append("exten => permitido,1,NoOp(Destino permitido, normalizando ${EXTEN})")
-        lines.append("same => n,Goto(normalize,${EXTEN},1)")
+        lines.append("exten => permitido,1,NoOp(Destino permitido, normalizando ${dest})")
+        lines.append("same => n,Goto(normalize,${dest},1)")
         lines.append("exten => rechazar,1,Playtones(congestion)")
         lines.append("same => n,Hangup(34)")
         lines.append("")
@@ -13555,6 +13593,7 @@ def client_trunks_create():
     if not ip_whitelist:
         return jsonify({'error': 'Indique al menos una IP/CIDR en la lista blanca'}), 400
     allow_prefix = _normalize_prefix_list(data.get('allow_prefix') or '52') or '52'
+    dial_prefix = _normalize_prefix_list(data.get('dial_prefix') or '')
     try:
         max_channels = int(data.get('max_channels') or 0)
         if max_channels < 0 or max_channels > 100000:
@@ -13567,10 +13606,11 @@ def client_trunks_create():
     if dup:
         return jsonify({'error': 'Ya existe un cliente con ese nombre'}), 409
     cur = db.execute(
-        "INSERT INTO sip_client_trunks (name, ip_whitelist, codecs, allow_prefix, caller_id, "
-        "max_channels, sort_order, is_active, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (name, ip_whitelist, _normalize_codecs(data.get('codecs')), allow_prefix, caller_id,
-         max_channels, int(data.get('sort_order') or 100),
+        "INSERT INTO sip_client_trunks (name, ip_whitelist, codecs, allow_prefix, dial_prefix, "
+        "caller_id, max_channels, sort_order, is_active, note) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, ip_whitelist, _normalize_codecs(data.get('codecs')), allow_prefix, dial_prefix,
+         caller_id, max_channels, int(data.get('sort_order') or 100),
          1 if data.get('is_active', True) else 0,
          (data.get('note') or '').strip()[:255])
     )
@@ -13599,6 +13639,8 @@ def client_trunks_update(trunk_id):
         return jsonify({'error': 'Indique al menos una IP/CIDR en la lista blanca'}), 400
     allow_prefix = _normalize_prefix_list(
         data.get('allow_prefix', row.get('allow_prefix')) or '52') or '52'
+    dial_prefix = _normalize_prefix_list(
+        data.get('dial_prefix', row.get('dial_prefix')) or '')
     try:
         max_channels = int(data.get('max_channels', row.get('max_channels')) or 0)
         if max_channels < 0 or max_channels > 100000:
@@ -13612,10 +13654,10 @@ def client_trunks_update(trunk_id):
         return jsonify({'error': 'Ya existe otro cliente con ese nombre'}), 409
     db.execute(
         "UPDATE sip_client_trunks SET name=?, ip_whitelist=?, codecs=?, allow_prefix=?, "
-        "caller_id=?, max_channels=?, sort_order=?, is_active=?, note=?, "
+        "dial_prefix=?, caller_id=?, max_channels=?, sort_order=?, is_active=?, note=?, "
         "updated_at=datetime('now') WHERE id=?",
         (name, ip_whitelist, _normalize_codecs(data.get('codecs', row.get('codecs'))),
-         allow_prefix, caller_id, max_channels,
+         allow_prefix, dial_prefix, caller_id, max_channels,
          int(data.get('sort_order', row.get('sort_order')) or 100),
          1 if data.get('is_active', bool(row.get('is_active'))) else 0,
          (data.get('note', row.get('note')) or '').strip()[:255], trunk_id)

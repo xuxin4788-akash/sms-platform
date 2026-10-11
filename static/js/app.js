@@ -6361,6 +6361,7 @@ function renderClientTrunksBody() {
             '<td style="font-weight:600;">' + escapeHtml(t.name) + '</td>' +
             '<td style="font-family:monospace;font-size:12px;">' + escapeHtml(t.ip_whitelist) + '</td>' +
             '<td>' + escapeHtml(t.allow_prefix) + '</td>' +
+            '<td>' + (t.dial_prefix ? escapeHtml(t.dial_prefix) : '<span style="color:var(--text-muted);">-</span>') + '</td>' +
             '<td>' + cap + '</td>' +
             '<td>' + cid + '</td>' +
             '<td>' + status + '</td>' +
@@ -6373,9 +6374,9 @@ function renderClientTrunksBody() {
     body.innerHTML =
         '<div class="table-wrap">' +
             '<table class="data-table"><thead><tr>' +
-                '<th>Cliente</th><th>IPs autorizadas</th><th>Prefijos permitidos</th><th>Canales</th><th>Caller ID</th><th>Estado</th><th style="text-align:right;">Acciones</th>' +
+                '<th>Cliente</th><th>IPs autorizadas</th><th>Prefijos permitidos</th><th>Prefijo marcado</th><th>Canales</th><th>Caller ID</th><th>Estado</th><th style="text-align:right;">Acciones</th>' +
             '</tr></thead><tbody>' +
-                (rows || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px;">No hay clientes. Agregue uno con "Nuevo cliente".</td></tr>') +
+                (rows || '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:24px;">No hay clientes. Agregue uno con "Nuevo cliente".</td></tr>') +
             '</tbody></table>' +
         '</div>';
     body.querySelectorAll('[data-edit]').forEach(function(b) {
@@ -6393,7 +6394,7 @@ function showClientTrunkModal(id) {
         if (!t) return;
     }
     var cur = t || { name: '', ip_whitelist: '', codecs: 'alaw,ulaw',
-                     allow_prefix: '52', caller_id: '', max_channels: 0,
+                     allow_prefix: '52', dial_prefix: '', caller_id: '', max_channels: 0,
                      sort_order: 100, is_active: true, note: '' };
     var selected = (cur.codecs || '').split(',');
     var codecChecks = SIP_CODEC_OPTIONS.map(function(c) {
@@ -6418,6 +6419,9 @@ function showClientTrunkModal(id) {
                 '<div class="form-group"><label>Prefijos de destino permitidos (lista blanca)</label>' +
                     '<input type="text" id="ct-allow" class="form-control" value="' + escapeHtml(cur.allow_prefix) + '" placeholder="52">' +
                     '<small style="color:var(--text-secondary);">Solo las llamadas que empiecen por estos digitos se aceptan; el resto se rechaza. Mexico = 52.</small></div>' +
+                '<div class="form-group"><label>Prefijo de marcado del cliente (se elimina antes de enrutar)</label>' +
+                    '<input type="text" id="ct-dial" class="form-control" value="' + escapeHtml(cur.dial_prefix || '') + '" placeholder="821">' +
+                    '<small style="color:var(--text-secondary);">Codigo que el cliente antepone y que debe quitarse. Ej. marca 821 + 52XXXXXXXXXX: ponga 821 y queda 52XXXXXXXXXX. Vacio = no se quita nada.</small></div>' +
                 '<div class="form-group"><label>Codigos admitidos</label><div>' + codecChecks + '</div></div>' +
                 '<div style="display:flex;gap:12px;">' +
                     '<div class="form-group" style="flex:1;"><label>Limite de canales (0 = sin limite)</label>' +
@@ -6456,6 +6460,7 @@ function collectClientTrunkForm() {
         ip_whitelist: document.getElementById('ct-ips').value,
         codecs: codecs.join(','),
         allow_prefix: document.getElementById('ct-allow').value,
+        dial_prefix: document.getElementById('ct-dial').value,
         max_channels: document.getElementById('ct-max').value,
         caller_id: document.getElementById('ct-cid').value,
         sort_order: document.getElementById('ct-order').value,

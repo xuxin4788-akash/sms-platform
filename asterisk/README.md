@@ -94,10 +94,20 @@ Se gestiona en el panel **`#/client-trunks` (Clientes SIP)** sin editar
 archivos ni reiniciar. Por cliente se define:
 
 - `ip_whitelist`: IPs/CIDR autorizadas (única credencial, sin usuario/clave).
-- `allow_prefix`: lista blanca de destinos (por defecto `52`, solo México);
-  lo demás se rechaza con `Hangup(57)`. Un `+` inicial se elimina antes.
+- `dial_prefix` (opcional): código de enrutamiento que el cliente antepone y que
+  se **elimina antes** de validar/enrutar. Ej.: el cliente marca `821` +
+  `52XXXXXXXXXX`; con `dial_prefix=821` queda `52XXXXXXXXXX`. Vacío = no se quita
+  nada (admite varios, separados por coma; se prueba el más largo primero).
+- `allow_prefix`: lista blanca de destinos evaluada sobre el número **ya sin el
+  `dial_prefix`** (por defecto `52`, solo México); lo demás se rechaza con
+  `Hangup(57)` (también si tras quitar el prefijo queda vacío). Un `+` inicial se
+  elimina antes.
 - `max_channels`: tope de llamadas simultáneas (0 = sin límite).
-- `caller_id` (opcional), codecs y nota.
+- `caller_id` (opcional; vacío = se conserva el caller del cliente, "主叫任意"),
+  codecs y nota.
+
+Ejemplo real: cliente en `8.219.161.249:5060`, llamadas `82152XXXXXXXXXX` →
+`ip_whitelist=8.219.161.249`, `dial_prefix=821`, `allow_prefix=52`.
 
 Archivos generados por la app en el volumen compartido `sip-trunks`
 (`/var/lib/sip-trunks`, mismo mecanismo que las líneas de operador):
