@@ -267,6 +267,18 @@
 
 **可补充（已存）**：`billed_segments`（计费分片数）、`dr_state`/`dr_checked_at`（回执轮询状态）、`msgid`（运营商回执 ID）、`delivered_at`。
 
+#### 10.2.1 历史无主短信与归属修复（2026-10 一次性对账）
+
+背景：2026-09-01 至 10-08 期间，约 147,235 条真实 Rileci（`sms_api_configs` id=1，非 simulado）短信落库时 `created_by IS NULL`。成因为**账号体系建立前的平台集中批量外呼入口**（多品牌催收，api 直连），该写入路径当时不携带登录用户；**与"定时删除联系人"无关**（`run_auto_clear_contacts` 只删 `contacts`，从不写 `sms_records`；`created_by` 外键指向 `users` 而非 `contacts`）。2026-10-08 后无新增；生产库另加触发器 `trg_block_unowned_sms`（`BEFORE INSERT`，`created_by IS NULL` 即拒绝）防止复发。
+
+归属修复口径（单次事务，已 COMMIT，`147235 = 23501 + 1296 + 122438`）：
+- **A1 = 23,501**：号码在某现存账号的有主短信中出现 → 归"对该号码发送次数最多的有主账号"（同票取最小 user_id）。
+- **A2 = 1,296**：无有主短信信号、但号码存在于某联系人且该 `contacts.created_by` **真实存在于 users** → 归该联系人属主（同票取最小 user_id）。
+- **剩余 122,438 保持 `NULL`**：= 原"无任何号码/联系人信号"的集中池 111,648 + A2 中联系人属主为**已删除孤儿用户**的 10,790（40 个 id 20–176 的历史账号，无法安全还原）。这批不强行摊派给任何现存团队。
+- 约束：`sms_records.created_by` 有 FK → users，A1 天然安全；`contacts.created_by` 是后加列、**无 FK**，故 A2 必须额外 `EXISTS(SELECT 1 FROM users WHERE id=contacts.created_by)` 过滤孤儿，否则触发外键错误。
+
+**集中池品牌对账（只读，不改 sms_records）**：库内视图 `v_sms_brand_tag` 对全部非 simulado 短信按 `content` 关键词打品牌标签（36 品牌 + `Generico` 泛催收模板；按优先级取唯一品牌，长词/精确词优先，`COMPA` 用 `app compa` 避免西语 compañía 误匹配）。列：`id, phone, created_by, billed_segments, status, created_at, brand, is_pool`，其中 `is_pool = (created_by IS NULL AND api_msg NOT LIKE '%simulado%')`（修复后 = 122,438）。与运营商按品牌对账用 `sum(billed_segments) × 单价`，不要用条数；品牌只对应业务线（APP），**不等同于 AG-MX/AK-MX 等坐席团队**，故不能据此做团队归属。视图可 `DROP VIEW` 随时移除。
+
 ### 10.3 邮件（每封一个 `email_records` 行）
 
 | 你要的字段 | 来源列 | 说明 |
