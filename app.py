@@ -9165,8 +9165,82 @@ def get_unified_stats():
                 admin_row['username'], [admin_row['id']]
             ))
 
-        # Sort the combined list by total SMS desc so the biggest team is on top.
-        all_teams_list.sort(key=lambda x: x['total'], reverse=True)
+        # (c) Unassigned SMS (created_by IS NULL): real provider sends recorded
+        # without an owner account (bulk import path). They were invisible in
+        # the panel, which is exactly the gap vs the operator report. Show them
+        # as their own "Sin asignar" row (report-only, NO data change) and fold
+        # them into the grand totals so the summary cards match the provider.
+        ua_params = list(date_params)
+        ua_row = db.execute(f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) AS sent,
+                COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) AS failed,
+                COALESCE(COUNT(r.id), 0) AS total,
+                COALESCE(SUM(r.billed_segments), 0) AS segments,
+                COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN r.billed_segments ELSE 0 END), 0) AS seg_sent,
+                COALESCE(SUM(CASE WHEN r.status='failed' THEN r.billed_segments ELSE 0 END), 0) AS seg_failed
+            FROM sms_records r
+            WHERE r.created_by IS NULL
+              AND COALESCE(r.api_msg,'') NOT LIKE '%simulado%'
+              {date_filter_r}
+        """, ua_params).fetchone()
+        ua_total = int(ua_row['total'] or 0)
+        ua_sent = int(ua_row['sent'] or 0)
+        ua_failed = int(ua_row['failed'] or 0)
+        ua_seg_total = int(ua_row['segments'] or 0)
+        ua_seg_sent = int(ua_row['seg_sent'] or 0)
+        ua_seg_failed = int(ua_row['seg_failed'] or 0)
+        ua_today_row = db.execute("""
+            SELECT COUNT(*) AS c FROM sms_records
+            WHERE created_by IS NULL AND date(created_at)=date('now')
+              AND COALESCE(api_msg,'') NOT LIKE '%simulado%'
+        """).fetchone()
+        ua_today = int(ua_today_row['c'] or 0) if ua_today_row else 0
+        ua_rate = round((ua_sent / ua_total * 100), 1) if ua_total else 0
+        # Price for unassigned rows: use the country price of the API config
+        # they came from (config 1 = Rileci) if resolvable, else global price.
+        ua_price = 0.0
+        ua_cfg = db.execute(
+            "SELECT country, unit_price FROM sms_api_configs WHERE id=1"
+        ).fetchone()
+        if ua_cfg and (ua_cfg['country'] or '').strip():
+            ua_price = get_country_sms_unit_price(ua_cfg['country'].strip().upper(), db=db)
+        if ua_price <= 0:
+            ua_price = get_sms_unit_price(db)
+        ua_cost = round(ua_seg_total * ua_price, 2)
+        unassigned_row = {
+            'unit_role': 'unassigned',
+            'team_name': 'Sin asignar',
+            'admin_name': 'Sin asignar',
+            'admin_username': '',
+            'team_admin_username': '',
+            'team_admin': 'Sin asignar',
+            'member_count': 0,
+            'total': ua_total,
+            'sent': ua_sent,
+            'failed': ua_failed,
+            'billed_segments': ua_seg_total,
+            'sent_segments': ua_seg_sent,
+            'failed_segments': ua_seg_failed,
+            'today': ua_today,
+            'rate': ua_rate,
+            'unit_price': round(ua_price, 4),
+            'total_cost': ua_cost,
+            'sent_cost': round(ua_seg_sent * ua_price, 2),
+            'failed_cost': round(ua_seg_failed * ua_price, 2),
+            'cost_total': ua_cost,
+            'cost_sent': round(ua_seg_sent * ua_price, 2),
+            'cost_failed': round(ua_seg_failed * ua_price, 2),
+            'email_sent': 0,
+            'email_cost': 0.0,
+            'email_unit_price': 0.0,
+            'unassigned': True,
+        }
+        all_teams_list.append(unassigned_row)
+
+        # Sort the combined list by total SMS desc so the biggest team is on
+        # top; the unassigned row always stays at the bottom (key -1).
+        all_teams_list.sort(key=lambda x: (-1 if x.get('unit_role') == 'unassigned' else x['total']), reverse=True)
 
         # Summary cards = sum of every row above (teams + admin).
         all_teams_data = {
