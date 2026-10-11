@@ -9155,14 +9155,16 @@ def get_unified_stats():
                 ta['full_name'] or ta['username'], ta['username'], member_ids
             ))
 
-        # (b) System admin as its own team unit (only the admin itself).
-        admin_row = db.execute(
-            "SELECT id, username, full_name FROM users WHERE role='admin' ORDER BY id LIMIT 1"
-        ).fetchone()
-        if admin_row:
+        # (b) Every system admin as its own unit (admin's own sends). Previously
+        # only the lowest-id admin was listed, which hid any additional admin
+        # account (e.g. AG-MX) from the panel. Now each admin gets a row.
+        admin_rows = db.execute(
+            "SELECT id, username, full_name FROM users WHERE role='admin' ORDER BY id"
+        ).fetchall()
+        for ad in admin_rows:
             all_teams_list.append(_build_unit_row(
-                admin_row['full_name'] or 'Administrador',
-                admin_row['username'], [admin_row['id']]
+                ad['full_name'] or 'Administrador',
+                ad['username'], [ad['id']], unit_role='admin'
             ))
 
         # (c) Unassigned SMS (created_by IS NULL): real provider sends recorded
