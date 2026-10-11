@@ -286,6 +286,11 @@
 
 **集中池品牌对账（只读，不改 sms_records）**：库内视图 `v_sms_brand_tag` 对全部非 simulado 短信按 `content` 关键词打品牌标签（36 品牌 + `Generico` 泛催收模板；按优先级取唯一品牌，长词/精确词优先，`COMPA` 用 `app compa` 避免西语 compañía 误匹配）。列：`id, phone, created_by, billed_segments, status, created_at, brand, is_pool`，其中 `is_pool = (created_by IS NULL AND api_msg NOT LIKE '%simulado%')`（两轮归属后 = **4,325**）。与运营商按品牌对账用 `sum(billed_segments) × 单价`，不要用条数；品牌只对应业务线（APP），**不等同于 AG-MX/AK-MX 等坐席团队**，故不能据此做团队归属。视图可 `DROP VIEW` 随时移除。
 
+**9 月对账视图（只读，供 Rileci 按天/账号对账，不改 sms_records）**：库内 3 个视图，仅 `SELECT` 聚合、零写入，可 `DROP VIEW` 移除：
+- `v_sms_sep_summary`：9 月总账一行 = `{filas, segmentos, telefonos, sin_dueno, seg_sin_dueno}`（全月计费段 98,232，剩余无主 4,325 / 7,077 段）。
+- `v_sms_sep_daily`：9 月每天汇总 = `{dia, filas, segmentos, con_dueno, sin_dueno, telefonos}`。
+- `v_sms_sep_daily_account`：9 月每天×账号归属明细 = `{dia, cuenta, user_id, filas, segmentos, telefonos}`（`created_by IS NOT NULL`；**不含**无主剩余，取对账总账按"全月总量 − 此明细"即得无主部分）。导出 CSV 用 `\copy (SELECT ... ) TO STDOUT WITH CSV HEADER`。9 月口径：`93,144 = 已归属 88,819 + 早期无主 4,325`。
+
 ### 10.3 邮件（每封一个 `email_records` 行）
 
 | 你要的字段 | 来源列 | 说明 |
