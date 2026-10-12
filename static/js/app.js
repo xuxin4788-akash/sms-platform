@@ -6403,10 +6403,7 @@ function showClientTrunkModal(id) {
             '<input type="checkbox" data-codec="' + c.value + '"' + (on ? ' checked' : '') + '>' +
             c.label + '</label>';
     }).join('');
-    var modal = document.getElementById('modal');
-    modal.innerHTML =
-        '<div class="modal-content" style="max-width:560px;">' +
-            '<div class="modal-body">' +
+    var bodyHtml =
                 '<div class="form-group"><label>Nombre (identificador)</label>' +
                     '<input type="text" id="ct-name" class="form-control" value="' + escapeHtml(cur.name) + '" placeholder="cliente-a"></div>' +
                 '<div class="form-group"><label>IPs autorizadas (separadas por coma; admite CIDR)</label>' +
@@ -6436,20 +6433,17 @@ function showClientTrunkModal(id) {
                 '</div>' +
                 '<div class="form-group"><label>Nota (opcional)</label>' +
                     '<input type="text" id="ct-note" class="form-control" value="' + escapeHtml(cur.note) + '"></div>' +
-            '</div>' +
             '<div class="modal-footer">' +
-                '<button type="button" class="btn btn-ghost" onclick="closeModal()">Cancelar</button>' +
+                '<button type="button" class="btn btn-ghost" onclick="hideModal()">Cancelar</button>' +
                 '<button type="button" class="btn btn-primary" id="ct-save">Guardar</button>' +
-            '</div>' +
-        '</div>';
-    showModal((t ? 'Editar cliente SIP' : 'Nuevo cliente SIP (linea ofrecida)'),
-        modal.innerHTML);
+            '</div>';
+    showModal((t ? 'Editar cliente SIP' : 'Nuevo cliente SIP (linea ofrecida)'), bodyHtml);
     document.getElementById('ct-save').addEventListener('click', function() { saveClientTrunk(t ? t.id : null); });
 }
 
 function collectClientTrunkForm() {
     var codecs = Array.prototype.map.call(
-        document.querySelectorAll('.modal-content [data-codec]:checked'),
+        document.querySelectorAll('[data-codec]:checked'),
         function(cb) { return cb.dataset.codec; }
     );
     return {
