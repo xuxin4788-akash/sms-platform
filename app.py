@@ -12883,8 +12883,8 @@ def voice_create_config():
     if exists:
         return jsonify({'error': 'Ya existe una configuracion para este pais'}), 409
     cursor = db.execute(
-        "INSERT INTO voice_configs (name, country, provider, is_active) VALUES (?, ?, 'infin8linx', 1)",
-        (name, country)
+        "INSERT INTO voice_configs (name, country, provider, is_active) VALUES (?, ?, 'infin8linx', ?)",
+        (name, country, True)
     )
     db.commit()
     return jsonify({'message': 'Configuracion creada', 'id': cursor.lastrowid}), 201
@@ -13290,7 +13290,7 @@ def sip_trunks_create():
         (name, host, port, _normalize_codecs(data.get('codecs')),
          _digits_only(data.get('dial_prefix')), _normalize_prefix_list(data.get('match_prefix')),
          int(data.get('sort_order') or 100),
-         1 if data.get('is_active', True) else 0,
+         bool(data.get('is_active', True)),
          (data.get('note') or '').strip()[:255])
     )
     db.commit()
@@ -13331,7 +13331,7 @@ def sip_trunks_update(trunk_id):
          _digits_only(data.get('dial_prefix', row.get('dial_prefix'))),
          _normalize_prefix_list(data.get('match_prefix', row.get('match_prefix'))),
          int(data.get('sort_order', row.get('sort_order')) or 100),
-         1 if data.get('is_active', bool(row.get('is_active'))) else 0,
+         bool(data.get('is_active', bool(row.get('is_active')))),
          (data.get('note', row.get('note')) or '').strip()[:255], trunk_id)
     )
     db.commit()
@@ -14554,14 +14554,14 @@ def email_app_senders_bulk():
             # Only update rows the caller may edit (scope already limits this set).
             db.execute(
                 "UPDATE email_app_senders SET from_email=?, from_name=?, is_active=?, updated_at=? WHERE id=?",
-                (email, item['from_name'], 1 if item['is_active'] else 0, now, current['id'])
+                (email, item['from_name'], bool(item['is_active']), now, current['id'])
             )
             updated.append({'row': i, 'app': app_name})
         else:
             cur = db.execute(
                 "INSERT INTO email_app_senders (app_name, from_email, from_name, team_creator_id, is_active, created_at, updated_at) "
                 "VALUES (?,?,?,?,?,?,?)",
-                (app_name, email, item['from_name'], team_creator_id, 1 if item['is_active'] else 0, now, now)
+                (app_name, email, item['from_name'], team_creator_id, bool(item['is_active']), now, now)
             )
             added.append({'row': i, 'app': app_name, 'id': cur.lastrowid})
     db.commit()
