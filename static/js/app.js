@@ -6219,7 +6219,7 @@ function showSipTrunkModal(id) {
                 '<div class="form-group"><label>Codigos admitidos</label><div>' + codecChecks + '</div></div>' +
                 '<div class="form-group"><label>Prefijos de enrutamiento (separados por coma)</label>' +
                     '<input type="text" id="st-match" class="form-control" value="' + escapeHtml(cur.match_prefix) + '" placeholder="55, 33">' +
-                    '<small style="color:var(--text-secondary);">Las llamadas que comiencen por estos digitos se enrutan a esta linea (segun el orden).</small></div>' +
+                    '<small style="color:var(--text-secondary);">Las llamadas que comiencen por estos digitos se enrutan a esta linea (segun el orden). <strong>Vacio = TODAS las llamadas salen por esta linea</strong> (ruta por defecto; pongala al final con un Orden alto).</small></div>' +
                 '<div class="form-group"><label>Prefijo de salida (opcional)</label>' +
                     '<input type="text" id="st-dialprefix" class="form-control" value="' + escapeHtml(cur.dial_prefix) + '" placeholder="82152">' +
                     '<small style="color:var(--text-secondary);">Se antepone al numero al marcar por esta linea.</small></div>' +
