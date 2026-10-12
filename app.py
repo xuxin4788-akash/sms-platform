@@ -13238,8 +13238,8 @@ def render_sip_trunk_dial(trunks):
             "same => n,Verbose(2,Dialing %s/${dest} (raw=${EXTEN}))" % ep,
             "same => n,Dial(PJSIP/%s/sip:${dest}@%s:%d,60,g)" % (ep, host, port),
             "same => n,Hangup()",
-            "same => n(i,1),Hangup(34)",
-            "same => n(s,1),Hangup(34)",
+            "exten => i,1,Hangup(34)",
+            "exten => s,1,Hangup(34)",
             "",
         ]
     return "\n".join(lines) + "\n"
