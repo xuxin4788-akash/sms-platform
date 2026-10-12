@@ -898,10 +898,6 @@ def init_db():
                 updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
         """)
-        if not pg_column_exists('sip_client_trunks', 'dial_prefix'):
-            cur.execute(
-                "ALTER TABLE sip_client_trunks ADD COLUMN dial_prefix VARCHAR(200) NOT NULL DEFAULT ''")
-
         # extensions catalog (per-country extension numbers)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS extensions (
@@ -980,6 +976,10 @@ def init_db():
                     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
                 )
             """)
+        if not pg_column_exists('sip_client_trunks', 'dial_prefix'):
+            cur.execute(
+                "ALTER TABLE sip_client_trunks ADD COLUMN dial_prefix VARCHAR(200) NOT NULL DEFAULT ''")
+
         if not pg_column_exists('users', 'category_id'):
             cur.execute("ALTER TABLE users ADD COLUMN category_id INTEGER REFERENCES user_categories(id) ON DELETE SET NULL")
 
