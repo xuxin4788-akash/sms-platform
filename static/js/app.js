@@ -6406,10 +6406,6 @@ function showClientTrunkModal(id) {
     var modal = document.getElementById('modal');
     modal.innerHTML =
         '<div class="modal-content" style="max-width:560px;">' +
-            '<div class="modal-header">' +
-                '<h3>' + (t ? 'Editar cliente SIP' : 'Nuevo cliente SIP (linea ofrecida)') + '</h3>' +
-                '<button type="button" class="modal-close" onclick="closeModal()">&times;</button>' +
-            '</div>' +
             '<div class="modal-body">' +
                 '<div class="form-group"><label>Nombre (identificador)</label>' +
                     '<input type="text" id="ct-name" class="form-control" value="' + escapeHtml(cur.name) + '" placeholder="cliente-a"></div>' +
@@ -6446,7 +6442,8 @@ function showClientTrunkModal(id) {
                 '<button type="button" class="btn btn-primary" id="ct-save">Guardar</button>' +
             '</div>' +
         '</div>';
-    modal.classList.add('active');
+    showModal((t ? 'Editar cliente SIP' : 'Nuevo cliente SIP (linea ofrecida)'),
+        modal.innerHTML);
     document.getElementById('ct-save').addEventListener('click', function() { saveClientTrunk(t ? t.id : null); });
 }
 
