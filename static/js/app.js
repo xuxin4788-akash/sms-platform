@@ -1455,11 +1455,33 @@ function webphoneNormalize(raw) {
     if (/^1/.test(local) && local.length === 11) { local = local.slice(1); }
     return local;
 }
+function webphoneTraceRoute(localNum) {
+    // Ask the backend which outbound trunk this number will use (same logic as
+    // the [trunks-route] dialplan) and print it to the debug card. Fire-and-
+    // forget; never blocks the actual dial.
+    if (!localNum) { return; }
+    dbg('rastreo de linea...');
+    api('/api/my/webphone-route-trace?to=' + encodeURIComponent(localNum))
+        .then(function (r) {
+            if (r.route === 'managed') {
+                dbg('LINEA: ' + r.trunk_name + ' (' + r.endpoint + ') -> ' + r.host + ':' + r.port);
+                dbg((r.catch_all ? 'regla: TODAS (catch-all)' : ('regla: prefijo "' + r.match_prefix + '"')));
+                dbg('destino real: ' + r.destination);
+            } else if (r.route === 'vos3000_static') {
+                dbg('LINEA: respaldo VOS3000 estatico -> ' + (r.host || '?') + ':' + (r.port || 5060));
+                dbg('destino real: ' + r.destination);
+            } else if (r.route === 'rejected') {
+                dbg('SIN LINEA: ninguna coincide y respaldo VOS3000 apagado (Hangup 34)');
+            }
+        })
+        .catch(function (e) { dbg('rastreo fallo: ' + (e && e.message ? e.message : e)); });
+}
 function webphoneCall(btn, name) {
     var rawPhone = btn ? String(btn.getAttribute('data-phone') || '') : (String(name || '').trim());
     var phone = webphoneNormalize(rawPhone);
     dbg('click boton, numero="' + rawPhone + '" -> "' + phone + '"');
     if (!phone) { showToast('Numero invalido', 'error'); dbg('numero invalido'); return; }
+    webphoneTraceRoute(phone);
     _webphoneContactId = btn ? (btn.getAttribute('data-contact-id') || '') : '';
     // Toggle only applies to real on-page buttons (btn != null): if that specific
     // button is mid-call, hang up instead of dialling again. Programmatic calls

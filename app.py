@@ -4490,6 +4490,98 @@ def my_webphone_credential():
     })
 
 
+def _normalize_outbound_destination(raw):
+    """Mirror of the Asterisk [normalize] dialplan (extensions.conf):
+
+    filter digits -> if it starts with 52 and is longer than 10 digits, strip
+    the country code -> if an 11-digit number starting with 1 remains, drop it.
+    Returns the local (10-digit) number that [out] routes on.
+    """
+    num = ''.join(ch for ch in str(raw or '') if ch.isdigit())
+    local = num
+    if local[:2] == '52' and len(local) > 10:
+        local = local[2:]
+    if local[:1] == '1' and len(local) == 11:
+        local = local[1:]
+    return num, local
+
+
+@app.route('/api/my/webphone-route-trace', methods=['GET'])
+@login_required
+def my_webphone_route_trace():
+    """Predict which outbound SIP trunk a dialed number will use, applying the
+    SAME logic as the generated [trunks-route] dialplan (sort_order ASC, first
+    match_prefix wins, empty match_prefix = catch-all; otherwise the static
+    VOS3000 fallback or Hangup(34) when that switch is off).
+
+    Powers the WebPhone debug card so the agent sees the line + the exact
+    destination string sent to the carrier at dial time.
+    Query: ?to=<number>
+    """
+    raw = request.args.get('to', '')
+    raw_num, local = _normalize_outbound_destination(raw)
+    trunks = list_sip_trunks(active_only=True)
+
+    matched = None
+    matched_prefix = None
+    is_catchall = False
+    for t in trunks:
+        prefixes = [p for p in (t.get('match_prefix') or '').split(',') if p]
+        if not prefixes:
+            matched = t
+            is_catchall = True
+            break
+        hit = next((p for p in prefixes if local.startswith(p)), None)
+        if hit:
+            matched = t
+            matched_prefix = hit
+            break
+
+    if matched:
+        dest = (matched.get('dial_prefix') or '') + local
+        return jsonify({
+            'input': raw,
+            'normalized': local,
+            'route': 'managed',
+            'trunk_id': matched['id'],
+            'trunk_name': matched['name'],
+            'endpoint': _trunk_endpoint_name(matched['name']),
+            'host': matched['host'],
+            'port': int(matched['port'] or 5060),
+            'match_prefix': matched_prefix or '',
+            'catch_all': is_catchall,
+            'dial_prefix': matched.get('dial_prefix') or '',
+            'destination': dest,
+            'dial_string': 'PJSIP/%s/sip:%s@%s:%d' % (
+                _trunk_endpoint_name(matched['name']), dest, matched['host'],
+                int(matched['port'] or 5060)),
+        })
+
+    if get_vos3000_fallback_enabled():
+        return jsonify({
+            'input': raw,
+            'normalized': local,
+            'route': 'vos3000_static',
+            'trunk_name': 'VOS3000 (respaldo estatico)',
+            'endpoint': 'trunk-vos3000',
+            'host': os.environ.get('VOS3000_HOST', ''),
+            'port': int(os.environ.get('VOS3000_PORT') or 5060),
+            'destination': local,
+            'dial_string': 'PJSIP/trunk-vos3000/%s' % local,
+        })
+
+    return jsonify({
+        'input': raw,
+        'normalized': local,
+        'route': 'rejected',
+        'trunk_name': None,
+        'cause_code': 34,
+        'destination': None,
+        'dial_string': None,
+        'message': 'Ninguna linea coincide y el respaldo VOS3000 esta desactivado (Hangup 34).',
+    })
+
+
 # ============================================================
 # User Categories (clasificacion de empleados + retencion de contactos)
 # ============================================================
