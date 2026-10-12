@@ -58,6 +58,10 @@ services:
       # Directory where managed carrier-trunk fragments are written (shared
       # with the asterisk container, which watches and reloads on change).
       - SIP_TRUNK_CONFIG_DIR=/var/lib/sip-trunks
+      # Static VOS3000 fallback destination, shown read-only on #/sip-trunks
+      # next to the on/off switch (the trunk itself stays defined in asterisk).
+      - VOS3000_HOST=${VOS3000_HOST:-43.112.27.24}
+      - VOS3000_PORT=${VOS3000_PORT:-5060}
     volumes:
       - app-logs:/app/logs
       - recordings:/recordings:ro

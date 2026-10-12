@@ -6128,6 +6128,14 @@ function renderSipTrunks(content) {
     content.innerHTML =
         '<h1 style="margin-bottom:4px;">Lineas de Operador (IP SIP)</h1>' +
         '<p style="color:var(--text-secondary);margin-bottom:20px;">Conecte nuevas lineas de operador por IP sin editar archivos ni reiniciar. El enrutamiento por prefijo se aplica antes de la linea VOS3000 por defecto; los cambios se publican y Asterisk se recarga solo en unos segundos.</p>' +
+        '<div class="card" style="padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">' +
+            '<div style="flex:1;min-width:260px;"><strong>VOS3000 (respaldo estatico)</strong>' +
+                '<div id="vos3000-host" style="color:var(--text-muted);font-size:12px;margin-top:2px;"></div>' +
+                '<div style="color:var(--text-secondary);font-size:12px;margin-top:4px;">Si ninguna linea gestionada coincide con el numero, la llamada sale por VOS3000. Desactivelo para rechazar esas llamadas (Hangup 34) en vez de usar el respaldo.</div></div>' +
+            '<span id="vos3000-state" class="badge badge-gray">...</span>' +
+            '<label style="display:inline-flex;align-items:center;gap:8px;font-weight:600;cursor:pointer;">' +
+                '<input type="checkbox" id="vos3000-toggle" style="width:18px;height:18px;cursor:pointer;"> Respaldo VOS3000</label>' +
+        '</div>' +
         '<div class="card" style="padding:0;overflow:hidden;">' +
             '<div style="display:flex;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;">' +
                 '<button type="button" id="sip-new" class="btn btn-primary btn-sm">+ Nueva linea</button>' +
@@ -6137,12 +6145,34 @@ function renderSipTrunks(content) {
         '</div>';
     document.getElementById('sip-new').addEventListener('click', function() { showSipTrunkModal(null); });
     document.getElementById('sip-reload').addEventListener('click', function() { publishSipTrunks(); });
+    document.getElementById('vos3000-toggle').addEventListener('change', function() {
+        var enabled = this.checked;
+        api('/api/config/sip-trunks/vos3000-fallback', { method: 'POST', body: { enabled: enabled } })
+            .then(function(d) { showToast(d.message, 'success'); loadSipTrunks(); })
+            .catch(function(e) { showToast(e.message || 'Error al cambiar el respaldo', 'error'); loadSipTrunks(); });
+    });
     loadSipTrunks();
+}
+
+function renderVos3000Switch(d) {
+    var toggle = document.getElementById('vos3000-toggle');
+    var state = document.getElementById('vos3000-state');
+    var host = document.getElementById('vos3000-host');
+    if (!toggle || !state) return;
+    var on = !!d.vos3000_fallback;
+    toggle.checked = on;
+    state.className = 'badge ' + (on ? 'badge-green' : 'badge-gray');
+    state.textContent = on ? 'Activo' : 'Desactivado';
+    if (host) {
+        var v = d.vos3000 || {};
+        host.textContent = v.host ? ('Destino actual: ' + v.host + ':' + (v.port || 5060)) : '';
+    }
 }
 
 function loadSipTrunks() {
     api('/api/config/sip-trunks').then(function(d) {
         sipTrunkState.data = d.trunks || [];
+        renderVos3000Switch(d);
         renderSipTrunksBody();
     }).catch(function(e) {
         var body = document.getElementById('sip-body');
