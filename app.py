@@ -13611,7 +13611,7 @@ def client_trunks_create():
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (name, ip_whitelist, _normalize_codecs(data.get('codecs')), allow_prefix, dial_prefix,
          caller_id, max_channels, int(data.get('sort_order') or 100),
-         1 if data.get('is_active', True) else 0,
+         bool(data.get('is_active', True)),
          (data.get('note') or '').strip()[:255])
     )
     db.commit()
@@ -13659,7 +13659,7 @@ def client_trunks_update(trunk_id):
         (name, ip_whitelist, _normalize_codecs(data.get('codecs', row.get('codecs'))),
          allow_prefix, dial_prefix, caller_id, max_channels,
          int(data.get('sort_order', row.get('sort_order')) or 100),
-         1 if data.get('is_active', bool(row.get('is_active'))) else 0,
+         bool(data.get('is_active', bool(row.get('is_active')))),
          (data.get('note', row.get('note')) or '').strip()[:255], trunk_id)
     )
     db.commit()
