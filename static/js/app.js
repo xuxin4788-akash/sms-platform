@@ -6207,14 +6207,7 @@ function showSipTrunkModal(id) {
             '<input type="checkbox" data-codec="' + c.value + '"' + (on ? ' checked' : '') + '>' +
             c.label + '</label>';
     }).join('');
-    var modal = document.getElementById('modal');
-    modal.innerHTML =
-        '<div class="modal-content" style="max-width:560px;">' +
-            '<div class="modal-header">' +
-                '<h3>' + (t ? 'Editar linea' : 'Nueva linea de operador') + '</h3>' +
-                '<button type="button" class="modal-close" onclick="closeModal()">&times;</button>' +
-            '</div>' +
-            '<div class="modal-body">' +
+    var bodyHtml =
                 '<div class="form-group"><label>Nombre (identificador)</label>' +
                     '<input type="text" id="st-name" class="form-control" value="' + escapeHtml(cur.name) + '" placeholder="operador-a"></div>' +
                 '<div style="display:flex;gap:12px;">' +
@@ -6240,13 +6233,11 @@ function showSipTrunkModal(id) {
                 '</div>' +
                 '<div class="form-group"><label>Nota (opcional)</label>' +
                     '<input type="text" id="st-note" class="form-control" value="' + escapeHtml(cur.note) + '"></div>' +
-            '</div>' +
             '<div class="modal-footer">' +
-                '<button type="button" class="btn btn-ghost" onclick="closeModal()">Cancelar</button>' +
+                '<button type="button" class="btn btn-ghost" onclick="hideModal()">Cancelar</button>' +
                 '<button type="button" class="btn btn-primary" id="st-save">Guardar</button>' +
-            '</div>' +
-        '</div>';
-    modal.classList.add('active');
+            '</div>';
+    showModal((t ? 'Editar linea de operador' : 'Nueva linea de operador'), bodyHtml);
     document.getElementById('st-save').addEventListener('click', function() { saveSipTrunk(t ? t.id : null); });
 }
 
