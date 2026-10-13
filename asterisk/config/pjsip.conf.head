@@ -55,8 +55,10 @@ match=__TRUNK_HOST__
 
 ; ---- Lineas de operador gestionadas por web (#/sip-trunks) ----
 ; Endpoint/aor/identify generados por app.py en el volumen compartido.
-#tryinclude "pjsip-trunks.conf"
+; Ruta ABSOLUTA renderizada por entrypoint.sh (__TRUNK_DYN_DIR__). Una ruta
+; relativa resolveria contra /etc/asterisk y el fragmento no se cargaria.
+#tryinclude "__TRUNK_DYN_DIR__/pjsip-trunks.conf"
 
 ; ---- Clientes SIP entrantes: NOSOTROS les damos linea (#/client-trunks) ----
 ; Endpoint (IP whitelist) + identify generados por app.py. Sin registro ni AOR.
-#tryinclude "pjsip-inbound.conf"
+#tryinclude "__TRUNK_DYN_DIR__/pjsip-inbound.conf"

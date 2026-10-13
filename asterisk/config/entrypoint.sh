@@ -27,6 +27,9 @@ CONF=/etc/asterisk
 : "${PEER_END:=1200}"
 # Where MixMonitor writes call recordings (shared volume, see compose).
 : "${RECORD_DIR:=/recordings}"
+# Shared dir for web-managed trunks (app.py writes fragments here). Defined
+# BEFORE render() so config templates can embed it via __TRUNK_DYN_DIR__.
+TRUNK_DYN_DIR="${SIP_TRUNK_CONFIG_DIR:-/var/lib/sip-trunks}"
 
 if [ -z "$PEER_SECRET" ]; then
     echo "[entrypoint] ERROR: PEER_SECRET must be set in the environment (.env)." >&2
@@ -56,6 +59,7 @@ render() {
         -e "s|__TRUNK2_PREFIX__|${TRUNK2_PREFIX}|g" \
         -e "s|__TRUNK2_OUTBOUND_PREFIX__|${TRUNK2_OUTBOUND_PREFIX}|g" \
         -e "s|__RECORD_DIR__|${RECORD_DIR}|g" \
+        -e "s|__TRUNK_DYN_DIR__|${TRUNK_DYN_DIR}|g" \
         "$1" > "$2"
 }
 
@@ -87,7 +91,6 @@ chmod 0777 "$RECORD_DIR"
 
 # Shared dir for web-managed carrier trunks (app.py writes fragments here).
 # Placeholder files guarantee the #tryinclude directives never break startup.
-TRUNK_DYN_DIR="${SIP_TRUNK_CONFIG_DIR:-/var/lib/sip-trunks}"
 mkdir -p "$TRUNK_DYN_DIR"
 # pjsip-trunks/dial-trunks = outbound carrier lines; pjsip-inbound/dial-inbound
 # = inbound CLIENT trunks (lines we provide/resell to external systems).
