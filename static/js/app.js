@@ -435,7 +435,9 @@ function hideModal() {
 }
 
 function closeModal(event) {
-    if (event.target === document.getElementById('modal-overlay')) hideModal();
+    // Safe both as an overlay click handler (event passed) and as a plain
+    // programmatic close (no args, e.g. after a successful form save).
+    if (!event || event.target === document.getElementById('modal-overlay')) hideModal();
 }
 
 // Show an inline form error inside the element with the given id.
