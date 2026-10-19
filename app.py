@@ -13256,11 +13256,8 @@ def render_sip_trunk_pjsip(trunks):
             "force_rport=yes",
             "rewrite_contact=yes",
             "dtmf_mode=rfc4733",
-            "jitterbuffer=yes",
-            "jb_impl=adaptive",
-            "jb_target=20",
-            "jb_max=100",
-            "jb_force=no",
+            # NOTE: no jitterbuffer/jb_* here — those are chan_sip-era params;
+            # res_pjsip REJECTS the whole endpoint on unknown options.
             "aors=%s" % ep,
             "",
             "[%s]" % ep,
@@ -13628,11 +13625,6 @@ def render_sip_client_pjsip(clients):
             "force_rport=yes",
             "rewrite_contact=yes",
             "dtmf_mode=rfc4733",
-            "jitterbuffer=yes",
-            "jb_impl=adaptive",
-            "jb_target=20",
-            "jb_max=100",
-            "jb_force=no",
             "trust_id_inbound=no",
             "",
         ]

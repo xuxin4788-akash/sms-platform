@@ -34,13 +34,11 @@ direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
-; Low-latency adaptive jitter buffer for the stable IP trunk (cross-border) —
-; keeps perceived one-way delay minimal while still smoothing the tail.
-jitterbuffer=yes
-jb_impl=adaptive
-jb_target=20
-jb_max=100
-jb_force=no
+; WARNING: do NOT add jitterbuffer/jb_* options on pjsip endpoints — those are
+; chan_sip-era params; res_pjsip silently REJECTS the entire endpoint object on
+; unknown options (this killed trunk-vos3000 and the managed trunks: calls died
+; with local 603/404 while the endpoint was "not found"). If a low-latency
+; jitter buffer is needed, use the JITTERBUFFER() dialplan function instead.
 ; From-DID passthrough lets the provider route inbound DIDs if added later.
 
 [trunk-vos3000]
