@@ -6211,6 +6211,28 @@ def _group_visible_where(alias: str, uid: int, role) -> tuple[str, list]:
     return f"{alias}.created_by = ?", [uid]
 
 
+def _group_assignable(uid: int, role, group_id) -> bool:
+    """Whether the user may assign a contact to the given group.
+
+    Mirrors the group dropdown visibility (_group_visible_where): any group
+    the user can SEE in their dropdown is also a valid assignment target.
+    Replaces the older 'own groups only' checks that silently dropped a
+    team-shared group chosen by a member (contact got saved with no group,
+    so the group looked empty afterwards).
+    """
+    try:
+        gid = int(group_id)
+    except (TypeError, ValueError):
+        return False
+    db = get_db()
+    where, params = _group_visible_where('cg', uid, role)
+    row = db.execute(
+        "SELECT cg.id FROM contact_groups cg WHERE cg.id=? AND (" + where + ")",
+        [gid] + params
+    ).fetchone()
+    return row is not None
+
+
 def _contact_scope_for_group(alias: str, uid: int, role, group_id) -> tuple[str, list]:
     """Contact-visibility WHERE for a selected group.
 
@@ -6857,15 +6879,11 @@ def create_contact():
     user_role = session.get('role')
     try:
         if group_id:
-            if user_role == 'team_member':
-                group = db.execute(
-                    "SELECT id FROM contact_groups WHERE id=? AND (created_by=? OR created_by IS NULL)",
-                    (int(group_id), user_id),
-                ).fetchone()
-            else:
-                group = db.execute("SELECT id FROM contact_groups WHERE id=?", (int(group_id),)).fetchone()
-            if not group:
-                group_id = None
+            # Any group visible in the user's dropdown (team-shared rule) is a
+            # valid target; reject loudly instead of silently dropping it.
+            if not _group_assignable(user_id, user_role, group_id):
+                return jsonify({'error': 'El grupo seleccionado no existe o no tienes acceso'}), 400
+            group_id = int(group_id)
         db.execute(
             "INSERT INTO contacts (name, phone, notes, remark, group_id, app_name, amount, discount_amount, payment_link, email, next_follow_up_at, follow_up_note, created_by) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -6896,9 +6914,9 @@ def import_device_contacts():
 
     db = get_db()
     if group_id:
-        group = db.execute("SELECT id FROM contact_groups WHERE id=?", (int(group_id),)).fetchone()
-        if not group:
-            group_id = None
+        if not _group_assignable(session.get('user_id'), session.get('role'), group_id):
+            return jsonify({'error': 'El grupo seleccionado no existe o no tienes acceso'}), 400
+        group_id = int(group_id)
 
     created = 0
     skipped = 0
@@ -6953,6 +6971,19 @@ def update_contact(contact_id):
     notes = data.get('notes', contact['notes'])
     remark = data.get('remark', contact['remark'])
     group_id = data.get('group_id', contact['group_id'])
+    # Validate only when the client explicitly (re)assigns a group; an absent
+    # key keeps the current one untouched. Same team-shared visibility rule as
+    # the dropdown, so any selectable group passes.
+    if 'group_id' in data and data.get('group_id'):
+        if not _group_assignable(session.get('user_id'), session.get('role'), data.get('group_id')):
+            return jsonify({'error': 'El grupo seleccionado no existe o no tienes acceso'}), 400
+    if group_id in ('', 0, '0'):
+        group_id = None
+    elif group_id is not None:
+        try:
+            group_id = int(group_id)
+        except (TypeError, ValueError):
+            group_id = None
     app_name = (str(data.get('app_name', contact['app_name'] or '') or '')).strip()[:255]
     amount = _parse_money(data.get('amount', contact['amount']))
     discount_amount = _parse_money(data.get('discount_amount', contact['discount_amount']))
@@ -7150,14 +7181,10 @@ def import_contacts():
             group_id = int(group_id)
         except (TypeError, ValueError):
             group_id = None
-    # Validate the target group is visible/owned by the importing user
+    # Validate the target group is visible to the importing user (same
+    # team-shared rule as the group dropdown, not just own groups).
     if group_id:
-        db_check = get_db()
-        grp = db_check.execute(
-            "SELECT id FROM contact_groups WHERE id=? AND (created_by=? OR created_by IS NULL)",
-            (group_id, g.user['id'])
-        ).fetchone()
-        if not grp:
+        if not _group_assignable(session.get('user_id'), session.get('role'), group_id):
             return jsonify({'error': 'El grupo seleccionado no existe o no tienes acceso'}), 400
     try:
         is_xlsx = file.filename.lower().endswith('.xlsx')

@@ -84,8 +84,10 @@ A team-oriented SMS marketing management platform with Spanish (es) UI. Built wi
 | PUT/DELETE | /api/contacts/<id> | User | Update/Delete contact (team: all, member: own) |
 | POST | /api/contacts/import | User | Import CSV contacts |
 | POST | /api/contacts/import-device | User | Batch-import contacts selected from Android address book |
-| GET/POST | /api/groups | User | List/Create groups (team: all, member: own) |
-| PUT/DELETE | /api/groups/<id> | User | Update/Delete group (team: all, member: own) |
+| GET/POST | /api/groups | User | List/Create groups. Visibility is TEAM-SHARED (`_group_visible_where`): admin all / team_admin own+team / member+custom the team_admin's team groups (own only when teamless) |
+| PUT/DELETE | /api/groups/<id> | User | Update/Delete group (same team-shared visibility) |
+
+Group assignment rule (contacts create/update/import): the target group must pass `_group_assignable` — the SAME team-shared visibility as the dropdown, so any selectable group is valid; invalid → HTTP 400 (never silently dropped). The older "own groups only" check that silently saved member contacts without a group was removed.
 | GET/POST | /api/templates | User | List/Create templates (shared across all users) |
 | PUT/DELETE | /api/templates/<id> | User | Update/Delete template |
 | POST | /api/sms/send | User | Send SMS (real API or simulation) |
