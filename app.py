@@ -15238,22 +15238,29 @@ def send_email():
     _team_cache = {}
 
     def _owner_team(owner_id):
+        """Team-unit id that owns a contact: the team_admin's own id for any
+        contact in their team. None => no team (only global mappings apply)."""
         if user['role'] == 'admin':
             # Admin-owned contacts have no team; only global applies.
             if owner_id is None:
                 return None
             if owner_id in _team_cache:
                 return _team_cache[owner_id]
-            # Look up the owner's own team_creator_id; if the owner is a
-            # team_admin (or a member), use their team_creator_id so their
-            # team's senders apply.
+            # A member owner's unit is their team_creator_id; a team_admin
+            # owner IS the unit root (team_creator_id NULL) -> their own id.
             own = db.execute(
                 "SELECT team_creator_id FROM users WHERE id=?", (owner_id,)
             ).fetchone()
-            tid = own['team_creator_id'] if own else None
+            tid = (own['team_creator_id'] or owner_id) if own else None
             _team_cache[owner_id] = tid
             return tid
-        return user['id']  # team_admin/member sending within their own team
+        if user['role'] == 'team_admin':
+            return user['id']
+        # Member/custom role: sends happen inside their leader's team, whose
+        # mappings are keyed by the team_admin id — NOT the member's own id
+        # (using the member id here made team-scoped APP senders silently
+        # unreachable for every member send).
+        return user.get('team_creator_id')
 
     def resolve_sender(c):
         key = (c.get('app_name') or '').strip().lower()
