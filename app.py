@@ -14226,14 +14226,17 @@ def get_email_unit_price():
     return 0.0
 
 
-def send_email_via_smtp(cfg, to_email, subject, body_html):
-    """Send one email through SMTP. Raises on failure. Returns (ok, error)."""
+def send_email_via_smtp(cfg, to_email, subject, body_html, from_email=None, from_name=None):
+    """Send one email through SMTP. Raises on failure. Returns (ok, error).
+
+    from_email/from_name optionally override the configured default sender
+    (used when testing a per-APP sender address)."""
     import smtplib
     from email.message import EmailMessage
     msg = EmailMessage()
-    from_name = (cfg.get('from_name') or '').strip()
-    from_email = cfg['from_email'].strip()
-    msg['From'] = f'{from_name} <{from_email}>' if from_name else from_email
+    sender_name = (from_name if from_name is not None else (cfg.get('from_name') or '')).strip()
+    sender_email = (from_email or cfg.get('from_email') or '').strip()
+    msg['From'] = f'{sender_name} <{sender_email}>' if sender_name else sender_email
     msg['To'] = to_email
     msg['Subject'] = subject
     # Plain text fallback: strip tags minimally.
@@ -14353,12 +14356,29 @@ def test_email_config_api():
     to = (data.get('to') or cfg.get('from_email') or '').strip()
     if not EMAIL_RE.match(to or ''):
         return jsonify({'error': 'Correo de prueba invalido'}), 400
+    # Optional APP: the test goes out with that APP's sender address so an
+    # admin can verify the exact mailbox a real bulk send would use. Without
+    # it the test always uses the global default From.
+    app_name = (data.get('app_name') or '').strip()
+    from_email = from_name = None
+    if app_name:
+        row = get_db().execute(
+            "SELECT from_email, from_name FROM email_app_senders "
+            "WHERE LOWER(TRIM(app_name))=? AND is_active=1 ORDER BY id LIMIT 1",
+            (app_name.lower(),)).fetchone()
+        if row and (row['from_email'] or '').strip():
+            from_email = row['from_email'].strip()
+            from_name = (row['from_name'] or '').strip()
+        else:
+            return jsonify({'error': f"No hay una direccion activa configurada para la APP '{app_name}'"}), 404
     try:
         send_email_via_smtp(
             cfg, to, 'Prueba SMS Marketing',
-            _email_html_body('Este es un correo de prueba enviado correctamente desde la plataforma SMS Marketing.')
+            _email_html_body('Este es un correo de prueba enviado correctamente desde la plataforma SMS Marketing.'),
+            from_email=from_email, from_name=from_name
         )
-        return jsonify({'message': f'Correo de prueba enviado a {to}'})
+        used = from_email or (cfg.get('from_email') or '').strip()
+        return jsonify({'message': f'Correo de prueba enviado a {to} (remitente: {used})'})
     except Exception as e:
         return jsonify({'error': f'No se pudo enviar: {str(e)}'}), 400
 

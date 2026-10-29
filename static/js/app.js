@@ -7235,11 +7235,15 @@ async function renderEmailConfig(container) {
     try {
         var results = await Promise.all([
             api('/api/config/email/providers'),
-            api('/api/config/email').catch(function() { return { configured: false }; })
+            api('/api/config/email').catch(function() { return { configured: false }; }),
+            api('/api/config/email/senders').catch(function() { return { senders: [] }; })
         ]);
-        var prov = results[0], cfg = results[1] || {};
+        var prov = results[0], cfg = results[1] || {}, sendersData = results[2] || {};
         window._emailProviders = prov.providers || [];
         cfg = cfg || {};
+        var appTestOpts = ((sendersData.senders || []).filter(function(s) { return s.is_active !== false; })).map(function(s) {
+            return '<option value="' + escapeHtml(s.app_name) + '">' + escapeHtml(s.app_name) + ' (' + escapeHtml(s.from_email) + ')</option>';
+        }).join('');
         var provOpts = window._emailProviders.map(function(p) {
             return '<option value="' + p.key + '"' + (cfg.provider === p.key ? ' selected' : '') + '>' + escapeHtml(p.label) + '</option>';
         }).join('');
@@ -7267,6 +7271,7 @@ async function renderEmailConfig(container) {
                 '</div>' +
                 '<div class="form-group"><label class="text-secondary text-sm" style="display:flex;align-items:center;gap:8px;font-weight:400;"><input type="checkbox" id="em-active"' + (cfg.is_active === false ? '' : ' checked') + '> Configuracion activa</label></div>' +
                 '<div class="form-group"><label>Correo para la prueba</label><input id="em-test-to" type="email" placeholder="business@rileciones.com" value=""><small class="text-secondary">En modo sandbox de SES, usa una direccion verificada. Si se deja vacio, se envia al correo remitente.</small></div>' +
+                '<div class="form-group"><label>APP del remitente para la prueba (opcional)</label><select id="em-test-app"><option value="">-- Remitente global por defecto --</option>' + appTestOpts + '</select><small class="text-secondary">Al elegir una APP, la prueba sale con la direccion configurada para esa APP, exactamente igual que un envio real. Sirve para verificar las direcciones por APP.</small></div>' +
                 '<div id="em-msg"></div>' +
                 '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="submit" class="btn btn-primary">Guardar configuracion</button><button type="button" class="btn btn-secondary" onclick="handleTestEmailConfig()">Enviar correo de prueba</button></div>' +
               '</form>' +
@@ -7724,9 +7729,11 @@ async function handleTestEmailConfig() {
     try {
         var testToEl = document.getElementById('em-test-to');
         var testTo = testToEl ? testToEl.value.trim() : '';
+        var testAppEl = document.getElementById('em-test-app');
+        var testApp = testAppEl ? testAppEl.value.trim() : '';
         var res = await api('/api/config/email/test', {
             method: 'POST',
-            body: { to: testTo || document.getElementById('em-from').value.trim() }
+            body: { to: testTo || document.getElementById('em-from').value.trim(), app_name: testApp }
         });
         msg.innerHTML = '<div class="alert alert-success">' + escapeHtml(res.message || 'Prueba enviada') + '</div>';
     } catch (err) { msg.innerHTML = '<div class="alert alert-error">' + escapeHtml(err.message) + '</div>'; }
