@@ -15226,8 +15226,10 @@ def send_email():
         return jsonify({'error': 'Ningun contacto valido con correo electronico'}), 400
 
     # Suppression list (SES bounces/complaints + manual) is skipped, not failed.
-    suppressed_set = {row[0].lower() for row in db.execute(
-        "SELECT LOWER(email) FROM email_suppressions").fetchall()}
+    # NB: alias + dict access — PG rows are RealDictRow and do not support
+    # row[0] (raised KeyError: 0 as soon as the table had its first row).
+    suppressed_set = {row['email'].lower() for row in db.execute(
+        "SELECT LOWER(email) AS email FROM email_suppressions").fetchall()}
 
     # ---- Limite diario de correos (miembros y roles personalizados) ----
     # El valor mas estricto (menor positivo) entre el limite del equipo y el
@@ -15393,7 +15395,8 @@ EMAIL_RATE_PER_SEC = max(1, int(os.environ.get('EMAIL_RATE_PER_SEC', '12') or 12
 
 def _suppressed_emails_lower():
     db = get_db()
-    return {row[0].lower() for row in db.execute("SELECT LOWER(email) FROM email_suppressions").fetchall()}
+    return {row['email'].lower() for row in db.execute(
+        "SELECT LOWER(email) AS email FROM email_suppressions").fetchall()}
 
 
 class _PersistentSmtp:
