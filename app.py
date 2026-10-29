@@ -15413,6 +15413,25 @@ class _PersistentSmtp:
             self.server = None
 
 
+def _unsub_signature(email: str) -> str:
+    """HMAC signature for unsubscribe links — blocks suppressing arbitrary
+    addresses by guessing the URL."""
+    import hmac
+    return hmac.new(app.secret_key.encode(), (email or '').strip().lower().encode(),
+                    hashlib.sha256).hexdigest()[:20]
+
+
+def _unsub_url(email: str) -> str:
+    """Absolute one-click unsubscribe URL for a recipient. '' when the public
+    base URL is unknown (no SHORT_LINK_BASE_URL env and no request context)."""
+    from urllib.parse import quote
+    base = _short_link_base()
+    email = (email or '').strip().lower()
+    if not base or not email:
+        return ''
+    return f"{base}/api/email/unsubscribe?e={quote(email)}&s={_unsub_signature(email)}"
+
+
 def _build_email_message(cfg, to_email, subject, body_html, from_email=None, from_name=None):
     from email.message import EmailMessage
     msg = EmailMessage()
@@ -15422,6 +15441,17 @@ def _build_email_message(cfg, to_email, subject, body_html, from_email=None, fro
     msg['From'] = f'{sender_name} <{sender_email}>' if sender_name else sender_email
     msg['To'] = to_email
     msg['Subject'] = subject
+    # One-click unsubscribe (RFC 8058): Gmail/Yahoo REQUIRE it for bulk
+    # senders since 2024 and its absence is a strong spam signal for any
+    # volume. Both the header and a visible footer link are added.
+    unsub = _unsub_url(to_email)
+    if unsub:
+        msg['List-Unsubscribe'] = f'<{unsub}>' + (f', <mailto:{sender_email}?subject=unsubscribe>' if sender_email else '')
+        msg['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
+        body_html = (body_html or '') + (
+            '<p style="font-size:12px;color:#888;margin-top:24px;">'
+            'Si no deseas recibir mas correos, puedes '
+            f'<a href="{unsub}">cancelar la suscripcion aqui</a>.</p>')
     # SES VERP-style envelope for bounce attribution via the From address;
     # plain = minimal text fallback.
     plain = re.sub(r'<br\s*/?>', '\n', body_html or '')
@@ -15628,6 +15658,37 @@ def email_queue_loop():
                 _process_email_queue_once()
         except Exception as e:
             app.logger.warning(f"[email-queue] loop error: {e}")
+
+
+@app.route('/api/email/unsubscribe', methods=['GET', 'POST'])
+def email_unsubscribe():
+    """RFC 8058 one-click unsubscribe (public endpoint, no auth).
+
+    Gmail/Yahoo require bulk senders to honor one-click unsubscribe; the link
+    travels in the List-Unsubscribe header (+ a visible footer) of every
+    message. A successful hit puts the address on the suppression list, so
+    both the enqueue path and the queue worker skip it from then on.
+      GET  -> human browser click: suppress + minimal confirmation page.
+      POST -> mailbox provider one-click (body 'List-Unsubscribe=One-Click').
+    The HMAC signature blocks suppressing arbitrary addresses by URL guessing.
+    """
+    import hmac as _hmac
+    from markupsafe import escape as _esc
+    email = (request.values.get('e') or '').strip().lower()
+    sig = (request.values.get('s') or '').strip()
+    if (not email or not sig or not EMAIL_RE.match(email)
+            or not _hmac.compare_digest(sig, _unsub_signature(email))):
+        return ('', 404)  # uniform 404: never leak which addresses are valid
+    _add_suppression(email, 'unsubscribe', 'List-Unsubscribe one-click')
+    if request.method == 'POST':
+        return ('', 200)
+    return ("""<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Suscripcion cancelada</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:60px 20px;">
+<h2>Suscripcion cancelada</h2>
+<p>La direccion <strong>%s</strong> ha sido dada de baja y no recibira mas correos.</p>
+</body></html>""" % _esc(email)), 200
 
 
 # ----- Suppression list (SES bounces/complaints) + SNS webhook -------------
