@@ -15178,26 +15178,15 @@ def delete_webphone_pricing(pid):
     return jsonify({'message': 'Precio eliminado'})
 
 
-@app.route('/api/email/send', methods=['POST'])
-@login_required
-def send_email():
-    """Enqueue a bulk email job. The actual SMTP delivery happens in the
-    background worker (email_queue_loop) so the HTTP request returns at once
-    even for tens of thousands of recipients."""
-    data = request.get_json(silent=True) or {}
-    mode = data.get('mode', 'contacts')
-    contact_ids = data.get('contact_ids') or []
-    group_id = data.get('group_id')
-    subject_tpl = (data.get('subject') or '').strip()
-    body_tpl = (data.get('body') or '').strip()
-    if not subject_tpl or not body_tpl:
-        return jsonify({'error': 'Asunto y mensaje son requeridos'}), 400
+def _resolve_email_send_targets(user, mode, contact_ids, group_id):
+    """Resolve bulk-email targets (contacts with a valid, deduped email).
 
+    Shared by /api/email/send and /api/email/sender-preview so both always see
+    the exact same recipient set. Returns (targets, None) or (None, (msg, code));
+    targets is a list of (contact dict, email)."""
     db = get_db()
-    user = g.user
-    # Resolve target contacts (must have an email)
     if mode == 'group' and group_id:
-        where, params = _contact_scope_for_group('c', g.user['id'], g.user['role'], group_id)
+        where, params = _contact_scope_for_group('c', user['id'], user['role'], group_id)
         rows = db.execute(
             f"SELECT c.id, c.name, c.phone, c.email, c.app_name, c.amount, c.discount_amount, c.payment_link, c.notes, c.remark, c.created_by "
             f"FROM contacts c WHERE c.group_id=? AND COALESCE(c.email,'')<>'' AND {where}",
@@ -15205,7 +15194,7 @@ def send_email():
         ).fetchall()
     else:
         if not isinstance(contact_ids, list) or not contact_ids:
-            return jsonify({'error': 'Selecciona al menos un contacto con correo'}), 400
+            return None, ('Selecciona al menos un contacto con correo', 400)
         where, params = _contact_visible_where('c')
         ph = ','.join(['?'] * len(contact_ids))
         rows = db.execute(
@@ -15223,7 +15212,136 @@ def send_email():
         seen.add(email.lower())
         targets.append((dict(r), email))
     if not targets:
-        return jsonify({'error': 'Ningun contacto valido con correo electronico'}), 400
+        return None, ('Ningun contacto valido con correo electronico', 400)
+    return targets, None
+
+
+def _make_email_sender_resolver(db, user, cfg):
+    """Per-contact From-address resolver, shared by /api/email/send (enqueue)
+    and /api/email/sender-preview so the preview always matches the real send.
+
+    Precedence per contact: the contact-owner team's APP mapping -> the global
+    (NULL-team) APP mapping -> the SMTP default From."""
+    global_senders = _app_senders_map(None)
+    team_cache = {}
+
+    def _owner_team(owner_id):
+        """Team-unit id that owns a contact: the team_admin's own id for any
+        contact in their team. None => no team (only global mappings apply)."""
+        if user['role'] == 'admin':
+            # Admin-owned contacts have no team; only global applies.
+            if owner_id is None:
+                return None
+            if owner_id in team_cache:
+                return team_cache[owner_id]
+            # A member owner's unit is their team_creator_id; a team_admin
+            # owner IS the unit root (team_creator_id NULL) -> their own id.
+            own = db.execute(
+                "SELECT team_creator_id FROM users WHERE id=?", (owner_id,)
+            ).fetchone()
+            tid = (own['team_creator_id'] or owner_id) if own else None
+            team_cache[owner_id] = tid
+            return tid
+        if user['role'] == 'team_admin':
+            return user['id']
+        # Member/custom role: mappings are keyed by their leader's team id —
+        # NOT the member's own id.
+        return user.get('team_creator_id')
+
+    def resolve_sender(c):
+        key = (c.get('app_name') or '').strip().lower()
+        if key:
+            team = _owner_team(c.get('created_by'))
+            if team is not None:
+                team_map = _app_senders_map(team)
+                if key in team_map:
+                    return team_map[key]['from_email'], team_map[key]['from_name']
+            if key in global_senders:
+                return global_senders[key]['from_email'], global_senders[key]['from_name']
+        if cfg:
+            return ((cfg.get('from_email') or '').strip(), (cfg.get('from_name') or '').strip())
+        return '', ''
+
+    return resolve_sender
+
+
+@app.route('/api/email/sender-preview', methods=['POST'])
+@login_required
+def email_sender_preview():
+    """Pre-send From-address preview: runs the exact target + sender resolution
+    of /api/email/send and aggregates per sender ({total, suppressed,
+    senders:[{from_email, from_name, count, is_default, apps}],
+    unmatched_apps}) so the compose page shows which mailbox each recipient
+    will be mailed from and which APP names have no mapping (fall back to the
+    default sender)."""
+    data = request.get_json(silent=True) or {}
+    targets, terr = _resolve_email_send_targets(
+        g.user, data.get('mode', 'contacts'), data.get('contact_ids') or [], data.get('group_id'))
+    if terr:
+        return jsonify({'error': terr[0]}), terr[1]
+    db = get_db()
+    suppressed_set = {row['email'].lower() for row in db.execute(
+        "SELECT LOWER(email) AS email FROM email_suppressions").fetchall()}
+    cfg = get_email_config()
+    resolve_sender = _make_email_sender_resolver(db, g.user, cfg)
+    default_from = ((cfg.get('from_email') or '').strip()) if cfg else ''
+    per_sender = {}
+    unmatched_apps = {}
+    total = suppressed = 0
+    for c, email in targets:
+        total += 1
+        if email.lower() in suppressed_set:
+            suppressed += 1
+            continue
+        from_email, from_name = resolve_sender(c)
+        entry = per_sender.setdefault(
+            (from_email, from_name),
+            {'from_email': from_email, 'from_name': from_name, 'count': 0, 'apps': {}})
+        entry['count'] += 1
+        app_label = (c.get('app_name') or '').strip() or '(sin APP)'
+        entry['apps'][app_label] = entry['apps'].get(app_label, 0) + 1
+        if from_email == default_from and (c.get('app_name') or '').strip():
+            unmatched_apps[app_label] = unmatched_apps.get(app_label, 0) + 1
+    senders = []
+    for entry in sorted(per_sender.values(), key=lambda e: -e['count']):
+        senders.append({
+            'from_email': entry['from_email'],
+            'from_name': entry['from_name'],
+            'count': entry['count'],
+            'is_default': entry['from_email'] == default_from,
+            'apps': [{'app_name': a, 'count': n} for a, n in
+                     sorted(entry['apps'].items(), key=lambda kv: -kv[1])][:20],
+        })
+    return jsonify({
+        'total': total,
+        'suppressed': suppressed,
+        'senders': senders,
+        'unmatched_apps': [{'app_name': a, 'count': n} for a, n in
+                           sorted(unmatched_apps.items(), key=lambda kv: -kv[1])][:20],
+    })
+
+
+@app.route('/api/email/send', methods=['POST'])
+@login_required
+def send_email():
+    """Enqueue a bulk email job. The actual SMTP delivery happens in the
+    background worker (email_queue_loop) so the HTTP request returns at once
+    even for tens of thousands of recipients."""
+    data = request.get_json(silent=True) or {}
+    mode = data.get('mode', 'contacts')
+    contact_ids = data.get('contact_ids') or []
+    group_id = data.get('group_id')
+    subject_tpl = (data.get('subject') or '').strip()
+    body_tpl = (data.get('body') or '').strip()
+    if not subject_tpl or not body_tpl:
+        return jsonify({'error': 'Asunto y mensaje son requeridos'}), 400
+
+    db = get_db()
+    user = g.user
+    # Resolve target contacts (must have an email) — shared with sender-preview.
+    targets, terr = _resolve_email_send_targets(user, mode, contact_ids, group_id)
+    if terr:
+        return jsonify({'error': terr[0]}), terr[1]
 
     # Suppression list (SES bounces/complaints + manual) is skipped, not failed.
     # NB: alias + dict access — PG rows are RealDictRow and do not support
@@ -15252,51 +15370,10 @@ def send_email():
     # Per-APP sender override, resolved per recipient's team: a contact whose
     # APP has a mapping in ITS team goes out through that team's mailbox; if
     # the team has no mapping (or for a global NULL-team sender) the global
-    # default applies; otherwise the global SMTP From address. Loaded even in
-    # simulation mode so records preview the real mailbox.
-    global_senders = _app_senders_map(None)
-    # Resolve each contact owner -> team_admin id that owns them (the sender
-    # scope). An admin or unowned contact resolves to team None (global only).
-    _team_cache = {}
-
-    def _owner_team(owner_id):
-        """Team-unit id that owns a contact: the team_admin's own id for any
-        contact in their team. None => no team (only global mappings apply)."""
-        if user['role'] == 'admin':
-            # Admin-owned contacts have no team; only global applies.
-            if owner_id is None:
-                return None
-            if owner_id in _team_cache:
-                return _team_cache[owner_id]
-            # A member owner's unit is their team_creator_id; a team_admin
-            # owner IS the unit root (team_creator_id NULL) -> their own id.
-            own = db.execute(
-                "SELECT team_creator_id FROM users WHERE id=?", (owner_id,)
-            ).fetchone()
-            tid = (own['team_creator_id'] or owner_id) if own else None
-            _team_cache[owner_id] = tid
-            return tid
-        if user['role'] == 'team_admin':
-            return user['id']
-        # Member/custom role: sends happen inside their leader's team, whose
-        # mappings are keyed by the team_admin id — NOT the member's own id
-        # (using the member id here made team-scoped APP senders silently
-        # unreachable for every member send).
-        return user.get('team_creator_id')
-
-    def resolve_sender(c):
-        key = (c.get('app_name') or '').strip().lower()
-        if key:
-            team = _owner_team(c.get('created_by'))
-            if team is not None:
-                team_map = _app_senders_map(team)
-                if key in team_map:
-                    return team_map[key]['from_email'], team_map[key]['from_name']
-            if key in global_senders:
-                return global_senders[key]['from_email'], global_senders[key]['from_name']
-        if cfg:
-            return ((cfg.get('from_email') or '').strip(), (cfg.get('from_name') or '').strip())
-        return '', ''
+    # default applies; otherwise the global SMTP From address. Shared with the
+    # sender-preview endpoint; loaded even in simulation mode so records
+    # preview the real mailbox.
+    resolve_sender = _make_email_sender_resolver(db, user, cfg)
 
     def render(text, c):
         msg = text.replace('{nombre}', c.get('name') or '')

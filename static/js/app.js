@@ -6795,7 +6795,8 @@ async function renderEmailSend(container) {
                     '<div id="email-contacts-list" class="contact-select-list"></div>' +
                     '<div id="email-contacts-count" class="text-secondary text-sm" style="margin-top:8px;"></div>' +
                 '</div>' +
-                '<div id="email-group" class="form-group" style="display:none;"><label>Grupo</label><select id="email-group-select" onchange="refreshEmailQuotaUI()"><option value="">-- Seleccione --</option>' + groupOpts + '</select><small class="text-secondary">Se enviara a todos los contactos del grupo que tengan correo registrado.</small></div>' +
+                '<div id="email-group" class="form-group" style="display:none;"><label>Grupo</label><select id="email-group-select" onchange="refreshEmailQuotaUI();refreshEmailSenderPreview()"><option value="">-- Seleccione --</option>' + groupOpts + '</select><small class="text-secondary">Se enviara a todos los contactos del grupo que tengan correo registrado.</small></div>' +
+                '<div id="email-sender-preview" style="margin:4px 0 16px;"></div>' +
                 '<div class="form-group mt-3"><label>Asunto *</label><input type="text" id="email-subject" maxlength="500" placeholder="Ej: Tu estado de cuenta / Recordatorio de pago"></div>' +
                 '<div class="form-group"><label>Mensaje *</label><textarea id="email-body" rows="8" placeholder="Estimado {nombre}, le recordamos que..."></textarea><div class="var-chips">' + variableChips('email-body') + '</div><small class="text-secondary">Variables por contacto: {nombre}, {telefono}, {app_name}, {amount}, {discount}, {payment_link}. Los saltos de linea se conservan.</small></div>' +
                 '<div id="email-error" class="alert alert-error" style="display:none;"></div>' +
@@ -6894,6 +6895,67 @@ function updateEmailCount() {
     if (el) el.textContent = state.emailSend.mode === 'contacts' ? (n + ' contacto(s) seleccionado(s)') : '';
     if (hint) hint.textContent = state.emailSend.mode === 'contacts' ? (n + ' destinatario(s)') : '';
     refreshEmailQuotaUI();
+    refreshEmailSenderPreview();
+}
+
+// Sender preview: shows which From mailbox(es) the current selection will use
+// (per-APP mapping vs default), debounced + stale-response guarded.
+var _emailPreviewTimer = null;
+var _emailPreviewSeq = 0;
+function refreshEmailSenderPreview() {
+    clearTimeout(_emailPreviewTimer);
+    _emailPreviewTimer = setTimeout(doEmailSenderPreview, 400);
+}
+
+async function doEmailSenderPreview() {
+    var box = document.getElementById('email-sender-preview');
+    if (!box) return;
+    var payload;
+    if (state.emailSend.mode === 'group') {
+        var gid = (document.getElementById('email-group-select') || {}).value;
+        if (!gid) { box.innerHTML = ''; return; }
+        payload = { mode: 'group', group_id: parseInt(gid, 10) };
+    } else {
+        var ids = Array.from(state.emailSend.selected);
+        if (!ids.length) { box.innerHTML = ''; return; }
+        payload = { mode: 'contacts', contact_ids: ids };
+    }
+    var seq = ++_emailPreviewSeq;
+    box.innerHTML = '<div class="text-secondary text-sm" style="padding:10px 12px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;">Calculando remitente(s)...</div>';
+    try {
+        var d = await api('/api/email/sender-preview', { method: 'POST', body: payload });
+        if (seq !== _emailPreviewSeq) return;
+        var rows = (d.senders || []).map(function(s) {
+            var label = s.from_name
+                ? (escapeHtml(s.from_name) + ' &lt;' + escapeHtml(s.from_email) + '&gt;')
+                : escapeHtml(s.from_email || '(sin remitente)');
+            var tag = s.is_default ? ' <span style="font-size:11px;background:#E2E8F0;color:#475569;border-radius:6px;padding:1px 6px;">predeterminado</span>' : '';
+            var apps = (s.apps || []).slice(0, 6).map(function(a) {
+                return '<span style="font-size:11px;background:#EFF6FF;color:#1D4ED8;border-radius:6px;padding:1px 6px;">' + escapeHtml(a.app_name) + ' x' + a.count + '</span>';
+            }).join(' ');
+            var more = (s.apps || []).length > 6 ? ' <span class="text-secondary" style="font-size:11px;">+' + (s.apps.length - 6) + '</span>' : '';
+            return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:3px 0;">' +
+                   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2" style="flex:none;"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>' +
+                   '<strong style="font-size:13px;">' + label + '</strong>' + tag +
+                   '<span class="text-secondary" style="font-size:12px;">- ' + s.count + ' destinatario(s)</span>' +
+                   '<span style="display:inline-flex;gap:4px;flex-wrap:wrap;">' + apps + more + '</span></div>';
+        }).join('');
+        var extra = '';
+        if ((d.unmatched_apps || []).length) {
+            var names = d.unmatched_apps.slice(0, 8).map(function(a) { return escapeHtml(a.app_name); }).join(', ');
+            extra += '<div style="margin-top:8px;font-size:12px;color:#B45309;">APP sin remitente propio (usaran el predeterminado): ' + names +
+                     (d.unmatched_apps.length > 8 ? ' +' + (d.unmatched_apps.length - 8) : '') + '</div>';
+        }
+        if (d.suppressed > 0) {
+            extra += '<div style="margin-top:4px;font-size:12px;color:#64748B;">' + d.suppressed + ' destinatario(s) en lista de supresion se omitiran.</div>';
+        }
+        box.innerHTML = '<div style="padding:10px 12px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;">' +
+            '<div style="font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;">Remitente(s) de este envio - ' + d.total + ' destinatario(s)</div>' +
+            rows + extra + '</div>';
+    } catch (e) {
+        if (seq !== _emailPreviewSeq) return;
+        box.innerHTML = '';
+    }
 }
 
 async function handleSendEmail() {
