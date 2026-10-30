@@ -14226,6 +14226,23 @@ def get_email_unit_price():
     return 0.0
 
 
+def _apply_unsub_headers(msg, sender_email, to_email, body_html):
+    """Add RFC 8058 one-click unsubscribe headers + a visible footer link.
+    Returns the (possibly extended) body_html; no-op when the public base URL
+    is unknown. Shared by the bulk worker (_build_email_message) and the
+    config-page test send (send_email_via_smtp) so both emit exactly the
+    headers Gmail checks."""
+    unsub = _unsub_url(to_email)
+    if not unsub:
+        return body_html
+    msg['List-Unsubscribe'] = f'<{unsub}>' + (f', <mailto:{sender_email}?subject=unsubscribe>' if sender_email else '')
+    msg['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
+    return (body_html or '') + (
+        '<p style="font-size:12px;color:#888;margin-top:24px;">'
+        'Si no deseas recibir mas correos, puedes '
+        f'<a href="{unsub}">cancelar la suscripcion aqui</a>.</p>')
+
+
 def send_email_via_smtp(cfg, to_email, subject, body_html, from_email=None, from_name=None):
     """Send one email through SMTP. Raises on failure. Returns (ok, error).
 
@@ -14239,6 +14256,9 @@ def send_email_via_smtp(cfg, to_email, subject, body_html, from_email=None, from
     msg['From'] = f'{sender_name} <{sender_email}>' if sender_name else sender_email
     msg['To'] = to_email
     msg['Subject'] = subject
+    # Same RFC 8058 one-click unsubscribe headers as bulk sends, so the config
+    # page test button verifies exactly what Gmail checks.
+    body_html = _apply_unsub_headers(msg, sender_email, to_email, body_html)
     # Plain text fallback: strip tags minimally.
     plain = re.sub(r'<br\s*/?>', '\n', body_html or '')
     plain = re.sub(r'</p\s*>', '\n', plain, flags=re.I)
@@ -15551,14 +15571,7 @@ def _build_email_message(cfg, to_email, subject, body_html, from_email=None, fro
     # One-click unsubscribe (RFC 8058): Gmail/Yahoo REQUIRE it for bulk
     # senders since 2024 and its absence is a strong spam signal for any
     # volume. Both the header and a visible footer link are added.
-    unsub = _unsub_url(to_email)
-    if unsub:
-        msg['List-Unsubscribe'] = f'<{unsub}>' + (f', <mailto:{sender_email}?subject=unsubscribe>' if sender_email else '')
-        msg['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
-        body_html = (body_html or '') + (
-            '<p style="font-size:12px;color:#888;margin-top:24px;">'
-            'Si no deseas recibir mas correos, puedes '
-            f'<a href="{unsub}">cancelar la suscripcion aqui</a>.</p>')
+    body_html = _apply_unsub_headers(msg, sender_email, to_email, body_html)
     # SES VERP-style envelope for bounce attribution via the From address;
     # plain = minimal text fallback.
     plain = re.sub(r'<br\s*/?>', '\n', body_html or '')
