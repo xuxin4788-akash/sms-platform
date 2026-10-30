@@ -6758,6 +6758,12 @@ function applyQuotaUI(channel, bannerElId, btnId, selectedCount) {
 
 async function renderEmailSend(container) {
     container.innerHTML = '<div class="text-center text-secondary">Cargando...</div>';
+    // Reset compose state so it matches the freshly rendered UI (contacts tab
+    // active, empty search, no selection). Previously the mode persisted
+    // across visits: after one click on "Por Grupo", re-entering the page
+    // showed the contacts tab while state.emailSend.mode stayed 'group', and
+    // handleSendEmail then failed with "Selecciona un grupo.".
+    state.emailSend = { mode: 'contacts', contactList: [], filtered: [], selected: new Set(), search: '' };
     try {
         var [stats, groupsData] = await Promise.all([
             api('/api/email/statistics'),
