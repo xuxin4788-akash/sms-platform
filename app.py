@@ -3053,6 +3053,83 @@ def sms_segment_breakdown_grouped(user_ids, date_filter_sql, date_params, db=Non
     return result
 
 
+def _date_range_sql(column, date_from, date_to):
+    """Sargable date-window predicate usable on both SQLite (created_at stored
+    as ISO TEXT) and PostgreSQL (TIMESTAMP): `column >= from` / `column < to+1d`.
+
+    The old `date(column) >= ?` form wraps the column in a function, which
+    defeats the created_at index and forces a full table scan per stats query.
+    On production-size sms_records the Todos los Equipos page ran ~7 such scans
+    PER team unit and blew past nginx's proxy timeout (HTTP 504).
+
+    Falls back to the date() form for unparseable input (previous behavior:
+    the DB would raise on a bad date string)."""
+    sql, params = '', []
+    if date_from:
+        try:
+            datetime.strptime(date_from, '%Y-%m-%d')
+            sql += f' AND {column} >= ?'
+            params.append(date_from)
+        except (ValueError, TypeError):
+            sql += f' AND date({column}) >= ?'
+            params.append(date_from)
+    if date_to:
+        try:
+            nxt = (datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+            sql += f' AND {column} < ?'
+            params.append(nxt)
+        except (ValueError, TypeError):
+            sql += f' AND date({column}) <= ?'
+            params.append(date_to)
+    return sql, params
+
+
+def _today_range_sql(column, db):
+    """Sargable 'today' predicate: `column >= today AND column < tomorrow`,
+    using the DB's own clock. The `date(column) = today` form wraps the column
+    in a function and forces a full scan of sms_records on every stats request
+    (production-size table), defeating idx_sms_records_created_at."""
+    if getattr(db, 'db_type', 'sqlite') == 'postgres':
+        return (f"{column} >= CURRENT_DATE AND "
+                f"{column} < CURRENT_DATE + INTERVAL '1 day'")
+    return f"{column} >= date('now') AND {column} < date('now','+1 day')"
+
+
+def _make_sms_price_resolver(db):
+    """Request-scoped per-account SMS unit-price resolver.
+
+    Same semantics as get_sms_unit_price_for() (own users.country, else the
+    team_config default country, else the global price), but bulk-loads
+    users.country once and memoizes per-country + global prices, turning
+    ~4 SQL queries per account into ~2 + 2 x (#distinct countries) total."""
+    users_country = {}
+    for r in db.execute("SELECT id, country FROM users").fetchall():
+        c = (r['country'] or '').strip()
+        if c:
+            users_country[r['id']] = c.upper()
+    team_default = ''
+    try:
+        t = db.execute("SELECT country FROM team_config WHERE id = 1").fetchone()
+        if t and (t['country'] or '').strip():
+            team_default = t['country'].strip().upper()
+    except Exception:
+        pass
+    country_price = {}
+    global_price = [None]
+
+    def price_for(uid):
+        c = users_country.get(uid, '') or team_default
+        if c:
+            if c not in country_price:
+                country_price[c] = get_country_sms_unit_price(c, db=db)
+            if country_price[c] > 0:
+                return country_price[c]
+        if global_price[0] is None:
+            global_price[0] = get_sms_unit_price(db=db)
+        return global_price[0]
+    return price_for
+
+
 def set_sms_unit_price(price, db=None):
     own = db is None
     if own:
@@ -8773,15 +8850,13 @@ def get_user_usage():
     db = get_db()
     date_from = request.args.get('date_from', '')
     date_to = request.args.get('date_to', '')
-    # Build date filter
-    date_filter = ''
-    params = []
-    if date_from:
-        date_filter += ' AND date(r.created_at) >= ?'
-        params.append(date_from)
-    if date_to:
-        date_filter += ' AND date(r.created_at) <= ?'
-        params.append(date_to)
+    # Build date filter: sargable range form (uses the created_at index).
+    # Two variants -- joined queries alias sms_records as r; the summary query
+    # below is single-table (previously it reused the r.-aliased filter and
+    # raised "no such column: r.created_at" whenever a date was passed).
+    date_filter, params = _date_range_sql('r.created_at', date_from, date_to)
+    date_filter_s, date_params_s = _date_range_sql('created_at', date_from, date_to)
+    _price_for = _make_sms_price_resolver(db)
     # Build user filter
     user_filter = ''
     if g.user['role'] == 'team_admin':
@@ -8818,21 +8893,13 @@ def get_user_usage():
     _uu_seg_scope = {}
     _uu_ids = [r['user_id'] for r in rows]
     if _uu_ids:
-        _uu_seg_date = ''
-        _uu_seg_params = []
-        if date_from:
-            _uu_seg_date += ' AND date(created_at) >= ?'
-            _uu_seg_params.append(date_from)
-        if date_to:
-            _uu_seg_date += ' AND date(created_at) <= ?'
-            _uu_seg_params.append(date_to)
-        _uu_seg_scope = sms_segment_breakdown_grouped(_uu_ids, _uu_seg_date, _uu_seg_params, db=db)
+        _uu_seg_scope = sms_segment_breakdown_grouped(_uu_ids, date_filter_s, date_params_s, db=db)
     users = []
     for row in rows:
         total = row['total']
         sent = row['sent']
         rate = round((sent / total * 100), 1) if total > 0 else 0
-        u_price = get_sms_unit_price_for(row['user_id'], db=db)
+        u_price = _price_for(row['user_id'])
         _seg = _uu_seg_scope.get(row['user_id'], {'total': 0, 'sent': 0, 'failed': 0})
         # Team affiliation
         team_affiliation = '-'
@@ -8860,14 +8927,10 @@ def get_user_usage():
             'success_rate': rate,
             'last_activity': row['last_activity'] or ''
         })
-    # Overall summary - only use date params (not user_filter params)
-    date_params = []
-    if date_from:
-        date_params.append(date_from)
-    if date_to:
-        date_params.append(date_to)
+    # Overall summary - only use date params (not user_filter params).
+    # Single-table query: MUST use the unaliased filter (date_filter_s).
     summary_filter = ''
-    summary_params = list(date_params)
+    summary_params = list(date_params_s)
     if g.user['role'] == 'team_admin':
         summary_filter = ' AND created_by IN (SELECT id FROM users WHERE id=? OR team_creator_id=?)'
         summary_params.extend([g.user['id'], g.user['id']])
@@ -8877,72 +8940,50 @@ def get_user_usage():
             COALESCE(SUM(CASE WHEN status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) as total_sent,
             COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0) as total_failed,
             COALESCE(COUNT(id), 0) as total_all
-        FROM sms_records WHERE 1=1 {date_filter} {summary_filter}
+        FROM sms_records WHERE 1=1 {date_filter_s} {summary_filter}
     """, summary_params).fetchone()
 
-    # Team summary: aggregate by team (team_admin's team)
+    # Team summary: aggregate by team, derived in Python from the per-user rows
+    # above. The old implementation ran
+    #   ta LEFT JOIN members LEFT JOIN sms_records
+    #      ON (r.created_by = ta.id OR r.created_by = m.id)
+    # whose OR-join cannot use any index (full scans per team -> 504 behind
+    # nginx on large tables) AND counted the team_admin's own records once PER
+    # MEMBER ROW, inflating team totals for teams with members. Deriving from
+    # the already-fetched rows fixes both.
     team_summary = []
     if g.user['role'] == 'admin':
-        # For system admin: show all teams
-        team_rows = db.execute(f"""
-            SELECT
-                ta.id as team_admin_id,
-                ta.username as team_admin_username,
-                ta.full_name as team_admin_name,
-                COUNT(DISTINCT m.id) + 1 as member_count,
-                COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) as team_sent,
-                COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as team_failed,
-                COALESCE(COUNT(r.id), 0) as team_total
-            FROM users ta
-            LEFT JOIN users m ON m.team_creator_id = ta.id
-            LEFT JOIN sms_records r ON (r.created_by = ta.id OR r.created_by = m.id) {('AND date(r.created_at) >= ? AND date(r.created_at) <= ?' if date_from and date_to else '')}
-            WHERE ta.role = 'team_admin'
-            GROUP BY ta.id
-            ORDER BY team_total DESC
-        """, ([date_from, date_to] if date_from and date_to else [])).fetchall()
-        for tr in team_rows:
-            team_total = tr['team_total'] or 0
-            team_sent = tr['team_sent'] or 0
-            team_failed = tr['team_failed'] or 0
-            team_rate = round((team_sent / team_total * 100), 1) if team_total > 0 else 0
+        for ta in rows:
+            if ta['role'] != 'team_admin':
+                continue
+            members = [r for r in rows if r['team_creator_id'] == ta['user_id']]
+            t_total = (ta['total'] or 0) + sum((m['total'] or 0) for m in members)
+            t_sent = (ta['sent'] or 0) + sum((m['sent'] or 0) for m in members)
+            t_failed = (ta['failed'] or 0) + sum((m['failed'] or 0) for m in members)
             team_summary.append({
-                'team_name': tr['team_admin_name'] or tr['team_admin_username'],
-                'team_admin': tr['team_admin_username'],
-                'member_count': tr['member_count'],
-                'total': team_total,
-                'sent': team_sent,
-                'failed': team_failed,
-                'rate': team_rate
+                'team_name': ta['full_name'] or ta['username'],
+                'team_admin': ta['username'],
+                'member_count': len(members) + 1,
+                'total': t_total,
+                'sent': t_sent,
+                'failed': t_failed,
+                'rate': round((t_sent / t_total * 100), 1) if t_total > 0 else 0
             })
+        team_summary.sort(key=lambda t: t['total'], reverse=True)
     elif g.user['role'] == 'team_admin':
-        # For team admin: show own team only
-        member_ids = [u['id'] for u in db.execute(
-            "SELECT id FROM users WHERE team_creator_id = ?", (g.user['id'],)
-        ).fetchall()]
-        member_ids.append(g.user['id'])
-        placeholders = ','.join('?' * len(member_ids))
-        team_row = db.execute(f"""
-            SELECT
-                COUNT(DISTINCT u.id) as member_count,
-                COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) as team_sent,
-                COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) as team_failed,
-                COALESCE(COUNT(r.id), 0) as team_total
-            FROM users u
-            LEFT JOIN sms_records r ON r.created_by = u.id {('AND date(r.created_at) >= ? AND date(r.created_at) <= ?' if date_from and date_to else '')}
-            WHERE u.id IN ({placeholders})
-        """, (member_ids + ([date_from, date_to] if date_from and date_to else []))).fetchone()
-        team_total = team_row['team_total'] or 0
-        team_sent = team_row['team_sent'] or 0
-        team_failed = team_row['team_failed'] or 0
-        team_rate = round((team_sent / team_total * 100), 1) if team_total > 0 else 0
+        # rows are already scoped to self + own members by user_filter.
+        members = [r for r in rows if r['team_creator_id'] == g.user['id']]
+        t_total = sum((r['total'] or 0) for r in rows)
+        t_sent = sum((r['sent'] or 0) for r in rows)
+        t_failed = sum((r['failed'] or 0) for r in rows)
         team_summary.append({
             'team_name': g.user['full_name'] or g.user['username'],
             'team_admin': g.user['username'],
-            'member_count': team_row['member_count'],
-            'total': team_total,
-            'sent': team_sent,
-            'failed': team_failed,
-            'rate': team_rate
+            'member_count': len(members) + 1,
+            'total': t_total,
+            'sent': t_sent,
+            'failed': t_failed,
+            'rate': round((t_sent / t_total * 100), 1) if t_total > 0 else 0
         })
 
     return jsonify({
@@ -8969,18 +9010,14 @@ def get_unified_stats():
     filter_user_id = request.args.get('user_id', '')  # Account filter
 
     # Build date filter. One version for single-table queries (no alias),
-    # one for JOIN queries using the sms_records alias `r`.
-    date_filter = ''
-    date_filter_r = ''
-    date_params = []
-    if date_from:
-        date_filter += ' AND date(created_at) >= ?'
-        date_filter_r += ' AND date(r.created_at) >= ?'
-        date_params.append(date_from)
-    if date_to:
-        date_filter += ' AND date(created_at) <= ?'
-        date_filter_r += ' AND date(r.created_at) <= ?'
-        date_params.append(date_to)
+    # one for JOIN queries using the sms_records alias `r`. The range form
+    # (>= from / < to+1d) is sargable: it can use idx_sms_records_created_at,
+    # unlike the old date() wrapper which forced a full scan per query.
+    date_filter, date_params = _date_range_sql('created_at', date_from, date_to)
+    date_filter_r, _ = _date_range_sql('r.created_at', date_from, date_to)
+    # Request-scoped per-account price resolver (bulk users.country + memoized
+    # per-country/global prices); avoids ~4 queries per account.
+    _price_for = _make_sms_price_resolver(db)
 
     # Account filter, validated against the caller's scope:
     #  - admin may pick any account
@@ -9013,7 +9050,7 @@ def get_unified_stats():
         FROM sms_records WHERE created_by = ? {date_filter}
     """, [account_user_id] + date_params).fetchone()
 
-    my_account_price = get_sms_unit_price_for(account_user_id, db=db)
+    my_account_price = _price_for(account_user_id)
     _acct_seg = sms_segment_breakdown_grouped([account_user_id], date_filter, date_params, db=db).get(account_user_id, {'total': 0, 'sent': 0, 'failed': 0})
     my_account_data = {
         'total': my_account['total'] if my_account else 0,
@@ -9111,7 +9148,7 @@ def get_unified_stats():
                 """, agg_ids + date_params).fetchone()
                 today_count = period_row['cnt'] if period_row else 0
             else:
-                today_filter_simple = "AND date(created_at) = date('now')" if db.db_type != 'postgres' else "AND date(created_at) = CURRENT_DATE"
+                today_filter_simple = "AND " + _today_range_sql('created_at', db)
                 today_row = db.execute(f"""
                     SELECT COUNT(*) as cnt FROM sms_records
                     WHERE created_by IN ({agg_ph}) {today_filter_simple}
@@ -9141,14 +9178,7 @@ def get_unified_stats():
             """, date_params + agg_ids).fetchall()
             # Per-account voice (phone) stats: dialed = total calls, answered =
             # completed, talk_time = summed duration of completed calls (seconds).
-            v_date_filter = ''
-            v_date_params = []
-            if date_from:
-                v_date_filter += ' AND date(v.initiated_at) >= ?'
-                v_date_params.append(date_from)
-            if date_to:
-                v_date_filter += ' AND date(v.initiated_at) <= ?'
-                v_date_params.append(date_to)
+            v_date_filter, v_date_params = _date_range_sql('v.initiated_at', date_from, date_to)
             voice_member_rows = db.execute(f"""
                 SELECT v.created_by AS uid,
                        COUNT(v.id) AS calls,
@@ -9168,7 +9198,7 @@ def get_unified_stats():
             for m in member_rows:
                 m_total = m['total'] or 0
                 m_sent = m['sent'] or 0
-                m_price = get_sms_unit_price_for(m['id'], db=db)
+                m_price = _price_for(m['id'])
                 m_seg = seg_by_uid.get(m['id'], {'total': 0, 'sent': 0, 'failed': 0})
                 v = voice_by_uid.get(m['id'])
                 m_calls = (v['calls'] if v else 0) or 0
@@ -9221,7 +9251,7 @@ def get_unified_stats():
                 'calls': team_calls,
                 'answered': team_answered,
                 'talk_time': int(team_talk or 0),
-                'unit_price': get_sms_unit_price_for(account_user_id, db=db),
+                'unit_price': _price_for(account_user_id),
                 'rate': round((team_stats['sent'] / team_stats['total'] * 100), 1) if team_stats['total'] > 0 else 0
             }
     # 3. All Teams stats (admin only).
@@ -9236,69 +9266,73 @@ def get_unified_stats():
     if role == 'admin':
         unit_price = get_sms_unit_price(db)
 
+        # ---- Grouped one-pass aggregation (was: ~7 full scans PER team unit,
+        # which 504'd the page behind nginx on production-size tables) ----
+        # (1) Per-account SMS aggregates in the window: message counts include
+        # simulated rows (as before); segment sums exclude them (billing rule).
+        _real = "COALESCE(api_msg,'') NOT LIKE '%simulado%'"
+        sms_by_uid = {}
+        for r in db.execute(f"""
+                SELECT created_by AS uid,
+                       COUNT(id) AS total,
+                       COALESCE(SUM(CASE WHEN status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) AS sent,
+                       COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0) AS failed,
+                       COALESCE(SUM(CASE WHEN {_real} THEN billed_segments ELSE 0 END), 0) AS seg_total,
+                       COALESCE(SUM(CASE WHEN status IN ('sent','delivered') AND {_real} THEN billed_segments ELSE 0 END), 0) AS seg_sent,
+                       COALESCE(SUM(CASE WHEN status='failed' AND {_real} THEN billed_segments ELSE 0 END), 0) AS seg_failed
+                FROM sms_records
+                WHERE created_by IS NOT NULL {date_filter}
+                GROUP BY created_by
+            """, list(date_params)).fetchall():
+            sms_by_uid[r['uid']] = {k: int(r[k] or 0) for k in ('total', 'sent', 'failed', 'seg_total', 'seg_sent', 'seg_failed')}
+        # (2) Today's sends per account (single grouped, sargable scan).
+        _today_cond = _today_range_sql('created_at', db)
+        today_by_uid = {}
+        for r in db.execute(f"""
+                SELECT created_by AS uid, COUNT(*) AS c FROM sms_records
+                WHERE created_by IS NOT NULL AND {_today_cond} GROUP BY created_by
+            """).fetchall():
+            today_by_uid[r['uid']] = int(r['c'] or 0)
+        # (3) Really-sent emails per account in the window (facturacion global).
+        _email_filter, _email_params = _date_range_sql('created_at', date_from, date_to)
+        email_by_uid = {}
+        for r in db.execute(f"""
+                SELECT created_by AS uid, COUNT(*) AS c FROM email_records
+                WHERE status='sent' AND created_by IS NOT NULL {_email_filter}
+                GROUP BY created_by
+            """, list(_email_params)).fetchall():
+            email_by_uid[r['uid']] = int(r['c'] or 0)
+        _email_unit_price = get_email_unit_price()
+
         def _build_unit_row(name, label, user_ids, unit_role='team_admin'):
-            """Build one summary/detail row for a set of user ids."""
-            if not user_ids:
-                return {
-                    'unit_role': unit_role,
-                    'team_name': name, 'admin_name': name, 'team_admin': label,
-                    'admin_username': label, 'team_admin_username': label,
-                    'member_count': 0, 'total': 0, 'sent': 0, 'failed': 0,
-                    'billed_segments': 0, 'sent_segments': 0, 'failed_segments': 0,
-                    'today': 0, 'rate': 0, 'unit_price': 0,
-                    'total_cost': 0, 'sent_cost': 0, 'failed_cost': 0,
-                    'cost_total': 0, 'cost_sent': 0, 'cost_failed': 0,
-                    'email_sent': 0, 'email_cost': 0.0, 'email_unit_price': 0.0,
-                }
-            placeholders = ','.join(['?'] * len(user_ids))
-            row = db.execute(f"""
-                SELECT
-                    COALESCE(SUM(CASE WHEN r.status IN ('sent','delivered') THEN 1 ELSE 0 END), 0) AS sent,
-                    COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) AS failed,
-                    COALESCE(COUNT(r.id), 0) AS total
-                FROM users u
-                LEFT JOIN sms_records r ON r.created_by = u.id {date_filter_r}
-                WHERE u.id IN ({placeholders})
-            """, list(date_params) + user_ids).fetchone()
-            t_total = row['total'] or 0
-            t_sent = row['sent'] or 0
-            t_failed = row['failed'] or 0
-            today_row = db.execute(f"""
-                SELECT COUNT(*) AS cnt FROM sms_records
-                WHERE date(created_at) = date('now')
-                  AND created_by IN ({placeholders})
-            """, user_ids).fetchone()
-            t_today = (today_row['cnt'] if today_row else 0) or 0
+            """Build one summary/detail row for a set of user ids, aggregating
+            purely from the grouped maps above (zero extra SQL per unit)."""
+            _zero = {'total': 0, 'sent': 0, 'failed': 0, 'seg_total': 0, 'seg_sent': 0, 'seg_failed': 0}
+            t_total = t_sent = t_failed = 0
+            _seg_total = _seg_sent = _seg_failed = 0
+            t_today = t_email_sent = 0
+            t_cost = s_cost = f_cost = 0.0
+            for uid in (user_ids or []):
+                a = sms_by_uid.get(uid, _zero)
+                p = _price_for(uid)
+                t_total += a['total']
+                t_sent += a['sent']
+                t_failed += a['failed']
+                _seg_total += a['seg_total']
+                _seg_sent += a['seg_sent']
+                _seg_failed += a['seg_failed']
+                t_today += today_by_uid.get(uid, 0)
+                t_email_sent += email_by_uid.get(uid, 0)
+                t_cost += a['seg_total'] * p
+                s_cost += a['seg_sent'] * p
+                f_cost += a['seg_failed'] * p
+            t_cost, s_cost, f_cost = round(t_cost, 2), round(s_cost, 2), round(f_cost, 2)
             t_rate = round((t_sent / t_total * 100), 1) if t_total > 0 else 0
-            def _scope_cost(status_filter):
-                wwhere = f"({status_filter}) {date_filter} AND created_by IN ({placeholders})"
-                return sms_cost_for_scope(wwhere, list(date_params) + user_ids, db=db)
-            t_cost = _scope_cost("1=1")
-            s_cost = _scope_cost("status='sent' OR status='delivered'")
-            f_cost = _scope_cost("status='failed'")
-            _seg_total, _seg_sent, _seg_failed = sms_segment_breakdown(user_ids, date_filter, date_params, db=db)
             # Precio unitario medio ponderado del equipo (costo / segmentos). Solo
             # tiene sentido cuando hay segmentos facturados; la columna COSTO es
             # igual a 'precio x SMS Fact.' cuando todas las cuentas comparten pais.
             t_unit_price = round(t_cost / _seg_total, 4) if _seg_total else 0
-
-            # Correos: solo los realmente enviados (status='sent') se cuentan y
-            # facturan. Los simulados/pendientes/fallidos/suprimidos se excluyen,
-            # igual que en /api/email/statistics (facturacion global, no por pais).
-            email_date_filter = ''
-            if date_from:
-                email_date_filter += ' AND date(er.created_at) >= ?'
-            if date_to:
-                email_date_filter += ' AND date(er.created_at) <= ?'
-            email_row = db.execute(f"""
-                SELECT COUNT(*) AS sent
-                FROM email_records er
-                WHERE er.created_by IN ({placeholders})
-                  AND er.status='sent' {email_date_filter}
-            """, user_ids + list(date_params)).fetchone()
-            t_email_sent = int(email_row['sent'] or 0) if email_row else 0
-            t_email_unit_price = get_email_unit_price()
-            t_email_cost = round(t_email_unit_price * t_email_sent, 6)
+            t_email_cost = round(_email_unit_price * t_email_sent, 6)
 
             return {
                 'unit_role': unit_role,
@@ -9307,7 +9341,7 @@ def get_unified_stats():
                 'admin_username': label,
                 'team_admin_username': label,
                 'team_admin': label,
-                'member_count': len(user_ids),
+                'member_count': len(user_ids or []),
                 'total': t_total,
                 'sent': t_sent,
                 'failed': t_failed,
@@ -9325,7 +9359,7 @@ def get_unified_stats():
                 'cost_failed': f_cost,
                 'email_sent': t_email_sent,
                 'email_cost': t_email_cost,
-                'email_unit_price': t_email_unit_price,
+                'email_unit_price': _email_unit_price,
             }
 
         # (a) One row per team_admin (admin + their members).
@@ -9378,9 +9412,9 @@ def get_unified_stats():
         ua_seg_total = int(ua_row['segments'] or 0)
         ua_seg_sent = int(ua_row['seg_sent'] or 0)
         ua_seg_failed = int(ua_row['seg_failed'] or 0)
-        ua_today_row = db.execute("""
+        ua_today_row = db.execute(f"""
             SELECT COUNT(*) AS c FROM sms_records
-            WHERE created_by IS NULL AND date(created_at)=date('now')
+            WHERE created_by IS NULL AND {_today_range_sql('created_at', db)}
               AND COALESCE(api_msg,'') NOT LIKE '%simulado%'
         """).fetchone()
         ua_today = int(ua_today_row['c'] or 0) if ua_today_row else 0
